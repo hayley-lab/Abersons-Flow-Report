@@ -9,7 +9,6 @@ export default function handler(req, res) {
     "product:all",
     "sale:all",
     "purchase_order:all",
-    "report:inventory_all",
   ].join(" ");
 
   // Build URL manually so colons in scope values are not percent-encoded (%3A),
