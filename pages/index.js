@@ -212,9 +212,9 @@ export default function FlowReport() {
     }
 
     try {
-      const [cats, products, consignments] = await Promise.all([
+      // Fetch product types and consignments in parallel
+      const [cats, consignments] = await Promise.all([
         apiFetchAll("2.0/product_types", "data"),
-        apiFetchAll("2.0/products?deleted=true", "data"),
         apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
       ]);
 
@@ -222,20 +222,35 @@ export default function FlowReport() {
       cats.forEach((c) => {
         map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 };
       });
+
+      // Fetch all consignment line items concurrently (one request per consignment)
+      const consigProductArrays = await Promise.all(
+        consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))
+      );
+      const allConsigProducts = consigProductArrays.flat();
+
+      // Fetch each unique product by ID to get product_type_id.
+      // Avoids paginating through 20k+ products; targets only what consignments reference.
+      const uniqueIds = [...new Set(allConsigProducts.map((p) => p.product_id))];
       const pidTocat = {};
-      products.forEach((p) => {
-        const cid = p.product_type_id || "__none__";
-        pidTocat[p.id] = cid;
-        if (!map[cid]) map[cid] = { id: cid, name: "Other", ordered: 0, received: 0, sold: 0 };
-      });
+      const BATCH = 100;
+      for (let i = 0; i < uniqueIds.length; i += BATCH) {
+        const results = await Promise.all(
+          uniqueIds.slice(i, i + BATCH).map((id) =>
+            apiFetch(`2.0/products/${id}`).catch(() => null)
+          )
+        );
+        results.forEach((resp) => {
+          const p = resp?.data || resp;
+          if (!p?.id) return;
+          const cid = p.product_type_id || "__none__";
+          pidTocat[p.id] = cid;
+          if (!map[cid]) map[cid] = { id: cid, name: "Other", ordered: 0, received: 0, sold: 0 };
+        });
+      }
 
-      // Fetch consignment products and sales in parallel
-      const [consigProductArrays, sales] = await Promise.all([
-        Promise.all(consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))),
-        apiFetchAll("2.0/sales?include=line_items", "data"),
-      ]);
-
-      consigProductArrays.flat().forEach((item) => {
+      // Tally ordered / received
+      allConsigProducts.forEach((item) => {
         const cid = pidTocat[item.product_id] || "__none__";
         if (!map[cid]) return;
         const unitCost = parseFloat(item.cost || 0);
@@ -243,6 +258,9 @@ export default function FlowReport() {
         map[cid].received += unitCost * (item.received || 0);
       });
 
+      // Fetch sales (non-fatal if the endpoint doesn't support line_items)
+      let sales = [];
+      try { sales = await apiFetchAll("2.0/sales?include=line_items", "data"); } catch (_) {}
       sales.forEach((sale) => {
         (sale.line_items || []).forEach((li) => {
           if (li.type !== "register_sale_product") return;
@@ -278,26 +296,35 @@ export default function FlowReport() {
       }
 
       try {
-        const [products, consignments] = await Promise.all([
-          apiFetchAll(`2.0/products?deleted=true&product_type_id=${dept.id}`, "data"),
-          apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
-        ]);
+        const consignments = await apiFetchAll("2.0/consignments?type=SUPPLIER", "data");
+
+        // Fetch all consignment line items, then look up only products in this department
+        const consigProductArrays = await Promise.all(
+          consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))
+        );
+        const allConsigProducts = consigProductArrays.flat();
+        const uniqueIds = [...new Set(allConsigProducts.map((p) => p.product_id))];
 
         const vm = {};
         const pidToBrand = {};
-        products.forEach((p) => {
-          const bid = p.brand_id || p.supplier_id || "__none__";
-          const name = p.brand?.name || p.supplier?.name || "Unknown";
-          pidToBrand[p.id] = bid;
-          if (!vm[bid]) vm[bid] = { id: bid, name, ordered: 0, received: 0, sold: 0 };
-        });
+        const BATCH = 100;
+        for (let i = 0; i < uniqueIds.length; i += BATCH) {
+          const results = await Promise.all(
+            uniqueIds.slice(i, i + BATCH).map((id) =>
+              apiFetch(`2.0/products/${id}`).catch(() => null)
+            )
+          );
+          results.forEach((resp) => {
+            const p = resp?.data || resp;
+            if (!p?.id || p.product_type_id !== dept.id) return;
+            const bid = p.brand_id || "__none__";
+            const name = p.brand?.name || "Unknown";
+            pidToBrand[p.id] = bid;
+            if (!vm[bid]) vm[bid] = { id: bid, name, ordered: 0, received: 0, sold: 0 };
+          });
+        }
 
-        const [consigProductArrays, sales] = await Promise.all([
-          Promise.all(consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))),
-          apiFetchAll("2.0/sales?include=line_items", "data"),
-        ]);
-
-        consigProductArrays.flat().forEach((item) => {
+        allConsigProducts.forEach((item) => {
           const bid = pidToBrand[item.product_id];
           if (!bid || !vm[bid]) return;
           const unitCost = parseFloat(item.cost || 0);
@@ -305,6 +332,8 @@ export default function FlowReport() {
           vm[bid].received += unitCost * (item.received || 0);
         });
 
+        let sales = [];
+        try { sales = await apiFetchAll("2.0/sales?include=line_items", "data"); } catch (_) {}
         sales.forEach((sale) => {
           (sale.line_items || []).forEach((li) => {
             if (li.type !== "register_sale_product") return;
