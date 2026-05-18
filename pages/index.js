@@ -177,8 +177,6 @@ async function apiFetchAll(path, key) {
 
 // ── main component ────────────────────────────────────────────────────────────
 export default function FlowReport() {
-  const [authState, setAuthState] = useState("loading"); // loading | authenticated | unauthenticated
-  const [domainPrefix, setDomainPrefix] = useState("");
   const [demo, setDemo] = useState(false);
   const [screen, setScreen] = useState("summary");
   const [season, setSeason] = useState("fall2025");
@@ -198,32 +196,10 @@ export default function FlowReport() {
   const [productLoading, setProductLoading] = useState(false);
   const [productError, setProductError] = useState(null);
 
-  // Check OAuth session on mount
+  // Load summary on mount and when demo toggles
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const err = params.get("error");
-    if (err) setError(decodeURIComponent(err));
-
-    fetch("/api/auth/session")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.authenticated) {
-          setAuthState("authenticated");
-          setDomainPrefix(data.domainPrefix);
-          setDemo(false);
-        } else {
-          setAuthState("unauthenticated");
-        }
-      })
-      .catch(() => setAuthState("unauthenticated"));
-  }, []);
-
-  // Load summary when authenticated
-  useEffect(() => {
-    if (authState === "authenticated" || demo) {
-      loadSummary();
-    }
-  }, [authState, demo]);
+    loadSummary();
+  }, [loadSummary]);
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
@@ -411,46 +387,6 @@ export default function FlowReport() {
     },
   };
 
-  // ── Loading state ──
-  if (authState === "loading") {
-    return (
-      <div style={{ ...s.app, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <Spinner label="Checking session…" />
-      </div>
-    );
-  }
-
-  // ── Login screen ──
-  if (authState === "unauthenticated" && !demo) {
-    return (
-      <div style={{ ...s.app, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-        <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap'); @keyframes spin{to{transform:rotate(360deg)}}`}</style>
-        <div style={{ background: "#fff", border: "1px solid #e2ddd5", borderRadius: 12, padding: "2.5rem 2.75rem", maxWidth: 440, width: "100%", boxShadow: "0 4px 24px rgba(0,0,0,0.08)" }}>
-          <div style={{ fontFamily: "'DM Serif Display',serif", fontSize: 32, letterSpacing: -1, marginBottom: 4 }}>abersons</div>
-          <div style={{ fontSize: 15, color: "#6b6560", marginBottom: "2rem" }}>flow report</div>
-
-          {error && <ErrBox msg={error} />}
-
-          <a
-            href="/api/auth/lightspeed"
-            style={{ display: "block", width: "100%", background: "#3a5a8c", color: "#fff", border: "none", borderRadius: 8, padding: "12px", fontFamily: "'DM Sans',sans-serif", fontSize: 15, fontWeight: 600, cursor: "pointer", textAlign: "center", textDecoration: "none", boxSizing: "border-box" }}
-          >
-            Connect with Lightspeed
-          </a>
-
-          <div style={{ textAlign: "center", marginTop: "1rem" }}>
-            <button
-              onClick={() => setDemo(true)}
-              style={{ background: "none", border: "none", color: "#9e9892", fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}
-            >
-              → Try demo mode instead
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   // ── Main app ──
   return (
     <div style={s.app}>
@@ -481,15 +417,9 @@ export default function FlowReport() {
             </select>
             <span style={{ color: "#9e9892", fontSize: 12 }}>◂</span>
           </div>
-          {demo ? (
-            <button onClick={() => { setDemo(false); setAuthState("unauthenticated"); }} style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
-              Sign in
-            </button>
-          ) : (
-            <a href="/api/auth/logout" style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", textDecoration: "none" }}>
-              Sign out
-            </a>
-          )}
+          <button onClick={() => setDemo(!demo)} style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
+            {demo ? "Live data" : "Demo mode"}
+          </button>
         </div>
       </header>
 
