@@ -196,11 +196,6 @@ export default function FlowReport() {
   const [productLoading, setProductLoading] = useState(false);
   const [productError, setProductError] = useState(null);
 
-  // Load summary on mount and when demo toggles
-  useEffect(() => {
-    loadSummary();
-  }, [loadSummary]);
-
   const loadSummary = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -254,6 +249,10 @@ export default function FlowReport() {
     }
     setLoading(false);
   }, [demo]);
+
+  useEffect(() => {
+    loadSummary();
+  }, [loadSummary]);
 
   const openDept = useCallback(
     async (dept) => {
