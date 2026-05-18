@@ -161,7 +161,7 @@ async function apiFetchAll(path, key) {
   let results = [];
   let after = null;
   let pages = 0;
-  while (pages < 20) {
+  while (pages < 100) {
     pages++;
     const sep = path.includes("?") ? "&" : "?";
     const fullPath = path + sep + "page_size=200" + (after ? "&after=" + after : "");
