@@ -168,9 +168,13 @@ async function apiFetchAll(path, key) {
     const data = await apiFetch(fullPath);
     const items = data[key] || data.data || [];
     results = results.concat(items);
+    if (items.length === 0) break;
+    // Standard cursor pagination
     const pg = data.pagination || data.meta?.pagination;
-    if (!pg?.next || items.length === 0) break;
-    after = pg.next;
+    if (pg?.next) { after = pg.next; continue; }
+    // Version-based pagination: if full page, use version.max as cursor
+    if (items.length === 200 && data.version?.max) { after = data.version.max; continue; }
+    break;
   }
   return results;
 }
@@ -208,11 +212,10 @@ export default function FlowReport() {
     }
 
     try {
-      const [cats, products, sales, pos] = await Promise.all([
+      const [cats, products, consignments] = await Promise.all([
         apiFetchAll("2.0/product_types", "data"),
-        apiFetchAll("2.0/products?include=tags,brand", "data"),
-        apiFetchAll("2.0/sales?include=line_items", "data"),
-        apiFetchAll("2.0/purchase_orders?include=line_items", "data"),
+        apiFetchAll("2.0/products", "data"),
+        apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
       ]);
 
       const map = {};
@@ -225,16 +228,21 @@ export default function FlowReport() {
         pidTocat[p.id] = cid;
         if (!map[cid]) map[cid] = { id: cid, name: "Other", ordered: 0, received: 0, sold: 0 };
       });
-      pos.forEach((po) => {
-        const rec = po.status === "received" || po.status === "partially_received";
-        (po.line_items || []).forEach((li) => {
-          const cid = pidTocat[li.product_id] || "__none__";
-          if (!map[cid]) return;
-          const cost = parseFloat(li.cost || 0) * parseFloat(li.quantity || 0);
-          map[cid].ordered += cost;
-          if (rec) map[cid].received += cost;
-        });
+
+      // Fetch consignment products and sales in parallel
+      const [consigProductArrays, sales] = await Promise.all([
+        Promise.all(consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))),
+        apiFetchAll("2.0/sales?include=line_items", "data"),
+      ]);
+
+      consigProductArrays.flat().forEach((item) => {
+        const cid = pidTocat[item.product_id] || "__none__";
+        if (!map[cid]) return;
+        const unitCost = parseFloat(item.cost || 0);
+        map[cid].ordered += unitCost * (item.count || 0);
+        map[cid].received += unitCost * (item.received || 0);
       });
+
       sales.forEach((sale) => {
         (sale.line_items || []).forEach((li) => {
           if (li.type !== "register_sale_product") return;
@@ -243,6 +251,7 @@ export default function FlowReport() {
           map[cid].sold += parseFloat(li.total_price || li.price || 0);
         });
       });
+
       setSummaryRows(Object.values(map).sort((a, b) => b.ordered - a.ordered));
     } catch (e) {
       setError(e.message);
@@ -269,32 +278,33 @@ export default function FlowReport() {
       }
 
       try {
-        const [products, sales, pos] = await Promise.all([
-          apiFetchAll(`2.0/products?product_type_id=${dept.id}&include=brand,tags`, "data"),
-          apiFetchAll("2.0/sales?include=line_items", "data"),
-          apiFetchAll("2.0/purchase_orders?include=line_items", "data"),
+        const [products, consignments] = await Promise.all([
+          apiFetchAll(`2.0/products?product_type_id=${dept.id}`, "data"),
+          apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
         ]);
 
         const vm = {};
-        products.forEach((p) => {
-          const b = p.brand || p.supplier;
-          const bid = b?.id || "__none__";
-          if (!vm[bid]) vm[bid] = { id: bid, name: b?.name || "Unknown", ordered: 0, received: 0, sold: 0 };
-        });
         const pidToBrand = {};
         products.forEach((p) => {
-          pidToBrand[p.id] = p.brand?.id || p.supplier?.id || "__none__";
+          const bid = p.brand_id || p.supplier_id || "__none__";
+          const name = p.brand?.name || p.supplier?.name || "Unknown";
+          pidToBrand[p.id] = bid;
+          if (!vm[bid]) vm[bid] = { id: bid, name, ordered: 0, received: 0, sold: 0 };
         });
-        pos.forEach((po) => {
-          const rec = po.status === "received" || po.status === "partially_received";
-          (po.line_items || []).forEach((li) => {
-            const bid = pidToBrand[li.product_id];
-            if (!bid || !vm[bid]) return;
-            const cost = parseFloat(li.cost || 0) * parseFloat(li.quantity || 0);
-            vm[bid].ordered += cost;
-            if (rec) vm[bid].received += cost;
-          });
+
+        const [consigProductArrays, sales] = await Promise.all([
+          Promise.all(consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))),
+          apiFetchAll("2.0/sales?include=line_items", "data"),
+        ]);
+
+        consigProductArrays.flat().forEach((item) => {
+          const bid = pidToBrand[item.product_id];
+          if (!bid || !vm[bid]) return;
+          const unitCost = parseFloat(item.cost || 0);
+          vm[bid].ordered += unitCost * (item.count || 0);
+          vm[bid].received += unitCost * (item.received || 0);
         });
+
         sales.forEach((sale) => {
           (sale.line_items || []).forEach((li) => {
             if (li.type !== "register_sale_product") return;
@@ -303,6 +313,7 @@ export default function FlowReport() {
             vm[bid].sold += parseFloat(li.total_price || li.price || 0);
           });
         });
+
         setVendorRows(Object.values(vm).sort((a, b) => b.ordered - a.ordered));
       } catch (e) {
         setVendorError(e.message);
@@ -328,7 +339,7 @@ export default function FlowReport() {
 
       try {
         const [products, sales] = await Promise.all([
-          apiFetchAll(`2.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}&include=inventory`, "data"),
+          apiFetchAll(`2.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}`, "data"),
           apiFetchAll("2.0/sales?include=line_items", "data"),
         ]);
 
@@ -344,10 +355,10 @@ export default function FlowReport() {
           products.map((p) => ({
             name: p.name,
             sku: p.sku || "",
-            variant: p.variant_option_one_value || "",
+            variant: p.variant_option_one_value || p.variant_name || "",
             cost: parseFloat(p.supply_price || p.cost_price || 0),
-            price: parseFloat(p.price || 0),
-            onHand: p.inventory?.count || 0,
+            price: parseFloat(p.price_excluding_tax || p.price || 0),
+            onHand: p.inventory?.count ?? p.inventory_count ?? 0,
             sold: soldMap[p.id] || 0,
           }))
         );
