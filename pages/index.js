@@ -209,10 +209,10 @@ export default function FlowReport() {
 
     try {
       const [cats, products, sales, pos] = await Promise.all([
-        apiFetchAll("1.0/product_types", "data"),
-        apiFetchAll("1.0/products?include=tags,brand", "data"),
-        apiFetchAll("1.0/sales?include=line_items", "data"),
-        apiFetchAll("1.0/purchase_orders?include=line_items", "data"),
+        apiFetchAll("2.0/product_types", "data"),
+        apiFetchAll("2.0/products?include=tags,brand", "data"),
+        apiFetchAll("2.0/sales?include=line_items", "data"),
+        apiFetchAll("2.0/purchase_orders?include=line_items", "data"),
       ]);
 
       const map = {};
@@ -270,9 +270,9 @@ export default function FlowReport() {
 
       try {
         const [products, sales, pos] = await Promise.all([
-          apiFetchAll(`1.0/products?product_type_id=${dept.id}&include=brand,tags`, "data"),
-          apiFetchAll("1.0/sales?include=line_items", "data"),
-          apiFetchAll("1.0/purchase_orders?include=line_items", "data"),
+          apiFetchAll(`2.0/products?product_type_id=${dept.id}&include=brand,tags`, "data"),
+          apiFetchAll("2.0/sales?include=line_items", "data"),
+          apiFetchAll("2.0/purchase_orders?include=line_items", "data"),
         ]);
 
         const vm = {};
@@ -328,8 +328,8 @@ export default function FlowReport() {
 
       try {
         const [products, sales] = await Promise.all([
-          apiFetchAll(`1.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}&include=inventory`, "data"),
-          apiFetchAll("1.0/sales?include=line_items", "data"),
+          apiFetchAll(`2.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}&include=inventory`, "data"),
+          apiFetchAll("2.0/sales?include=line_items", "data"),
         ]);
 
         const pidSet = new Set(products.map((p) => p.id));
