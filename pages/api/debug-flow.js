@@ -20,69 +20,64 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Get all consignments (up to 200)
-    const consignmentsResp = await lsFetch("2.0/consignments?type=SUPPLIER&page_size=200");
-    const allConsignments = consignmentsResp?.data || [];
+    // Replicate EXACTLY what the app does — count products, check mapping
 
-    // Summarise each consignment
-    const consignmentSummary = allConsignments.map(c => ({
-      id: c.id,
-      reference: c.reference,
-      supplier_id: c.supplier_id,
-      status: c.status,
-      consignment_date: c.consignment_date,
-    }));
+    // 1. Fetch all product types
+    const typesResp = await lsFetch("2.0/product_types?page_size=200");
+    const cats = typesResp?.data || [];
+    const map = {};
+    cats.forEach(c => { map[c.id] = c.name; });
 
-    // Find first consignment with a real supplier_id
-    const realConsig = allConsignments.find(c => c.supplier_id != null) || allConsignments[1];
-
-    // Get products for that consignment
-    let realConsigProducts = null;
-    if (realConsig) {
-      realConsigProducts = await lsFetch(`2.0/consignments/${realConsig.id}/products?page_size=5`);
-    }
-
-    // Look up the first product from that consignment
-    let realProduct = null;
-    const firstRealConsigProduct = realConsigProducts?.data?.[0];
-    if (firstRealConsigProduct?.product_id) {
-      const r = await lsFetch(`2.0/products/${firstRealConsigProduct.product_id}?deleted=true`);
-      const p = r?.data || r;
-      realProduct = {
-        id: p?.id,
-        name: p?.name,
-        source: p?.source,
-        product_type_id: p?.product_type_id,
-        type: p?.type,
-        deleted_at: p?.deleted_at,
-        supplier_id: p?.supplier_id,
-        brand_id: p?.brand_id,
-      };
-    }
-
-    // Count total products across all pages
-    let totalProducts = 0;
+    // 2. Fetch ALL products with deleted=true (up to 100 pages like the app now does)
+    const pidTocat = {};
     let after = null;
     let pages = 0;
-    while (pages < 30) {
+    let withType = 0;
+    let withoutType = 0;
+    while (pages < 100) {
       pages++;
       const url = `2.0/products?deleted=true&page_size=200${after ? "&after=" + after : ""}`;
       const resp = await lsFetch(url);
       const items = resp?.data || [];
-      totalProducts += items.length;
+      items.forEach(p => {
+        if (p.product_type_id) {
+          pidTocat[p.id] = p.product_type_id;
+          withType++;
+        } else {
+          withoutType++;
+        }
+      });
       if (items.length < 200) break;
       if (resp?.version?.max) { after = resp.version.max; continue; }
       break;
     }
 
+    // 3. Check specific known product
+    const knownProductId = "2cd9304b-d70e-4ece-933f-38b027c10e83"; // astellatrq/s26
+    const knownProductTypeId = pidTocat[knownProductId];
+
+    // 4. Check a sample consignment product mapping
+    const consigProductsResp = await lsFetch("2.0/consignments/a8e5719d-06ad-11f1-bb87-feec027b79b9/products?page_size=5");
+    const consigProducts = consigProductsResp?.data || [];
+    const consigMapping = consigProducts.map(item => ({
+      product_id: item.product_id,
+      mapped_type_id: pidTocat[item.product_id] || null,
+      mapped_type_name: map[pidTocat[item.product_id]] || "NOT FOUND",
+      cost: item.cost,
+      count: item.count,
+    }));
+
     res.status(200).json({
-      total_consignments: allConsignments.length,
-      consignment_summary: consignmentSummary,
-      real_consig: realConsig ? { id: realConsig.id, reference: realConsig.reference, supplier_id: realConsig.supplier_id } : null,
-      real_consig_product_sample: firstRealConsigProduct,
-      real_product_lookup: realProduct,
-      total_products_fetched: totalProducts,
-      total_pages: pages,
+      product_types_count: cats.length,
+      product_types: cats.map(c => ({ id: c.id, name: c.name })),
+      total_pages_fetched: pages,
+      total_products_fetched: withType + withoutType,
+      products_with_type: withType,
+      products_without_type: withoutType,
+      known_product_in_map: !!pidTocat[knownProductId],
+      known_product_type_id: knownProductTypeId || null,
+      known_product_type_name: map[knownProductTypeId] || "NOT FOUND",
+      consig_mapping_sample: consigMapping,
     });
   } catch (err) {
     res.status(500).json({ error: err.message, stack: err.stack });
