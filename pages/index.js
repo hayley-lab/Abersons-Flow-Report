@@ -214,7 +214,7 @@ export default function FlowReport() {
     try {
       const [cats, products, consignments] = await Promise.all([
         apiFetchAll("2.0/product_types", "data"),
-        apiFetchAll("2.0/products", "data"),
+        apiFetchAll("2.0/products?deleted=true", "data"),
         apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
       ]);
 
@@ -279,7 +279,7 @@ export default function FlowReport() {
 
       try {
         const [products, consignments] = await Promise.all([
-          apiFetchAll(`2.0/products?product_type_id=${dept.id}`, "data"),
+          apiFetchAll(`2.0/products?deleted=true&product_type_id=${dept.id}`, "data"),
           apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
         ]);
 
@@ -339,7 +339,7 @@ export default function FlowReport() {
 
       try {
         const [products, sales] = await Promise.all([
-          apiFetchAll(`2.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}`, "data"),
+          apiFetchAll(`2.0/products?deleted=true&brand_id=${vendor.id}&product_type_id=${currentDept.id}`, "data"),
           apiFetchAll("2.0/sales?include=line_items", "data"),
         ]);
 
