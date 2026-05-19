@@ -201,6 +201,7 @@ export default function FlowReport() {
 
   // Cached data built during loadSummary and reused by drilldowns (no re-fetching)
   const [seasonTagId, setSeasonTagId] = useState(null);
+  const [seasonPids, setSeasonPids] = useState(new Set()); // product IDs in this season
   const [pidToType, setPidToType] = useState({});    // product_id → product_type_id
   const [pidToBrand, setPidToBrand] = useState({});  // product_id → { id, name }
   const [allConsigItems, setAllConsigItems] = useState([]);     // flat consignment line items
@@ -226,6 +227,7 @@ export default function FlowReport() {
     setSummaryRows([]);
     setAllConsigItems([]);
     setAllSaleLineItems([]);
+    setSeasonPids(new Set());
 
     if (demo) {
       setSummaryRows(DEMO_SUMMARY);
@@ -281,6 +283,7 @@ export default function FlowReport() {
       }
       setPidToType(newPidToType);
       setPidToBrand(newPidToBrand);
+      setSeasonPids(new Set(seasonPidSet));
 
       // 5. Tally ordered / received for season products only
       const map = {};
@@ -343,6 +346,7 @@ export default function FlowReport() {
         const vm = {};
 
         allConsigItems.forEach((item) => {
+          if (!seasonPids.has(item.product_id)) return;
           if (pidToType[item.product_id] !== dept.id) return;
           const brand = pidToBrand[item.product_id];
           if (!brand) return;
@@ -353,6 +357,7 @@ export default function FlowReport() {
         });
 
         allSaleLineItems.forEach((li) => {
+          if (!seasonPids.has(li.product_id)) return;
           if (pidToType[li.product_id] !== dept.id) return;
           const brand = pidToBrand[li.product_id];
           if (!brand || !vm[brand.id]) return;
@@ -365,7 +370,7 @@ export default function FlowReport() {
       }
       setVendorLoading(false);
     },
-    [demo, allConsigItems, allSaleLineItems, pidToType, pidToBrand]
+    [demo, allConsigItems, allSaleLineItems, pidToType, pidToBrand, seasonPids]
   );
 
   // ── open vendor → product view ────────────────────────────────────────────────
@@ -384,19 +389,20 @@ export default function FlowReport() {
       }
 
       try {
-        // Targeted query: brand + dept + season tag → only this vendor's season products
-        const tagParam = seasonTagId ? `&tag_id=${seasonTagId}` : "";
-        const products = await apiFetchAll(
-          `2.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}${tagParam}`,
+        // Fetch products for this brand + dept, then filter to season using cached set.
+        // We avoid tag_id filter here because Lightspeed returns 403 for that parameter.
+        const allProducts = await apiFetchAll(
+          `2.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}`,
           "data"
         );
+        const products = allProducts.filter((p) => seasonPids.has(p.id));
 
         // Tally units sold from cached sale line items (no extra API call)
         const pidSet = new Set(products.map((p) => p.id));
         const soldMap = {};
         allSaleLineItems.forEach((li) => {
           if (!pidSet.has(li.product_id)) return;
-          soldMap[li.product_id] = (soldMap[li.product_id] || 0) + parseInt(li.quantity || 1);
+          soldMap[li.product_id] = (soldMap[li.product_id] || 0) + parseInt(li.quantity || 0);
         });
 
         setProductRows(
@@ -415,7 +421,7 @@ export default function FlowReport() {
       }
       setProductLoading(false);
     },
-    [demo, currentDept, seasonTagId, allSaleLineItems]
+    [demo, currentDept, seasonPids, allSaleLineItems]
   );
 
   // ── computed totals ───────────────────────────────────────────────────────────
