@@ -196,6 +196,7 @@ export default function FlowReport() {
   // Summary
   const [summaryRows, setSummaryRows] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState("");
   const [error, setError] = useState(null);
 
   // Cached data built during loadSummary and reused by drilldowns (no re-fetching)
@@ -220,6 +221,7 @@ export default function FlowReport() {
   // ── load summary ──────────────────────────────────────────────────────────────
   const loadSummary = useCallback(async () => {
     setLoading(true);
+    setLoadingStep("Finding season tag…");
     setError(null);
     setSummaryRows([]);
     setAllConsigItems([]);
@@ -239,6 +241,7 @@ export default function FlowReport() {
       setSeasonTagId(seasonTag.id);
 
       // 2. Fetch season products, product types, and consignments in parallel
+      setLoadingStep("Loading season products, departments & purchase orders…");
       const [seasonProducts, cats, consignments] = await Promise.all([
         apiFetchAll(`2.0/products?tag_id=${seasonTag.id}`, "data"),
         apiFetchAll("2.0/product_types", "data"),
@@ -262,6 +265,7 @@ export default function FlowReport() {
       cats.forEach((c) => { map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 }; });
 
       // 3. Fetch all consignment line items; tally only season products
+      setLoadingStep(`Loading line items for ${consignments.length} purchase orders…`);
       const consigArrays = await Promise.all(
         consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))
       );
@@ -280,6 +284,7 @@ export default function FlowReport() {
       // 4. Fetch sales; tally only season products
       // Line items are included in every sale response by default (no include param needed).
       // Line items have no "type" field — filter by product_id presence and skip voided items.
+      setLoadingStep("Loading sales…");
       let newSaleLineItems = [];
       try {
         const sales = await apiFetchAll("2.0/sales", "data");
@@ -474,7 +479,7 @@ export default function FlowReport() {
         {/* ── SUMMARY ── */}
         {screen === "summary" && (
           <>
-            {loading && <Spinner label={`Loading ${seasonLabel} data…`} />}
+            {loading && <Spinner label={loadingStep || `Loading ${seasonLabel} data…`} />}
             {error && <ErrBox msg={error} />}
             {!loading && (
               <>

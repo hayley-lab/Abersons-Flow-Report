@@ -20,40 +20,47 @@ export default async function handler(req, res) {
     try { return JSON.parse(text); } catch { return { raw: text.slice(0, 500) }; }
   }
 
+  // Known tag IDs from previous debug
+  const FALL26_TAG_ID  = "d58d14aa-939e-4a16-a8cf-ce36e5aeb1c3";
+  const FALL25_TAG_ID  = "45bc201b-3bf6-4fd7-bfea-c4ddf67c0d24";
+  const SPRING26_TAG_ID = "560ee43c-ee48-4808-9607-2eb4856ecbdc";
+
   try {
-    // 1. Fetch a single page of sales WITHOUT include — see base structure
-    const salesBasic = await lsFetch("2.0/sales?page_size=1");
+    // 1. Test tag_id filter with different parameter formats
+    const [byTagId, byTagIdsArray, noFilter, fall25Test] = await Promise.all([
+      lsFetch(`2.0/products?tag_id=${FALL26_TAG_ID}&page_size=5`),
+      lsFetch(`2.0/products?tag_ids[]=${FALL26_TAG_ID}&page_size=5`),
+      lsFetch(`2.0/products?page_size=1`),
+      lsFetch(`2.0/products?tag_id=${FALL25_TAG_ID}&page_size=5`),
+    ]);
 
-    // 2. Fetch a single page of sales WITH include=line_items
-    const salesWithLineItems = await lsFetch("2.0/sales?page_size=1&include=line_items");
+    // 2. Check total product count (unfiltered)
+    const totalCount = noFilter?.pagination?.total ?? noFilter?.data?.length ?? "unknown";
 
-    // 3. Try fetching line items for the first sale individually
-    const firstSaleId = salesBasic?.data?.[0]?.id;
-    let saleLineItemsDirect = null;
-    if (firstSaleId) {
-      saleLineItemsDirect = await lsFetch(`2.0/sales/${firstSaleId}/line_items?page_size=5`);
-    }
-
-    // 4. Check what fields a sale has (keys only, to understand structure)
-    const firstSaleBasicKeys = salesBasic?.data?.[0] ? Object.keys(salesBasic.data[0]) : [];
-    const firstSaleWithIncludeKeys = salesWithLineItems?.data?.[0] ? Object.keys(salesWithLineItems.data[0]) : [];
+    // 3. Check what a product with fall26 tag looks like (find one directly)
+    // Search for a product that has the fall26 tag via tag_ids on the product
+    const fall26ProductSample = byTagId?.data?.[0] || byTagIdsArray?.data?.[0] || null;
 
     res.status(200).json({
-      // Basic sale structure
-      first_sale_id: firstSaleId,
-      first_sale_basic_keys: firstSaleBasicKeys,
-      first_sale_basic_sample: salesBasic?.data?.[0],
+      // How many products does each format return?
+      tag_id_param_count:        byTagId?.data?.length ?? byTagId?.errors,
+      tag_ids_array_param_count: byTagIdsArray?.data?.length ?? byTagIdsArray?.errors,
+      fall25_tag_id_count:       fall25Test?.data?.length ?? fall25Test?.errors,
 
-      // With include=line_items — does it add line_items key?
-      first_sale_with_include_keys: firstSaleWithIncludeKeys,
-      first_sale_line_items_via_include: salesWithLineItems?.data?.[0]?.line_items,
-      sales_include_error: salesWithLineItems?.errors || null,
+      // Sample from the working format (if any)
+      fall26_product_sample: fall26ProductSample ? {
+        id:              fall26ProductSample.id,
+        name:            fall26ProductSample.name,
+        tag_ids:         fall26ProductSample.tag_ids,
+        product_type_id: fall26ProductSample.product_type_id,
+      } : null,
 
-      // Direct line items endpoint
-      line_items_direct_endpoint: saleLineItemsDirect?.data?.slice(0, 3) || saleLineItemsDirect,
+      // Pagination on unfiltered vs filtered
+      unfiltered_pagination: noFilter?.pagination,
+      tag_id_pagination:     byTagId?.pagination,
 
-      // Pagination info
-      sales_pagination: salesBasic?.pagination || salesBasic?.version,
+      // Total product count in store
+      total_products_in_store: totalCount,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
