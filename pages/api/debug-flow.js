@@ -17,50 +17,39 @@ export default async function handler(req, res) {
   async function lsFetch(path) {
     const r = await fetch(`${base}/${path}`, { headers });
     const text = await r.text();
-    try { return JSON.parse(text); } catch { return { raw: text.slice(0, 500) }; }
+    try { return { status: r.status, body: JSON.parse(text) }; }
+    catch { return { status: r.status, body: { raw: text.slice(0, 300) } }; }
   }
 
-  // Known tag IDs from previous debug
-  const FALL26_TAG_ID  = "d58d14aa-939e-4a16-a8cf-ce36e5aeb1c3";
-  const FALL25_TAG_ID  = "45bc201b-3bf6-4fd7-bfea-c4ddf67c0d24";
-  const SPRING26_TAG_ID = "560ee43c-ee48-4808-9607-2eb4856ecbdc";
+  const FALL26  = "d58d14aa-939e-4a16-a8cf-ce36e5aeb1c3";
+  const FALL25  = "45bc201b-3bf6-4fd7-bfea-c4ddf67c0d24";
 
   try {
-    // 1. Test tag_id filter with different parameter formats
-    const [byTagId, byTagIdsArray, noFilter, fall25Test] = await Promise.all([
-      lsFetch(`2.0/products?tag_id=${FALL26_TAG_ID}&page_size=5`),
-      lsFetch(`2.0/products?tag_ids[]=${FALL26_TAG_ID}&page_size=5`),
-      lsFetch(`2.0/products?page_size=1`),
-      lsFetch(`2.0/products?tag_id=${FALL25_TAG_ID}&page_size=5`),
+    // Test every plausible filter parameter name for tags/categories
+    const [a, b, c, d, e, f] = await Promise.all([
+      lsFetch(`2.0/products?tag_id=${FALL26}&page_size=3`),
+      lsFetch(`2.0/products?tag_ids[]=${FALL26}&page_size=3`),
+      lsFetch(`2.0/products?category_id=${FALL26}&page_size=3`),
+      lsFetch(`2.0/products?tag_id=${FALL25}&page_size=3`),
+      lsFetch(`2.0/products?page_size=3`),              // unfiltered — what does data look like?
+      lsFetch(`2.0/products?page_size=1`),              // get 1 product to inspect its fields
     ]);
 
-    // 2. Check total product count (unfiltered)
-    const totalCount = noFilter?.pagination?.total ?? noFilter?.data?.length ?? "unknown";
-
-    // 3. Check what a product with fall26 tag looks like (find one directly)
-    // Search for a product that has the fall26 tag via tag_ids on the product
-    const fall26ProductSample = byTagId?.data?.[0] || byTagIdsArray?.data?.[0] || null;
+    // Inspect the first unfiltered product's full structure
+    const sampleProduct = f.body?.data?.[0];
 
     res.status(200).json({
-      // How many products does each format return?
-      tag_id_param_count:        byTagId?.data?.length ?? byTagId?.errors,
-      tag_ids_array_param_count: byTagIdsArray?.data?.length ?? byTagIdsArray?.errors,
-      fall25_tag_id_count:       fall25Test?.data?.length ?? fall25Test?.errors,
+      // HTTP status + count for each filter attempt
+      fall26_tag_id:         { status: a.status, count: a.body?.data?.length ?? null, data_null: a.body?.data === null, errors: a.body?.errors },
+      fall26_tag_ids_array:  { status: b.status, count: b.body?.data?.length ?? null, data_null: b.body?.data === null, errors: b.body?.errors },
+      fall26_category_id:    { status: c.status, count: c.body?.data?.length ?? null, data_null: c.body?.data === null, errors: c.body?.errors },
+      fall25_tag_id:         { status: d.status, count: d.body?.data?.length ?? null, data_null: d.body?.data === null, errors: d.body?.errors },
+      unfiltered_3:          { status: e.status, count: e.body?.data?.length ?? null },
 
-      // Sample from the working format (if any)
-      fall26_product_sample: fall26ProductSample ? {
-        id:              fall26ProductSample.id,
-        name:            fall26ProductSample.name,
-        tag_ids:         fall26ProductSample.tag_ids,
-        product_type_id: fall26ProductSample.product_type_id,
-      } : null,
-
-      // Pagination on unfiltered vs filtered
-      unfiltered_pagination: noFilter?.pagination,
-      tag_id_pagination:     byTagId?.pagination,
-
-      // Total product count in store
-      total_products_in_store: totalCount,
+      // Full structure of one unfiltered product — shows us what keys exist
+      sample_product_keys:   sampleProduct ? Object.keys(sampleProduct) : null,
+      sample_product_tag_ids: sampleProduct?.tag_ids,
+      sample_product_categories: sampleProduct?.categories,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
