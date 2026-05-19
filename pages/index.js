@@ -278,15 +278,19 @@ export default function FlowReport() {
       });
 
       // 4. Fetch sales; tally only season products
+      // Line items are included in every sale response by default (no include param needed).
+      // Line items have no "type" field — filter by product_id presence and skip voided items.
       let newSaleLineItems = [];
       try {
-        const sales = await apiFetchAll("2.0/sales?include=line_items", "data");
-        newSaleLineItems = sales.flatMap((s) => s.line_items || []);
+        const sales = await apiFetchAll("2.0/sales", "data");
+        newSaleLineItems = sales
+          .filter((s) => s.status !== "VOIDED")
+          .flatMap((s) => (s.line_items || []).filter((li) => li.product_id && li.status !== "VOIDED"));
         setAllSaleLineItems(newSaleLineItems);
       } catch (_) {}
 
       newSaleLineItems.forEach((li) => {
-        if (li.type !== "register_sale_product" || !seasonPidSet.has(li.product_id)) return;
+        if (!seasonPidSet.has(li.product_id)) return;
         const cid = newPidToType[li.product_id] || "__none__";
         if (!map[cid]) return;
         map[cid].sold += parseFloat(li.total_price || li.price || 0);
@@ -330,7 +334,7 @@ export default function FlowReport() {
         });
 
         allSaleLineItems.forEach((li) => {
-          if (li.type !== "register_sale_product" || pidToType[li.product_id] !== dept.id) return;
+          if (pidToType[li.product_id] !== dept.id) return;
           const brand = pidToBrand[li.product_id];
           if (!brand || !vm[brand.id]) return;
           vm[brand.id].sold += parseFloat(li.total_price || li.price || 0);
@@ -372,7 +376,7 @@ export default function FlowReport() {
         const pidSet = new Set(products.map((p) => p.id));
         const soldMap = {};
         allSaleLineItems.forEach((li) => {
-          if (li.type !== "register_sale_product" || !pidSet.has(li.product_id)) return;
+          if (!pidSet.has(li.product_id)) return;
           soldMap[li.product_id] = (soldMap[li.product_id] || 0) + parseInt(li.quantity || 1);
         });
 
