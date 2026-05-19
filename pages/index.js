@@ -240,37 +240,51 @@ export default function FlowReport() {
       if (!seasonTag) throw new Error(`Season tag "${season}" not found in Lightspeed.`);
       setSeasonTagId(seasonTag.id);
 
-      // 2. Fetch season products, product types, and consignments in parallel
-      setLoadingStep("Loading season products, departments & purchase orders…");
-      const [seasonProducts, cats, consignments] = await Promise.all([
-        apiFetchAll(`2.0/products?tag_id=${seasonTag.id}`, "data"),
+      // 2. Fetch product types and consignments in parallel
+      setLoadingStep("Loading departments & purchase orders…");
+      const [cats, consignments] = await Promise.all([
         apiFetchAll("2.0/product_types", "data"),
         apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
       ]);
 
-      // Build product lookup maps from season products only
-      const newPidToType = {};
-      const newPidToBrand = {};
-      const seasonPidSet = new Set();
-      seasonProducts.forEach((p) => {
-        seasonPidSet.add(p.id);
-        newPidToType[p.id] = p.product_type_id || "__none__";
-        newPidToBrand[p.id] = { id: p.brand_id || "__none__", name: p.brand?.name || "Unknown" };
-      });
-      setPidToType(newPidToType);
-      setPidToBrand(newPidToBrand);
-
-      // Build department totals map
-      const map = {};
-      cats.forEach((c) => { map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 }; });
-
-      // 3. Fetch all consignment line items; tally only season products
+      // 3. Fetch all consignment line items
       setLoadingStep(`Loading line items for ${consignments.length} purchase orders…`);
       const consigArrays = await Promise.all(
         consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))
       );
       const newConsigItems = consigArrays.flat();
       setAllConsigItems(newConsigItems);
+
+      // 4. Fetch each unique product from consignments to get tag_ids, type, and brand.
+      //    The products API does not support tag_id filtering, so we fetch by ID and
+      //    check tag_ids on each product to determine if it belongs to this season.
+      const uniquePids = [...new Set(newConsigItems.map((i) => i.product_id))];
+      setLoadingStep(`Checking season tags on ${uniquePids.length} products…`);
+
+      const newPidToType = {};
+      const newPidToBrand = {};
+      const seasonPidSet = new Set();
+      const BATCH = 100;
+      for (let i = 0; i < uniquePids.length; i += BATCH) {
+        const results = await Promise.all(
+          uniquePids.slice(i, i + BATCH).map((id) =>
+            apiFetch(`2.0/products/${id}`).catch(() => null)
+          )
+        );
+        results.forEach((resp) => {
+          const p = resp?.data || resp;
+          if (!p?.id) return;
+          newPidToType[p.id] = p.product_type_id || "__none__";
+          newPidToBrand[p.id] = { id: p.brand_id || "__none__", name: p.brand?.name || "Unknown" };
+          if (p.tag_ids?.includes(seasonTag.id)) seasonPidSet.add(p.id);
+        });
+      }
+      setPidToType(newPidToType);
+      setPidToBrand(newPidToBrand);
+
+      // 5. Tally ordered / received for season products only
+      const map = {};
+      cats.forEach((c) => { map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 }; });
 
       newConsigItems.forEach((item) => {
         if (!seasonPidSet.has(item.product_id)) return;
@@ -281,9 +295,9 @@ export default function FlowReport() {
         map[cid].received += cost * (item.received || 0);
       });
 
-      // 4. Fetch sales; tally only season products
-      // Line items are included in every sale response by default (no include param needed).
-      // Line items have no "type" field — filter by product_id presence and skip voided items.
+      // 6. Fetch sales and tally sold for season products only.
+      //    Line items are always included in the sale response — no extra param needed.
+      //    Line items have no "type" field; skip voided sales and voided line items.
       setLoadingStep("Loading sales…");
       let newSaleLineItems = [];
       try {
