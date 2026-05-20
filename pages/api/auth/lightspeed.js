@@ -19,7 +19,8 @@ export default function handler(req, res) {
     `?response_type=code` +
     `&client_id=${encodeURIComponent(clientId)}` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    (req.query.noscope !== "1" ? `&scope=${scope.replace(/ /g, "+")}` : "");
+    `&scope=${scope.replace(/ /g, "+")}` +
+    `&domain=abersons`;
 
   if (req.query.debug === "1") {
     return res.status(200).json({ url, clientId, redirectUri, scope });
