@@ -1,7 +1,10 @@
 // pages/api/auth/lightspeed.js
 export default function handler(req, res) {
   const clientId = process.env.LS_CLIENT_ID;
-  const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/auth/callback`;
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
+  const redirectUri = `${baseUrl}/api/auth/callback`;
 
   const scope = [
     "product:all",

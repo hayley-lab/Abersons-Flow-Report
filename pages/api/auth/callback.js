@@ -10,7 +10,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/auth/callback`;
+    const proto = req.headers["x-forwarded-proto"] || "https";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
+    const redirectUri = `${baseUrl}/api/auth/callback`;
 
     const tokenRes = await fetch("https://id.lightspeed.app/oauth/token", {
       method: "POST",
