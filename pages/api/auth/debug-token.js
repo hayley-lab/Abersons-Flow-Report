@@ -35,6 +35,16 @@ export default async function handler(req, res) {
     probe("2.0/consignments?type=SUPPLIER&page_size=1"),
   ]);
 
+  // Inspect structure of first sale to check if line_items are embedded
+  const firstSale = salesResult.body?.data?.[0];
+  const saleStructure = firstSale ? {
+    top_level_keys: Object.keys(firstSale),
+    has_line_items: Array.isArray(firstSale.line_items),
+    line_items_count: firstSale.line_items?.length ?? "field missing",
+    sample_line_item: firstSale.line_items?.[0] ?? null,
+    sample_line_item_keys: firstSale.line_items?.[0] ? Object.keys(firstSale.line_items[0]) : null,
+  } : null;
+
   res.status(200).json({
     session: {
       domainPrefix,
@@ -43,10 +53,11 @@ export default async function handler(req, res) {
       expired: expiresAt ? Date.now() > expiresAt : null,
     },
     endpoints: {
-      "2.0/tags":         tagsResult,
-      "2.0/products":     productsResult,
-      "2.0/sales":        salesResult,
-      "2.0/consignments": consignResult,
+      "2.0/tags":         { status: tagsResult.status, ok: tagsResult.ok },
+      "2.0/products":     { status: productsResult.status, ok: productsResult.ok },
+      "2.0/sales":        { status: salesResult.status, ok: salesResult.ok },
+      "2.0/consignments": { status: consignResult.status, ok: consignResult.ok },
     },
+    sale_structure: saleStructure,
   });
 }
