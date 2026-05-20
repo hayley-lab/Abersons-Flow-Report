@@ -35,15 +35,9 @@ export default async function handler(req, res) {
     probe("2.0/consignments?type=SUPPLIER&page_size=1"),
   ]);
 
-  // Inspect structure of first sale to check if line_items are embedded
-  const firstSale = salesResult.body?.data?.[0];
-  const saleStructure = firstSale ? {
-    top_level_keys: Object.keys(firstSale),
-    has_line_items: Array.isArray(firstSale.line_items),
-    line_items_count: firstSale.line_items?.length ?? "field missing",
-    sample_line_item: firstSale.line_items?.[0] ?? null,
-    sample_line_item_keys: firstSale.line_items?.[0] ? Object.keys(firstSale.line_items[0]) : null,
-  } : null;
+  // Inspect sales pagination and structure
+  const salesBody = salesResult.body;
+  const firstSale = salesBody?.data?.[0];
 
   res.status(200).json({
     session: {
@@ -58,6 +52,15 @@ export default async function handler(req, res) {
       "2.0/sales":        { status: salesResult.status, ok: salesResult.ok },
       "2.0/consignments": { status: consignResult.status, ok: consignResult.ok },
     },
-    sale_structure: saleStructure,
+    sales_pagination: {
+      top_level_keys: salesBody ? Object.keys(salesBody) : null,
+      pagination_field: salesBody?.pagination ?? null,
+      meta_field: salesBody?.meta ?? null,
+      version_field: salesBody?.version ?? null,
+      sales_count_in_page: salesBody?.data?.length ?? 0,
+      first_sale_date: firstSale?.sale_date ?? firstSale?.created_at ?? null,
+      first_sale_status: firstSale?.status ?? null,
+      first_sale_line_items_count: firstSale?.line_items?.length ?? "missing",
+    },
   });
 }
