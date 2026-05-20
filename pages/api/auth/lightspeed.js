@@ -15,9 +15,9 @@ export default async function handler(req, res) {
   await session.save();
 
   const scope = [
-    "product:all",
-    "sale:all",
-    "consignment:all",
+    "products:read",
+    "sales:read",
+    "consignments:read",
   ].join(" ");
 
   const url =
