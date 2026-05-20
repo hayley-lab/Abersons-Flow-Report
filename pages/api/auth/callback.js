@@ -3,19 +3,29 @@ import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 
 export default async function handler(req, res) {
-  const { code, error } = req.query;
+  const { code, error, domain_prefix, state } = req.query;
 
   if (error || !code) {
     return res.redirect(`/?error=${encodeURIComponent(error || "no_code")}`);
   }
 
+  if (!domain_prefix) {
+    return res.redirect(`/?error=missing_domain_prefix`);
+  }
+
   try {
+    const session = await getIronSession(req, res, sessionOptions);
+
+    if (state !== session.oauthState) {
+      return res.redirect(`/?error=invalid_state`);
+    }
+
     const proto = req.headers["x-forwarded-proto"] || "https";
     const host = req.headers["x-forwarded-host"] || req.headers.host;
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
     const redirectUri = `${baseUrl}/api/auth/callback`;
 
-    const tokenRes = await fetch("https://id.lightspeed.app/oauth/token", {
+    const tokenRes = await fetch(`https://${domain_prefix}.retail.lightspeed.app/api/1.0/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -34,13 +44,12 @@ export default async function handler(req, res) {
     }
 
     const tokenData = await tokenRes.json();
-    // tokenData: { access_token, refresh_token, token_type, expires_in, scope, domainPrefix }
 
-    const session = await getIronSession(req, res, sessionOptions);
     session.accessToken = tokenData.access_token;
     session.refreshToken = tokenData.refresh_token;
     session.expiresAt = Date.now() + tokenData.expires_in * 1000;
-    session.domainPrefix = tokenData.domainPrefix || tokenData.domain || "";
+    session.domainPrefix = domain_prefix;
+    session.oauthState = undefined;
     await session.save();
 
     res.redirect("/");

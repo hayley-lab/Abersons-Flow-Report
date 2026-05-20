@@ -12,7 +12,7 @@ export default async function handler(req, res) {
   // Refresh token if within 5 minutes of expiry
   if (expiresAt && Date.now() > expiresAt - 5 * 60 * 1000) {
     try {
-      const r = await fetch("https://id.lightspeed.app/oauth/token", {
+      const r = await fetch(`https://${domainPrefix}.retail.lightspeed.app/api/1.0/token`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
