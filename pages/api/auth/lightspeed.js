@@ -4,8 +4,6 @@ export default function handler(req, res) {
   const redirectUri = `${process.env.NEXT_PUBLIC_BASE_URL}/api/auth/callback`;
 
   const scope = [
-    "employee:all",
-    "inventory:all",
     "product:all",
     "sale:all",
     "purchase_order:all",
