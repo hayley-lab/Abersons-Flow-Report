@@ -202,6 +202,7 @@ export default function FlowReport() {
   // Cached data built during loadSummary and reused by drilldowns (no re-fetching)
   const [seasonTagId, setSeasonTagId] = useState(null);
   const [seasonPids, setSeasonPids] = useState(new Set()); // product IDs in this season
+  const [missingPids, setMissingPids] = useState([]);      // product IDs that returned 404
   const [pidToType, setPidToType] = useState({});    // product_id → product_type_id
   const [pidToBrand, setPidToBrand] = useState({});  // product_id → { id, name }
   const [allConsigItems, setAllConsigItems] = useState([]);     // flat consignment line items
@@ -228,6 +229,7 @@ export default function FlowReport() {
     setAllConsigItems([]);
     setAllSaleLineItems([]);
     setSeasonPids(new Set());
+    setMissingPids([]);
 
     if (demo) {
       setSummaryRows(DEMO_SUMMARY);
@@ -266,16 +268,19 @@ export default function FlowReport() {
       const newPidToType = {};
       const newPidToBrand = {};
       const seasonPidSet = new Set();
+      const newMissingPids = [];
       const BATCH = 100;
       for (let i = 0; i < uniquePids.length; i += BATCH) {
+        const batch = uniquePids.slice(i, i + BATCH);
         const results = await Promise.all(
-          uniquePids.slice(i, i + BATCH).map((id) =>
-            apiFetch(`2.0/products/${id}`).catch(() => null)
-          )
+          batch.map((id) => apiFetch(`2.0/products/${id}`).catch(() => null))
         );
-        results.forEach((resp) => {
+        results.forEach((resp, idx) => {
           const p = resp?.data || resp;
-          if (!p?.id) return;
+          if (!p?.id) {
+            newMissingPids.push(batch[idx]);
+            return;
+          }
           newPidToType[p.id] = p.product_type_id || "__none__";
           newPidToBrand[p.id] = { id: p.brand_id || "__none__", name: p.brand?.name || "Unknown" };
           if (p.tag_ids?.includes(seasonTag.id)) seasonPidSet.add(p.id);
@@ -284,6 +289,10 @@ export default function FlowReport() {
       setPidToType(newPidToType);
       setPidToBrand(newPidToBrand);
       setSeasonPids(new Set(seasonPidSet));
+      setMissingPids(newMissingPids);
+      if (newMissingPids.length > 0) {
+        console.warn(`[FlowReport] ${newMissingPids.length} product IDs from consignments not found in Lightspeed:`, newMissingPids);
+      }
 
       // 5. Tally ordered / received for season products only
       const map = {};
@@ -549,6 +558,12 @@ export default function FlowReport() {
                     </tbody>
                   </table>
                 </TableWrap>
+                {missingPids.length > 0 && (
+                  <div style={{ marginTop: 10, padding: "8px 12px", background: "#fef3e2", border: "1px solid #f5d9a0", borderRadius: 8, fontSize: 12, color: "#92600a" }}>
+                    <strong>{missingPids.length} product{missingPids.length !== 1 ? "s" : ""} in purchase orders could not be found in Lightspeed</strong> — their ordered/received amounts are excluded from totals.
+                    Check the browser console (F12 → Console) for the full list of IDs.
+                  </div>
+                )}
               </>
             )}
           </>
