@@ -189,6 +189,7 @@ async function apiFetchAll(path, key) {
 
 // ── main component ────────────────────────────────────────────────────────────
 export default function FlowReport() {
+  const [authed, setAuthed] = useState(null); // null=checking, true=ok, false=needs login
   const [demo, setDemo] = useState(false);
   const [screen, setScreen] = useState("summary");
   const [season, setSeason] = useState("fall26");
@@ -329,12 +330,27 @@ export default function FlowReport() {
 
       setSummaryRows(Object.values(map).sort((a, b) => b.ordered - a.ordered));
     } catch (e) {
-      setError(e.message);
+      if (e.message.includes("401") || e.message.toLowerCase().includes("not authenticated")) {
+        setAuthed(false);
+      } else {
+        setError(e.message);
+      }
     }
     setLoading(false);
   }, [demo, season]);
 
-  useEffect(() => { loadSummary(); }, [loadSummary]);
+  // Check auth on mount
+  useEffect(() => {
+    fetch("/api/auth/session")
+      .then((r) => r.json())
+      .then((d) => setAuthed(d.authenticated === true))
+      .catch(() => setAuthed(false));
+  }, []);
+
+  // Load report once authenticated
+  useEffect(() => {
+    if (authed === true) loadSummary();
+  }, [authed, loadSummary]);
 
   // ── open department → vendor view (uses cached data, no extra API calls) ──────
   const openDept = useCallback(
@@ -464,10 +480,44 @@ export default function FlowReport() {
     },
   };
 
+  // ── login / loading screens ───────────────────────────────────────────────────
+  const fontLink = `@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap'); @keyframes spin{to{transform:rotate(360deg)}} tbody tr:hover{background:#f0f5fb!important}`;
+
+  if (authed === null) {
+    return (
+      <div style={s.app}>
+        <style>{fontLink}</style>
+        <header style={s.header}><div style={s.logo}>abersons</div></header>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)" }}>
+          <Spinner label="Checking login…" />
+        </div>
+      </div>
+    );
+  }
+
+  if (authed === false) {
+    return (
+      <div style={s.app}>
+        <style>{fontLink}</style>
+        <header style={s.header}><div style={s.logo}>abersons</div></header>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)", gap: 16 }}>
+          <div style={{ fontFamily: "'DM Serif Display',serif", fontSize: 26, color: "#1a1816" }}>Flow Report</div>
+          <div style={{ fontSize: 13, color: "#6b6560", marginBottom: 8 }}>Connect your Lightspeed account to continue.</div>
+          <a
+            href="/api/auth/lightspeed"
+            style={{ background: "#3a5a8c", color: "#fff", padding: "10px 24px", borderRadius: 8, textDecoration: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 14, fontWeight: 500, letterSpacing: 0.2 }}
+          >
+            Connect to Lightspeed
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   // ── render ────────────────────────────────────────────────────────────────────
   return (
     <div style={s.app}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap'); @keyframes spin{to{transform:rotate(360deg)}} tbody tr:hover{background:#f0f5fb!important}`}</style>
+      <style>{fontLink}</style>
 
       <header style={s.header}>
         <div style={s.logo}>abersons</div>
@@ -499,6 +549,12 @@ export default function FlowReport() {
             style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}
           >
             {demo ? "Live data" : "Demo mode"}
+          </button>
+          <button
+            onClick={() => fetch("/api/auth/logout").then(() => setAuthed(false))}
+            style={{ background: "none", border: "none", padding: "5px 8px", fontSize: 12, color: "#9e9892", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}
+          >
+            logout
           </button>
         </div>
       </header>
