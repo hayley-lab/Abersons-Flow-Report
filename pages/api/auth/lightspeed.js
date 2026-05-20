@@ -17,7 +17,7 @@ export default async function handler(req, res) {
   const scope = [
     "product:all",
     "sale:all",
-    "purchase_order:all",
+    "consignment:all",
   ].join(" ");
 
   const url =
