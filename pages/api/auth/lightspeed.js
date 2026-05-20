@@ -21,5 +21,6 @@ export default function handler(req, res) {
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
     `&scope=${scope.replace(/ /g, "+")}`;
 
+  console.log("[auth/lightspeed] redirecting to:", url);
   res.redirect(url);
 }
