@@ -25,7 +25,7 @@ export default async function handler(req, res) {
     `?response_type=code` +
     `&client_id=${encodeURIComponent(clientId)}` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    `&scope=${encodeURIComponent(scope)}` +
+    `&scope=${scope.replace(/ /g, "+")}` +
     `&state=${encodeURIComponent(state)}`;
 
   if (req.query.debug === "1") {
