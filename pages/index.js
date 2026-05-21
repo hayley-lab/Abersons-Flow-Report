@@ -311,15 +311,30 @@ export default function FlowReport() {
       // 6. Fetch sales and tally sold for season products only.
       //    Line items are always included in the sale response — no extra param needed.
       //    Line items have no "type" field; skip voided sales and voided line items.
-      setLoadingStep("Loading sales…");
       let newSaleLineItems = [];
+      let salesError = null;
       try {
-        const sales = await apiFetchAll("2.0/sales", "data");
-        newSaleLineItems = sales
+        let salesResults = [];
+        let after = null;
+        let pages = 0;
+        while (pages < 100) {
+          pages++;
+          const fullPath = "2.0/sales?page_size=200" + (after ? "&after=" + after : "");
+          setLoadingStep(`Loading sales… (page ${pages}, ${salesResults.length} loaded)`);
+          const data = await apiFetch(fullPath);
+          const items = data.data || [];
+          salesResults = salesResults.concat(items);
+          if (items.length === 0) break;
+          if (items.length === 200 && data.version?.max) { after = data.version.max; continue; }
+          break;
+        }
+        newSaleLineItems = salesResults
           .filter((s) => s.status !== "VOIDED")
           .flatMap((s) => (s.line_items || []).filter((li) => li.product_id && li.status !== "VOIDED"));
         setAllSaleLineItems(newSaleLineItems);
-      } catch (_) {}
+      } catch (e) {
+        salesError = e.message;
+      }
 
       newSaleLineItems.forEach((li) => {
         if (!seasonPidSet.has(li.product_id)) return;
@@ -329,6 +344,7 @@ export default function FlowReport() {
       });
 
       setSummaryRows(Object.values(map).sort((a, b) => b.ordered - a.ordered));
+      if (salesError) setError(`Sales fetch failed (sold totals may be incomplete): ${salesError}`);
     } catch (e) {
       if (e.message.includes("401") || e.message.toLowerCase().includes("not authenticated")) {
         setAuthed(false);
