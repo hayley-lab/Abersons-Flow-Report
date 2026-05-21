@@ -1,87 +1,85 @@
-// pages/api/auth/debug-token.js — cross-references season products against sales
+// pages/api/auth/debug-token.js — find a confirmed prefall26 product and look for its sales
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 
 export default async function handler(req, res) {
   const session = await getIronSession(req, res, sessionOptions);
   const { accessToken, domainPrefix } = session;
-
-  if (!accessToken || !domainPrefix) {
-    return res.status(401).json({ error: "Not authenticated" });
-  }
+  if (!accessToken || !domainPrefix) return res.status(401).json({ error: "Not authenticated" });
 
   const base = `https://${domainPrefix}.retail.lightspeed.app/api`;
-  const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
+  const hdrs = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
 
   async function ls(path) {
-    const r = await fetch(`${base}/${path}`, { headers });
+    const r = await fetch(`${base}/${path}`, { headers: hdrs });
+    if (!r.ok) return { error: r.status, body: await r.text().then(t => t.slice(0, 200)) };
     return r.json();
   }
 
-  // 1. Find the prefall26 tag
+  // 1. Find prefall26 tag
   const tagsData = await ls("2.0/tags?page_size=200");
   const seasonTag = tagsData.data?.find((t) => t.name === "prefall26");
+  if (!seasonTag) return res.status(200).json({ error: "prefall26 tag not found" });
 
-  // 2. Get a sample consignment and its first product
-  const consignData = await ls("2.0/consignments?type=SUPPLIER&page_size=1");
-  const firstConsign = consignData.data?.[0];
-  let sampleProductId = null;
-  let sampleProduct = null;
-
-  if (firstConsign?.id) {
-    const liData = await ls(`2.0/consignments/${firstConsign.id}/products?page_size=5`);
-    const firstLi = liData.data?.[0];
-    if (firstLi?.product_id) {
-      sampleProductId = firstLi.product_id;
-      const prodData = await ls(`2.0/products/${sampleProductId}`);
-      sampleProduct = prodData.data || prodData;
+  // 2. Scan consignments until we find a product that HAS the prefall26 tag
+  let taggedProduct = null;
+  const consigns = await ls("2.0/consignments?type=SUPPLIER&page_size=50");
+  for (const c of consigns.data || []) {
+    const liData = await ls(`2.0/consignments/${c.id}/products?page_size=20`);
+    for (const li of liData.data || []) {
+      const prod = await ls(`2.0/products/${li.product_id}`);
+      const p = prod.data || prod;
+      if (p?.tag_ids?.includes(seasonTag.id)) {
+        taggedProduct = { id: p.id, name: p.name, tag_ids: p.tag_ids };
+        break;
+      }
     }
+    if (taggedProduct) break;
   }
 
-  // 3. Fetch 200 sales and check how many line items have product_ids tagged with prefall26
-  // Also check pagination structure with page_size=200
-  const salesPage1 = await ls("2.0/sales?page_size=200");
-  const sales200 = salesPage1.data || [];
-  const allLineItems = sales200
-    .filter((s) => s.status !== "VOIDED")
-    .flatMap((s) => s.line_items || [])
-    .filter((li) => li.product_id && li.status !== "VOIDED");
-
-  // Unique product IDs appearing in those sales
-  const saleProductIds = [...new Set(allLineItems.map((li) => li.product_id))];
-
-  // 4. Check pagination: what happens with after=version.max?
-  const v1Max = salesPage1.version?.max;
-  let page2Count = 0;
-  let page2Version = null;
-  if (v1Max) {
-    const salesPage2 = await ls(`2.0/sales?page_size=200&after=${v1Max}`);
-    page2Count = salesPage2.data?.length ?? 0;
-    page2Version = salesPage2.version ?? null;
+  if (!taggedProduct) {
+    return res.status(200).json({
+      season_tag: seasonTag,
+      result: "No products with prefall26 tag found in first 50 consignments",
+    });
   }
+
+  // 3. Fetch 4 pages of sales (800 sales) and look for this product
+  let foundInSale = null;
+  let totalSalesChecked = 0;
+  let after = null;
+  for (let page = 0; page < 4; page++) {
+    const url = "2.0/sales?page_size=200" + (after ? `&after=${after}` : "");
+    const salesData = await ls(url);
+    const sales = salesData.data || [];
+    totalSalesChecked += sales.length;
+    for (const sale of sales) {
+      const match = (sale.line_items || []).find((li) => li.product_id === taggedProduct.id);
+      if (match) {
+        foundInSale = { sale_id: sale.id, sale_date: sale.sale_date, line_item: match };
+        break;
+      }
+    }
+    if (foundInSale || sales.length < 200) break;
+    after = salesData.version?.max;
+    if (!after) break;
+  }
+
+  // 4. Also report the date range of each page
+  const page1 = await ls("2.0/sales?page_size=200");
+  const p1Sales = page1.data || [];
 
   res.status(200).json({
-    season_tag: seasonTag ? { id: seasonTag.id, name: seasonTag.name } : "NOT FOUND",
-    sample_consignment: firstConsign ? { id: firstConsign.id, status: firstConsign.status } : null,
-    sample_product: sampleProduct ? {
-      id: sampleProduct.id,
-      name: sampleProduct.name,
-      tag_ids: sampleProduct.tag_ids,
-      has_prefall26_tag: seasonTag ? sampleProduct.tag_ids?.includes(seasonTag.id) : "unknown",
-    } : null,
-    sales_page1: {
-      count: sales200.length,
-      non_voided_line_items: allLineItems.length,
-      unique_sale_product_ids: saleProductIds.length,
-      version: salesPage1.version,
-      date_range: {
-        first: sales200[0]?.sale_date,
-        last: sales200[sales200.length - 1]?.sale_date,
-      },
+    season_tag: { id: seasonTag.id, name: seasonTag.name },
+    tagged_product_found: taggedProduct,
+    sales_search: {
+      total_sales_checked: totalSalesChecked,
+      found_in_sale: foundInSale,
     },
-    sales_page2_after_max: {
-      count: page2Count,
-      version: page2Version,
+    sales_page1_date_range: {
+      first: p1Sales[0]?.sale_date,
+      last: p1Sales[p1Sales.length - 1]?.sale_date,
+      count: p1Sales.length,
     },
   });
 }
