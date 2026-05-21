@@ -1,4 +1,4 @@
-// pages/api/auth/debug-token.js — find a confirmed prefall26 product and look for its sales
+// pages/api/auth/debug-token.js — test tag-based product filtering
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 
@@ -12,74 +12,48 @@ export default async function handler(req, res) {
 
   async function ls(path) {
     const r = await fetch(`${base}/${path}`, { headers: hdrs });
-    if (!r.ok) return { error: r.status, body: await r.text().then(t => t.slice(0, 200)) };
-    return r.json();
+    const text = await r.text();
+    let body;
+    try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 300) }; }
+    return { status: r.status, ok: r.ok, body };
   }
 
-  // 1. Find prefall26 tag
-  const tagsData = await ls("2.0/tags?page_size=200");
-  const seasonTag = tagsData.data?.find((t) => t.name === "prefall26");
+  // Find prefall26 tag
+  const tagsRes = await ls("2.0/tags?page_size=200");
+  const seasonTag = tagsRes.body?.data?.find((t) => t.name === "prefall26");
   if (!seasonTag) return res.status(200).json({ error: "prefall26 tag not found" });
 
-  // 2. Scan consignments until we find a product that HAS the prefall26 tag
-  let taggedProduct = null;
-  const consigns = await ls("2.0/consignments?type=SUPPLIER&page_size=50");
-  for (const c of consigns.data || []) {
-    const liData = await ls(`2.0/consignments/${c.id}/products?page_size=20`);
-    for (const li of liData.data || []) {
-      const prod = await ls(`2.0/products/${li.product_id}`);
-      const p = prod.data || prod;
-      if (p?.tag_ids?.includes(seasonTag.id)) {
-        taggedProduct = { id: p.id, name: p.name, tag_ids: p.tag_ids };
-        break;
-      }
-    }
-    if (taggedProduct) break;
-  }
+  // Test 1: products filtered by tag_id query param
+  const test1 = await ls(`2.0/products?tag_id=${seasonTag.id}&page_size=5`);
 
-  if (!taggedProduct) {
-    return res.status(200).json({
-      season_tag: seasonTag,
-      result: "No products with prefall26 tag found in first 50 consignments",
-    });
-  }
+  // Test 2: products filtered by tag_ids[] array param
+  const test2 = await ls(`2.0/products?tag_ids[]=${seasonTag.id}&page_size=5`);
 
-  // 3. Fetch 4 pages of sales (800 sales) and look for this product
-  let foundInSale = null;
-  let totalSalesChecked = 0;
-  let after = null;
-  for (let page = 0; page < 4; page++) {
-    const url = "2.0/sales?page_size=200" + (after ? `&after=${after}` : "");
-    const salesData = await ls(url);
-    const sales = salesData.data || [];
-    totalSalesChecked += sales.length;
-    for (const sale of sales) {
-      const match = (sale.line_items || []).find((li) => li.product_id === taggedProduct.id);
-      if (match) {
-        foundInSale = { sale_id: sale.id, sale_date: sale.sale_date, line_item: match };
-        break;
-      }
-    }
-    if (foundInSale || sales.length < 200) break;
-    after = salesData.version?.max;
-    if (!after) break;
-  }
+  // Test 3: tags/{id}/products sub-resource
+  const test3 = await ls(`2.0/tags/${seasonTag.id}/products?page_size=5`);
 
-  // 4. Also report the date range of each page
-  const page1 = await ls("2.0/sales?page_size=200");
-  const p1Sales = page1.data || [];
+  // Test 4: fetch one known 404 product to see the error body
+  const consignRes = await ls("2.0/consignments?type=SUPPLIER&page_size=1");
+  const firstConsign = consignRes.body?.data?.[0];
+  let productFetchTest = null;
+  if (firstConsign?.id) {
+    const liRes = await ls(`2.0/consignments/${firstConsign.id}/products?page_size=3`);
+    const pids = liRes.body?.data?.map((li) => li.product_id) ?? [];
+    productFetchTest = await Promise.all(
+      pids.map(async (pid) => {
+        const r = await ls(`2.0/products/${pid}`);
+        return { pid, status: r.status, has_data: !!r.body?.data?.id, keys: r.body?.data ? Object.keys(r.body.data).slice(0, 5) : null, error: r.body?.errors };
+      })
+    );
+  }
 
   res.status(200).json({
     season_tag: { id: seasonTag.id, name: seasonTag.name },
-    tagged_product_found: taggedProduct,
-    sales_search: {
-      total_sales_checked: totalSalesChecked,
-      found_in_sale: foundInSale,
+    tag_filter_tests: {
+      "products?tag_id=X":     { status: test1.status, count: test1.body?.data?.length, sample_name: test1.body?.data?.[0]?.name },
+      "products?tag_ids[]=X":  { status: test2.status, count: test2.body?.data?.length, sample_name: test2.body?.data?.[0]?.name },
+      "tags/{id}/products":    { status: test3.status, count: test3.body?.data?.length, sample_name: test3.body?.data?.[0]?.name, error: test3.body?.errors },
     },
-    sales_page1_date_range: {
-      first: p1Sales[0]?.sale_date,
-      last: p1Sales[p1Sales.length - 1]?.sale_date,
-      count: p1Sales.length,
-    },
+    product_fetch_test: productFetchTest,
   });
 }
