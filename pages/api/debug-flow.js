@@ -17,61 +17,63 @@ export default async function handler(req, res) {
     catch { return { status: r.status, body: { raw: text.slice(0, 500) } }; }
   }
 
-  const FALL26_ID = "d58d14aa-939e-4a16-a8cf-ce36e5aeb1c3";
+  const TARGET_SKU = "nx5ctp063/pf26";
+  const PREFALL26_TAG = "prefall26";
 
   try {
-    // 1. Get a real consignment line item → look up that product directly
-    const consigRes = await lsFetch("2.0/consignments?type=SUPPLIER&page_size=1");
-    const firstConsig = consigRes.body?.data?.[0];
-    let consigProduct = null;
-    let parentProduct = null;
+    // 1. Find the prefall26 tag ID
+    const tagsRes = await lsFetch("2.0/tags?page_size=200");
+    const allTags = tagsRes.body?.data ?? [];
+    const prefall26Tag = allTags.find(t => t.name === PREFALL26_TAG);
+    const fall26Tag    = allTags.find(t => t.name === "fall26");
 
-    if (firstConsig?.id) {
-      const liRes = await lsFetch(`2.0/consignments/${firstConsig.id}/products?page_size=1`);
-      const firstLI = liRes.body?.data?.[0];
+    // 2. Search for the product by SKU
+    const skuEncoded = encodeURIComponent(TARGET_SKU);
+    const skuRes  = await lsFetch(`2.0/products?sku=${skuEncoded}`);
+    const skuRes2 = await lsFetch(`2.0/products?filter[sku]=${skuEncoded}`);
 
-      if (firstLI?.product_id) {
-        const pRes = await lsFetch(`2.0/products/${firstLI.product_id}`);
-        const p = pRes.body?.data || pRes.body;
-        consigProduct = {
-          id: p?.id, name: p?.name,
-          tag_ids: p?.tag_ids,
-          has_fall26_tag: p?.tag_ids?.includes(FALL26_ID),
-          variant_parent_id: p?.variant_parent_id,
-          source: p?.source,
-        };
-        // If variant, check parent
-        if (p?.variant_parent_id) {
-          const parentRes = await lsFetch(`2.0/products/${p.variant_parent_id}`);
-          const parent = parentRes.body?.data || parentRes.body;
-          parentProduct = {
-            id: parent?.id, name: parent?.name,
-            tag_ids: parent?.tag_ids,
-            has_fall26_tag: parent?.tag_ids?.includes(FALL26_ID),
-          };
-        }
-      }
+    const skuProds  = skuRes.body?.data  ?? [];
+    const skuProds2 = skuRes2.body?.data ?? [];
+    const found = skuProds.length > 0 ? skuProds : skuProds2;
+
+    // 3. If found, fetch full detail and its variants
+    let productDetail = null;
+    let variants = [];
+    if (found.length > 0) {
+      const p = found[0];
+      // Fetch directly by ID for full detail
+      const detailRes = await lsFetch(`2.0/products/${p.id}`);
+      const detail = detailRes.body?.data ?? detailRes.body;
+      productDetail = {
+        id:               detail?.id,
+        name:             detail?.name,
+        sku:              detail?.sku,
+        tag_ids:          detail?.tag_ids,
+        has_variants:     detail?.has_variants,
+        variant_parent_id: detail?.variant_parent_id,
+        source:           detail?.source,
+        supplier_id:      detail?.supplier_id,
+        product_type_id:  detail?.product_type_id,
+        has_prefall26_tag: prefall26Tag ? detail?.tag_ids?.includes(prefall26Tag.id) : "tag not found",
+      };
+
+      // Fetch variants of this product
+      const varRes = await lsFetch(`2.0/products?variant_parent_id=${p.id}&page_size=10`);
+      variants = (varRes.body?.data ?? []).map(v => ({
+        id: v.id, name: v.name, sku: v.sku,
+        tag_ids: v.tag_ids,
+        variant_parent_id: v.variant_parent_id,
+      }));
     }
 
-    // 2. Scan first 200 products — count tagged ones
-    const scanRes = await lsFetch("2.0/products?page_size=200");
-    const scanProds = scanRes.body?.data || [];
-    const withAnyTag   = scanProds.filter(p => p.tag_ids && p.tag_ids.length > 0);
-    const withFall26   = scanProds.filter(p => p.tag_ids && p.tag_ids.includes(FALL26_ID));
-    const nonSystem    = scanProds.filter(p => p.source !== "SYSTEM" && p.source !== "SAMPLE");
-
     res.status(200).json({
-      fall26_tag_id:          FALL26_ID,
-      consignment_line_item_product: consigProduct,
-      parent_product_if_variant:     parentProduct,
-      first_200_products: {
-        total_returned:     scanProds.length,
-        non_system_sample:  nonSystem.length,
-        with_any_tag:       withAnyTag.length,
-        with_fall26_tag:    withFall26.length,
-        sample_with_tags:   withAnyTag.slice(0, 3).map(p => ({ id: p.id, name: p.name, tag_ids: p.tag_ids, source: p.source })),
-        sample_non_system:  nonSystem.slice(0, 3).map(p => ({ id: p.id, name: p.name, tag_ids: p.tag_ids, source: p.source })),
-      },
+      prefall26_tag:  prefall26Tag  ? { id: prefall26Tag.id,  name: prefall26Tag.name  } : "NOT FOUND",
+      fall26_tag:     fall26Tag     ? { id: fall26Tag.id,     name: fall26Tag.name     } : "NOT FOUND",
+      sku_search_v1:  { status: skuRes.status,  count: skuProds.length  },
+      sku_search_v2:  { status: skuRes2.status, count: skuProds2.length },
+      product_found:  found.length > 0,
+      product_detail: productDetail,
+      variants:       variants,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
