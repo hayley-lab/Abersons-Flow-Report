@@ -78,7 +78,7 @@ const TD = ({ children, right, mono }) => (
   </td>
 );
 
-// ── seasons (only those with POs in Lightspeed) ───────────────────────────────
+// ── seasons ───────────────────────────────────────────────────────────────────
 const SEASONS = [
   { id: "prespring27", name: "Pre-Spring 2027" },
   { id: "fall26",      name: "Fall 2026" },
@@ -88,61 +88,68 @@ const SEASONS = [
   { id: "fall25",      name: "Fall 2025" },
   { id: "prefall25",   name: "Pre-Fall 2025" },
   { id: "spring25",    name: "Spring 2025" },
+  { id: "prespring25", name: "Pre-Spring 2025" },
+  { id: "fall24",      name: "Fall 2024" },
+  { id: "prefall24",   name: "Pre-Fall 2024" },
+  { id: "spring24",    name: "Spring 2024" },
+  { id: "prespring24", name: "Pre-Spring 2024" },
+  { id: "fall23",      name: "Fall 2023" },
+  { id: "spring23",    name: "Spring 2023" },
 ];
 
 // ── demo data ─────────────────────────────────────────────────────────────────
 const DEMO_SUMMARY = [
-  { id: "acc",   name: "Accessories",       ordered: 101823,  received: 98413,  sold: 55410  },
-  { id: "alley", name: "Alley",             ordered: 922276,  received: 904549, sold: 604999 },
-  { id: "alt",   name: "Alterations",       ordered: 0,       received: 0,      sold: 0      },
-  { id: "denim", name: "Denim",             ordered: 69531,   received: 68231,  sold: 45600  },
-  { id: "des",   name: "Designer",          ordered: 306105,  received: 282960, sold: 149860 },
-  { id: "gc",    name: "Gift Certificates", ordered: 0,       received: 0,      sold: 0      },
-  { id: "hg",    name: "Home Gifts",        ordered: 0,       received: 0,      sold: 0      },
-  { id: "mens",  name: "Mens",              ordered: 472591,  received: 428733, sold: 240091 },
-  { id: "next",  name: "Next",              ordered: 617680,  received: 588475, sold: 452816 },
-  { id: "shoes", name: "Shoes",             ordered: 329474,  received: 293793, sold: 164143 },
+  { id: "acc",   name: "Accessories",       ordered: 101823,  received: 98413,  sold: 55410,  cost: 40610  },
+  { id: "alley", name: "Alley",             ordered: 922276,  received: 904549, sold: 604999, cost: 361475 },
+  { id: "alt",   name: "Alterations",       ordered: 0,       received: 0,      sold: 0,      cost: 0      },
+  { id: "denim", name: "Denim",             ordered: 69531,   received: 68231,  sold: 45600,  cost: 27290  },
+  { id: "des",   name: "Designer",          ordered: 306105,  received: 282960, sold: 149860, cost: 113184 },
+  { id: "gc",    name: "Gift Certificates", ordered: 0,       received: 0,      sold: 0,      cost: 0      },
+  { id: "hg",    name: "Home Gifts",        ordered: 0,       received: 0,      sold: 0,      cost: 0      },
+  { id: "mens",  name: "Mens",              ordered: 472591,  received: 428733, sold: 240091, cost: 171493 },
+  { id: "next",  name: "Next",              ordered: 617680,  received: 588475, sold: 452816, cost: 235390 },
+  { id: "shoes", name: "Shoes",             ordered: 329474,  received: 293793, sold: 164143, cost: 117517 },
 ];
 
 const DEMO_VENDORS = {
   acc: [
-    { id: "dk",   name: "Dana Kellin",  ordered: 31048, received: 31048, sold: 17854 },
-    { id: "jp",   name: "Judi Powers",  ordered: 30280, received: 30280, sold: 15100 },
-    { id: "re",   name: "Rene Escobar", ordered: 40305, received: 36895, sold: 19866 },
-    { id: "vale", name: "Vale",         ordered: 1830,  received: 1830,  sold: 1830  },
+    { id: "dk",   name: "Dana Kellin",  ordered: 31048, received: 31048, sold: 17854, cost: 12419 },
+    { id: "jp",   name: "Judi Powers",  ordered: 30280, received: 30280, sold: 15100, cost: 12112 },
+    { id: "re",   name: "Rene Escobar", ordered: 40305, received: 36895, sold: 19866, cost: 14758 },
+    { id: "vale", name: "Vale",         ordered: 1830,  received: 1830,  sold: 1830,  cost: 732   },
   ],
   alley: [
-    { id: "rag",   name: "Rag & Bone",    ordered: 210500, received: 207800, sold: 145000 },
-    { id: "vince", name: "Vince",         ordered: 189600, received: 185000, sold: 122300 },
-    { id: "tb",    name: "Theory",        ordered: 145000, received: 142000, sold: 99800  },
-    { id: "eis",   name: "Eileen Fisher", ordered: 377176, received: 369749, sold: 237899 },
+    { id: "rag",   name: "Rag & Bone",    ordered: 210500, received: 207800, sold: 145000, cost: 83200  },
+    { id: "vince", name: "Vince",         ordered: 189600, received: 185000, sold: 122300, cost: 74000  },
+    { id: "tb",    name: "Theory",        ordered: 145000, received: 142000, sold: 99800,  cost: 56800  },
+    { id: "eis",   name: "Eileen Fisher", ordered: 377176, received: 369749, sold: 237899, cost: 147900 },
   ],
   denim: [
-    { id: "ag",  name: "AG Jeans",   ordered: 35000, received: 34500, sold: 23400 },
-    { id: "dl",  name: "DL1961",     ordered: 20531, received: 20231, sold: 14200 },
-    { id: "mih", name: "MiH Jeans",  ordered: 14000, received: 13500, sold: 8000  },
+    { id: "ag",  name: "AG Jeans",  ordered: 35000, received: 34500, sold: 23400, cost: 13800 },
+    { id: "dl",  name: "DL1961",    ordered: 20531, received: 20231, sold: 14200, cost: 8090  },
+    { id: "mih", name: "MiH Jeans", ordered: 14000, received: 13500, sold: 8000,  cost: 5400  },
   ],
   des: [
-    { id: "akris", name: "Akris",      ordered: 89000,  received: 82000,  sold: 41000 },
-    { id: "staud", name: "Staud",      ordered: 72105,  received: 67960,  sold: 38860 },
-    { id: "nili",  name: "Nili Lotan", ordered: 145000, received: 133000, sold: 70000 },
+    { id: "akris", name: "Akris",      ordered: 89000,  received: 82000,  sold: 41000, cost: 32800 },
+    { id: "staud", name: "Staud",      ordered: 72105,  received: 67960,  sold: 38860, cost: 27184 },
+    { id: "nili",  name: "Nili Lotan", ordered: 145000, received: 133000, sold: 70000, cost: 53200 },
   ],
   mens: [
-    { id: "polo", name: "Ralph Lauren",  ordered: 155000, received: 140000, sold: 78000 },
-    { id: "boss", name: "Hugo Boss",     ordered: 120000, received: 110000, sold: 62000 },
-    { id: "pt01", name: "PT01 Trousers", ordered: 95000,  received: 86000,  sold: 48000 },
-    { id: "sco",  name: "Scott Barber",  ordered: 102591, received: 92733,  sold: 52091 },
+    { id: "polo", name: "Ralph Lauren",  ordered: 155000, received: 140000, sold: 78000, cost: 56000 },
+    { id: "boss", name: "Hugo Boss",     ordered: 120000, received: 110000, sold: 62000, cost: 44000 },
+    { id: "pt01", name: "PT01 Trousers", ordered: 95000,  received: 86000,  sold: 48000, cost: 34400 },
+    { id: "sco",  name: "Scott Barber",  ordered: 102591, received: 92733,  sold: 52091, cost: 37093 },
   ],
   next: [
-    { id: "vero", name: "Veronica Beard", ordered: 198000, received: 189000, sold: 152000 },
-    { id: "mm",   name: "M.M. LaFleur",   ordered: 165000, received: 159000, sold: 124000 },
-    { id: "wit",  name: "Witchery",       ordered: 254680, received: 240475, sold: 176816 },
+    { id: "vero", name: "Veronica Beard", ordered: 198000, received: 189000, sold: 152000, cost: 75600 },
+    { id: "mm",   name: "M.M. LaFleur",   ordered: 165000, received: 159000, sold: 124000, cost: 63600 },
+    { id: "wit",  name: "Witchery",       ordered: 254680, received: 240475, sold: 176816, cost: 96190 },
   ],
   shoes: [
-    { id: "cl",  name: "Christian Louboutin",   ordered: 98000, received: 87000, sold: 48000 },
-    { id: "hw",  name: "Hogl",                  ordered: 82000, received: 73000, sold: 42000 },
-    { id: "laz", name: "Lavorazione Artigiana", ordered: 72000, received: 65000, sold: 37000 },
-    { id: "sas", name: "SAS Shoes",             ordered: 77474, received: 68793, sold: 37143 },
+    { id: "cl",  name: "Christian Louboutin",   ordered: 98000, received: 87000, sold: 48000, cost: 34800 },
+    { id: "hw",  name: "Hogl",                  ordered: 82000, received: 73000, sold: 42000, cost: 29200 },
+    { id: "laz", name: "Lavorazione Artigiana", ordered: 72000, received: 65000, sold: 37000, cost: 26000 },
+    { id: "sas", name: "SAS Shoes",             ordered: 77474, received: 68793, sold: 37143, cost: 27517 },
   ],
 };
 
@@ -167,11 +174,13 @@ async function apiFetch(path) {
   return res.json();
 }
 
+// FIX: LS v2.0 returns version as a plain number on each item (not response.version.max).
+// We compute the max version from items as the cursor for the next page.
 async function apiFetchAll(path, key) {
   let results = [];
   let after = null;
   let pages = 0;
-  while (pages < 100) {
+  while (pages < 200) {
     pages++;
     const sep = path.includes("?") ? "&" : "?";
     const fullPath = path + sep + "page_size=200" + (after ? "&after=" + after : "");
@@ -179,17 +188,21 @@ async function apiFetchAll(path, key) {
     const items = data[key] || data.data || [];
     results = results.concat(items);
     if (items.length === 0) break;
-    const pg = data.pagination || data.meta?.pagination;
-    if (pg?.next) { after = pg.next; continue; }
-    if (items.length === 200 && data.version?.max) { after = data.version.max; continue; }
-    break;
+    if (items.length < 200) break; // last page — no more data
+    // Derive cursor: prefer response-level version.max, fall back to max version on items
+    const cursor =
+      (data.version && typeof data.version === "object" ? data.version.max : null) ??
+      items.reduce((max, i) => Math.max(max, i.version || 0), 0) ||
+      null;
+    if (!cursor) break; // no cursor available, stop
+    after = cursor;
   }
   return results;
 }
 
 // ── main component ────────────────────────────────────────────────────────────
 export default function FlowReport() {
-  const [authed, setAuthed] = useState(null); // null=checking, true=ok, false=needs login
+  const [authed, setAuthed] = useState(null);
   const [demo, setDemo] = useState(false);
   const [screen, setScreen] = useState("summary");
   const [season, setSeason] = useState("fall26");
@@ -200,13 +213,14 @@ export default function FlowReport() {
   const [loadingStep, setLoadingStep] = useState("");
   const [error, setError] = useState(null);
 
-  // Cached data built during loadSummary and reused by drilldowns (no re-fetching)
-  const [seasonTagId, setSeasonTagId] = useState(null);
-  const [seasonPids, setSeasonPids] = useState(new Set()); // product IDs in this season
-  const [pidToType, setPidToType] = useState({});    // product_id → product_type_id
-  const [pidToBrand, setPidToBrand] = useState({});  // product_id → { id, name }
-  const [allConsigItems, setAllConsigItems] = useState([]);     // flat consignment line items
-  const [allSaleLineItems, setAllSaleLineItems] = useState([]); // flat sale line items
+  // Cached data built during loadSummary, reused by drilldowns
+  const [seasonPids, setSeasonPids] = useState(new Set());
+  const [pidToType, setPidToType] = useState({});       // product_id → product_type_id (dept)
+  const [pidToSupplier, setPidToSupplier] = useState({}); // product_id → { id, name }  ← FIX: was pidToBrand
+  const [pidToPrice, setPidToPrice] = useState({});      // product_id → retail price   ← NEW
+  const [pidToCost, setPidToCost] = useState({});        // product_id → wholesale cost ← NEW
+  const [allConsigItems, setAllConsigItems] = useState([]);
+  const [allSaleLineItems, setAllSaleLineItems] = useState([]);
 
   // Vendors drilldown
   const [currentDept, setCurrentDept] = useState(null);
@@ -237,13 +251,12 @@ export default function FlowReport() {
     }
 
     try {
-      // 1. Resolve the Lightspeed tag ID for the selected season name
+      // 1. Find the LS tag ID for the selected season
       const tagsData = await apiFetchAll("2.0/tags", "data");
       const seasonTag = tagsData.find((t) => t.name === season);
-      if (!seasonTag) throw new Error(`Season tag "${season}" not found in Lightspeed.`);
-      setSeasonTagId(seasonTag.id);
+      if (!seasonTag) throw new Error(`Season tag "${season}" not found in Lightspeed. Check that products are tagged correctly.`);
 
-      // 2. Fetch product types and consignments in parallel
+      // 2. Fetch product types (departments) and all supplier consignments in parallel
       setLoadingStep("Loading departments & purchase orders…");
       const [cats, consignments] = await Promise.all([
         apiFetchAll("2.0/product_types", "data"),
@@ -258,15 +271,17 @@ export default function FlowReport() {
       const newConsigItems = consigArrays.flat();
       setAllConsigItems(newConsigItems);
 
-      // 4. Scan the full product catalog to build tag/type/brand maps.
-      //    Fetching all products sequentially avoids rate-limiting individual lookups
-      //    and correctly captures tag_ids for every product in the store.
+      // 4. Scan the full product catalog.
+      //    FIX: pagination now uses max item version as cursor so ALL pages are fetched.
+      //    FIX: maps supplier (not brand) and retail price (not consignment cost).
       const newPidToType = {};
-      const newPidToBrand = {};
+      const newPidToSupplier = {};
+      const newPidToPrice = {};
+      const newPidToCost = {};
       const seasonPidSet = new Set();
       let productAfter = null;
       let productPage = 0;
-      while (productPage < 200) {
+      while (productPage < 500) {
         productPage++;
         setLoadingStep(`Scanning product catalog… (page ${productPage})`);
         const url = "2.0/products?page_size=200" + (productAfter ? "&after=" + productAfter : "");
@@ -274,41 +289,59 @@ export default function FlowReport() {
         const products = data.data || [];
         products.forEach((p) => {
           if (!p?.id) return;
-          newPidToType[p.id] = p.product_type_id || "__none__";
-          newPidToBrand[p.id] = { id: p.brand_id || "__none__", name: p.brand?.name || "Unknown" };
+          newPidToType[p.id]     = p.product_type_id || "__none__";
+          // FIX: use supplier_id + supplier.name (not brand_id / brand.name)
+          newPidToSupplier[p.id] = {
+            id:   p.supplier_id       || "__none__",
+            name: p.supplier?.name    || "Unknown",
+          };
+          // FIX: store retail price and wholesale cost from the product record
+          newPidToPrice[p.id] = parseFloat(p.price_excluding_tax || 0);
+          newPidToCost[p.id]  = parseFloat(p.supply_price        || 0);
           if (p.tag_ids?.includes(seasonTag.id)) seasonPidSet.add(p.id);
         });
         if (products.length === 0) break;
-        if (products.length === 200 && data.version?.max) { productAfter = data.version.max; continue; }
-        break;
+        if (products.length < 200) break;
+        // FIX: derive cursor from item versions (LS v2.0 pagination)
+        const cursor =
+          (data.version && typeof data.version === "object" ? data.version.max : null) ??
+          products.reduce((max, p) => Math.max(max, p.version || 0), 0) ||
+          null;
+        if (!cursor) break;
+        productAfter = cursor;
       }
       setPidToType(newPidToType);
-      setPidToBrand(newPidToBrand);
+      setPidToSupplier(newPidToSupplier);
+      setPidToPrice(newPidToPrice);
+      setPidToCost(newPidToCost);
       setSeasonPids(new Set(seasonPidSet));
 
-      // 5. Tally ordered / received for season products only
+      // 5. Build summary map from departments, then tally ordered/received.
+      //    FIX: use product retail price × qty (not consignment cost × qty).
       const map = {};
-      cats.forEach((c) => { map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 }; });
+      cats.forEach((c) => {
+        map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 };
+      });
 
       newConsigItems.forEach((item) => {
         if (!seasonPidSet.has(item.product_id)) return;
         const cid = newPidToType[item.product_id] || "__none__";
         if (!map[cid]) map[cid] = { id: cid, name: "Other", ordered: 0, received: 0, sold: 0 };
-        const cost = parseFloat(item.cost || 0);
-        map[cid].ordered  += cost * (item.count    || 0);
-        map[cid].received += cost * (item.received || 0);
+        // FIX: use retail price from product, not wholesale cost from consignment
+        const retailPrice = newPidToPrice[item.product_id] || 0;
+        map[cid].ordered  += retailPrice * (item.count    || 0);
+        map[cid].received += retailPrice * (item.received || 0);
       });
 
-      // 6. Fetch sales and tally sold for season products only.
-      //    Line items are always included in the sale response — no extra param needed.
-      //    Line items have no "type" field; skip voided sales and voided line items.
+      // 6. Fetch sales and tally sold amounts.
+      //    FIX: subtract customer returns (is_return: true) from sold totals.
       let newSaleLineItems = [];
       let salesError = null;
       try {
         let salesResults = [];
         let after = null;
         let pages = 0;
-        while (pages < 100) {
+        while (pages < 200) {
           pages++;
           const fullPath = "2.0/sales?page_size=200" + (after ? "&after=" + after : "");
           setLoadingStep(`Loading sales… (page ${pages}, ${salesResults.length} loaded)`);
@@ -316,22 +349,36 @@ export default function FlowReport() {
           const items = data.data || [];
           salesResults = salesResults.concat(items);
           if (items.length === 0) break;
-          if (items.length === 200 && data.version?.max) { after = data.version.max; continue; }
-          break;
+          if (items.length < 200) break;
+          // FIX: use item version for cursor
+          const cursor =
+            (data.version && typeof data.version === "object" ? data.version.max : null) ??
+            items.reduce((max, i) => Math.max(max, i.version || 0), 0) ||
+            null;
+          if (!cursor) break;
+          after = cursor;
         }
         newSaleLineItems = salesResults
           .filter((s) => s.status !== "VOIDED")
-          .flatMap((s) => (s.line_items || []).filter((li) => li.product_id && li.status !== "VOIDED"));
+          .flatMap((s) =>
+            (s.line_items || []).filter((li) => li.product_id && li.status !== "VOIDED")
+          );
         setAllSaleLineItems(newSaleLineItems);
       } catch (e) {
         salesError = e.message;
       }
 
+      // FIX: subtract returns (is_return: true) instead of adding them
       newSaleLineItems.forEach((li) => {
         if (!seasonPidSet.has(li.product_id)) return;
         const cid = newPidToType[li.product_id] || "__none__";
         if (!map[cid]) return;
-        map[cid].sold += parseFloat(li.total_price || li.price || 0);
+        const amount = parseFloat(li.total_price || li.price || 0);
+        if (li.is_return) {
+          map[cid].sold -= amount; // customer return — reduce sold
+        } else {
+          map[cid].sold += amount;
+        }
       });
 
       setSummaryRows(Object.values(map).sort((a, b) => b.ordered - a.ordered));
@@ -359,7 +406,7 @@ export default function FlowReport() {
     if (authed === true) loadSummary();
   }, [authed, loadSummary]);
 
-  // ── open department → vendor view (uses cached data, no extra API calls) ──────
+  // ── open department → vendor view ─────────────────────────────────────────────
   const openDept = useCallback(
     (dept) => {
       setCurrentDept(dept);
@@ -380,20 +427,33 @@ export default function FlowReport() {
         allConsigItems.forEach((item) => {
           if (!seasonPids.has(item.product_id)) return;
           if (pidToType[item.product_id] !== dept.id) return;
-          const brand = pidToBrand[item.product_id];
-          if (!brand) return;
-          if (!vm[brand.id]) vm[brand.id] = { id: brand.id, name: brand.name, ordered: 0, received: 0, sold: 0 };
-          const cost = parseFloat(item.cost || 0);
-          vm[brand.id].ordered  += cost * (item.count    || 0);
-          vm[brand.id].received += cost * (item.received || 0);
+          // FIX: use supplier (not brand)
+          const supplier = pidToSupplier[item.product_id];
+          if (!supplier || supplier.id === "__none__") return;
+          if (!vm[supplier.id]) {
+            vm[supplier.id] = { id: supplier.id, name: supplier.name, ordered: 0, received: 0, sold: 0, cost: 0 };
+          }
+          // FIX: ordered/received at retail price
+          const retailPrice = pidToPrice[item.product_id] || 0;
+          vm[supplier.id].ordered  += retailPrice * (item.count    || 0);
+          vm[supplier.id].received += retailPrice * (item.received || 0);
+          // NEW: track wholesale cost of received goods
+          const wholesaleCost = parseFloat(item.cost || 0);
+          vm[supplier.id].cost += wholesaleCost * (item.received || 0);
         });
 
         allSaleLineItems.forEach((li) => {
           if (!seasonPids.has(li.product_id)) return;
           if (pidToType[li.product_id] !== dept.id) return;
-          const brand = pidToBrand[li.product_id];
-          if (!brand || !vm[brand.id]) return;
-          vm[brand.id].sold += parseFloat(li.total_price || li.price || 0);
+          const supplier = pidToSupplier[li.product_id];
+          if (!supplier || !vm[supplier.id]) return;
+          const amount = parseFloat(li.total_price || li.price || 0);
+          // FIX: subtract customer returns
+          if (li.is_return) {
+            vm[supplier.id].sold -= amount;
+          } else {
+            vm[supplier.id].sold += amount;
+          }
         });
 
         setVendorRows(Object.values(vm).sort((a, b) => b.ordered - a.ordered));
@@ -402,7 +462,7 @@ export default function FlowReport() {
       }
       setVendorLoading(false);
     },
-    [demo, allConsigItems, allSaleLineItems, pidToType, pidToBrand, seasonPids]
+    [demo, allConsigItems, allSaleLineItems, pidToType, pidToSupplier, pidToPrice, seasonPids]
   );
 
   // ── open vendor → product view ────────────────────────────────────────────────
@@ -421,31 +481,40 @@ export default function FlowReport() {
       }
 
       try {
-        // Fetch products for this brand + dept, then filter to season using cached set.
-        // We avoid tag_id filter here because Lightspeed returns 403 for that parameter.
+        // FIX: filter by supplier_id (not brand_id). Filter season in memory for safety.
         const allProducts = await apiFetchAll(
-          `2.0/products?brand_id=${vendor.id}&product_type_id=${currentDept.id}`,
+          `2.0/products?supplier_id=${vendor.id}`,
           "data"
         );
-        const products = allProducts.filter((p) => seasonPids.has(p.id));
+        // Keep only products in this season AND this department
+        const products = allProducts.filter(
+          (p) => seasonPids.has(p.id) && (pidToType[p.id] === currentDept?.id)
+        );
 
-        // Tally units sold from cached sale line items (no extra API call)
+        // Tally units sold/returned from cached sale line items
         const pidSet = new Set(products.map((p) => p.id));
         const soldMap = {};
+        const returnMap = {};
         allSaleLineItems.forEach((li) => {
           if (!pidSet.has(li.product_id)) return;
-          soldMap[li.product_id] = (soldMap[li.product_id] || 0) + parseInt(li.quantity || 0);
+          const qty = parseInt(li.quantity || 0);
+          if (li.is_return) {
+            returnMap[li.product_id] = (returnMap[li.product_id] || 0) + qty;
+          } else {
+            soldMap[li.product_id] = (soldMap[li.product_id] || 0) + qty;
+          }
         });
 
         setProductRows(
           products.map((p) => ({
-            name:    p.name,
-            sku:     p.sku || "",
-            variant: p.variant_option_one_value || p.variant_name || "",
-            cost:    parseFloat(p.supply_price || p.cost_price || 0),
-            price:   parseFloat(p.price_excluding_tax || p.price || 0),
-            onHand:  p.inventory?.count ?? p.inventory_count ?? 0,
-            sold:    soldMap[p.id] || 0,
+            name:     p.name,
+            sku:      p.sku || "",
+            variant:  p.variant_option_one_value || p.variant_name || "",
+            cost:     parseFloat(p.supply_price         || 0),
+            price:    parseFloat(p.price_excluding_tax  || 0),
+            onHand:   p.inventory?.count ?? p.inventory_count ?? 0,
+            sold:     soldMap[p.id]   || 0,
+            returned: returnMap[p.id] || 0,
           }))
         );
       } catch (e) {
@@ -453,7 +522,7 @@ export default function FlowReport() {
       }
       setProductLoading(false);
     },
-    [demo, currentDept, seasonPids, allSaleLineItems]
+    [demo, currentDept, seasonPids, pidToType, allSaleLineItems]
   );
 
   // ── computed totals ───────────────────────────────────────────────────────────
@@ -466,6 +535,7 @@ export default function FlowReport() {
   const vTotalOrdered  = vendorRows.reduce((a, r) => a + r.ordered,  0);
   const vTotalReceived = vendorRows.reduce((a, r) => a + r.received, 0);
   const vTotalSold     = vendorRows.reduce((a, r) => a + r.sold,     0);
+  const vTotalCost     = vendorRows.reduce((a, r) => a + (r.cost || 0), 0);
 
   const seasonLabel = SEASONS.find((s2) => s2.id === season)?.name ?? season;
 
@@ -476,20 +546,20 @@ export default function FlowReport() {
     logo:       { fontFamily: "'DM Serif Display',serif", fontSize: 22, color: "#1a1816", letterSpacing: -0.5 },
     nav:        { display: "flex", gap: 4 },
     navBtn:     (active) => ({ background: active ? "#e8eef7" : "none", border: "none", padding: "6px 13px", borderRadius: 6, fontSize: 13, color: active ? "#3a5a8c" : "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontWeight: 500 }),
-    main:       { padding: "1.75rem 1.5rem", maxWidth: 1100, margin: "0 auto" },
+    main:       { padding: "1.75rem 1.5rem", maxWidth: 1200, margin: "0 auto" },
     seasonPill: { display: "flex", alignItems: "center", gap: 6, background: "#f0ede6", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 10px", fontSize: 13, fontWeight: 500 },
     tableRow:   (clickable, zero) => ({ borderBottom: "1px solid #e2ddd5", cursor: clickable && !zero ? "pointer" : "default", opacity: zero ? 0.45 : 1, transition: "background 0.1s" }),
     backBtn:    { background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, textDecoration: "underline", textUnderlineOffset: 2, padding: 0, marginBottom: "0.9rem" },
     demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
     statusDot:  (status) => {
-      const colors = { sold: "#4a7ab5", stock: "#e05a36", ordered: "#aaa" };
+      const colors = { sold: "#4a7ab5", stock: "#e05a36", ordered: "#aaa", returned: "#9b59b6" };
       return { width: 10, height: 10, borderRadius: "50%", background: colors[status] || "#aaa", display: "inline-block" };
     },
   };
 
-  // ── login / loading screens ───────────────────────────────────────────────────
   const fontLink = `@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap'); @keyframes spin{to{transform:rotate(360deg)}} tbody tr:hover{background:#f0f5fb!important}`;
 
+  // ── login / checking screens ──────────────────────────────────────────────────
   if (authed === null) {
     return (
       <div style={s.app}>
@@ -512,7 +582,7 @@ export default function FlowReport() {
           <div style={{ fontSize: 13, color: "#6b6560", marginBottom: 8 }}>Connect your Lightspeed account to continue.</div>
           <a
             href="/api/auth/lightspeed"
-            style={{ background: "#3a5a8c", color: "#fff", padding: "10px 24px", borderRadius: 8, textDecoration: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 14, fontWeight: 500, letterSpacing: 0.2 }}
+            style={{ background: "#3a5a8c", color: "#fff", padding: "10px 24px", borderRadius: 8, textDecoration: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 14, fontWeight: 500 }}
           >
             Connect to Lightspeed
           </a>
@@ -529,7 +599,7 @@ export default function FlowReport() {
       <header style={s.header}>
         <div style={s.logo}>abersons</div>
         <nav style={s.nav}>
-          <button style={s.navBtn(screen === "summary" || screen === "vendors" || screen === "products")} onClick={() => setScreen("summary")}>
+          <button style={s.navBtn(screen !== "detail")} onClick={() => setScreen("summary")}>
             flow summary
           </button>
           <button style={s.navBtn(screen === "detail")} onClick={() => setScreen("detail")}>
@@ -552,7 +622,7 @@ export default function FlowReport() {
             <span style={{ color: "#9e9892", fontSize: 12 }}>◂</span>
           </div>
           <button
-            onClick={() => setDemo(!demo)}
+            onClick={() => { setDemo(!demo); setScreen("summary"); }}
             style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}
           >
             {demo ? "Live data" : "Demo mode"}
@@ -640,11 +710,13 @@ export default function FlowReport() {
             {vendorError && <ErrBox msg={vendorError} />}
             {!vendorLoading && (
               <>
+                {/* NEW: added Cost to vendor KPI cards */}
                 <KpiRow items={[
-                  { label: "Ordered",  value: fmt(vTotalOrdered) },
-                  { label: "Received", value: fmt(vTotalReceived), sub: vTotalOrdered  > 0 ? `${((vTotalReceived / vTotalOrdered)  * 100).toFixed(1)}%` : "—" },
-                  { label: "Sold",     value: fmt(vTotalSold),     sub: vTotalReceived > 0 ? `${((vTotalSold     / vTotalReceived) * 100).toFixed(1)}%` : "—" },
-                  { label: "Vendors",  value: vendorRows.filter((r) => r.ordered > 0 || r.sold > 0).length },
+                  { label: "Ordered (retail)",   value: fmt(vTotalOrdered) },
+                  { label: "Cost (wholesale)",    value: fmt(vTotalCost) },
+                  { label: "Received",            value: fmt(vTotalReceived), sub: vTotalOrdered  > 0 ? `${((vTotalReceived / vTotalOrdered)  * 100).toFixed(1)}%` : "—" },
+                  { label: "Sold",                value: fmt(vTotalSold),     sub: vTotalReceived > 0 ? `${((vTotalSold     / vTotalReceived) * 100).toFixed(1)}%` : "—" },
+                  { label: "Vendors",             value: vendorRows.filter((r) => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={`${currentDept?.name} — by Vendor`}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -653,6 +725,7 @@ export default function FlowReport() {
                         <TH>Sold %</TH>
                         <TH>Vendor</TH>
                         <TH right>Ordered</TH>
+                        <TH right>Cost</TH>
                         <TH right>Received</TH>
                         <TH right>Sold</TH>
                         <TH right>Received %</TH>
@@ -669,6 +742,7 @@ export default function FlowReport() {
                             <TD><Bar pct={soldPct} /></TD>
                             <TD><span style={{ fontWeight: 500 }}>{r.name}</span></TD>
                             <TD right>{fmt(r.ordered)}</TD>
+                            <TD right style={{ color: "#6b6560" }}>{r.cost > 0 ? fmt(r.cost) : "—"}</TD>
                             <TD right>{fmt(r.received)}</TD>
                             <TD right>{fmt(r.sold)}</TD>
                             <TD right><PctBadge pct={recPct}  zero={zero} /></TD>
@@ -700,10 +774,11 @@ export default function FlowReport() {
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
-                { label: "Ordered",  value: fmt(currentVendor?.ordered  || 0) },
-                { label: "Received", value: fmt(currentVendor?.received || 0) },
-                { label: "Sold",     value: fmt(currentVendor?.sold     || 0) },
-                { label: "SKUs",     value: productRows.length },
+                { label: "Ordered (retail)", value: fmt(currentVendor?.ordered  || 0) },
+                { label: "Cost (wholesale)", value: fmt(currentVendor?.cost     || 0) },
+                { label: "Received",         value: fmt(currentVendor?.received || 0) },
+                { label: "Sold",             value: fmt(currentVendor?.sold     || 0) },
+                { label: "SKUs",             value: productRows.length },
               ].map(({ label, value }) => (
                 <div key={label} style={{ background: "#fff", border: "1px solid #e2ddd5", borderRadius: 6, padding: "7px 13px" }}>
                   <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "#9e9892", marginBottom: 2 }}>{label}</div>
@@ -726,14 +801,18 @@ export default function FlowReport() {
                       <TH right>Price</TH>
                       <TH right>On Hand</TH>
                       <TH right>Sold</TH>
+                      <TH right>Returned</TH>
                     </tr>
                   </thead>
                   <tbody>
                     {productRows.length === 0 ? (
-                      <tr><td colSpan={8} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found.</td></tr>
+                      <tr><td colSpan={9} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
                     ) : (
                       productRows.map((p, i) => {
-                        const status = p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
+                        const status = p.returned > 0 && p.sold === 0 ? "returned"
+                                     : p.sold    > 0 ? "sold"
+                                     : p.onHand  > 0 ? "stock"
+                                     : "ordered";
                         return (
                           <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
                             <TD><span style={s.statusDot(status)} /></TD>
@@ -744,6 +823,7 @@ export default function FlowReport() {
                             <TD right>{p.price > 0 ? fmt(p.price) : "—"}</TD>
                             <TD right>{p.onHand}</TD>
                             <TD right>{p.sold}</TD>
+                            <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned || 0}</TD>
                           </tr>
                         );
                       })
@@ -751,7 +831,12 @@ export default function FlowReport() {
                   </tbody>
                 </table>
                 <div style={{ display: "flex", gap: 14, flexWrap: "wrap", padding: "9px 12px", background: "#f0ede6", borderTop: "1px solid #e2ddd5", fontSize: 12 }}>
-                  {[["sold", "sold", "#4a7ab5"], ["stock", "in stock", "#e05a36"], ["ordered", "ordered", "#aaa"]].map(([key, label, color]) => (
+                  {[
+                    ["sold",     "sold",     "#4a7ab5"],
+                    ["stock",    "in stock", "#e05a36"],
+                    ["ordered",  "ordered",  "#aaa"],
+                    ["returned", "returned", "#9b59b6"],
+                  ].map(([key, label, color]) => (
                     <div key={key} style={{ display: "flex", alignItems: "center", gap: 5, color: "#6b6560" }}>
                       <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, display: "inline-block" }} />
                       {label}
