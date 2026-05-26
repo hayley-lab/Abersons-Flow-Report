@@ -1,4 +1,4 @@
-// pages/api/debug-flow.js — field inspection for consignment line items and sales
+// pages/api/debug-flow.js — product + tag structure inspection
 export default async function handler(req, res) {
   const accessToken = process.env.LS_ACCESS_TOKEN;
   const domainPrefix = process.env.LS_DOMAIN_PREFIX;
@@ -22,52 +22,54 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Get first consignment
-    const consigRes = await lsFetch("2.0/consignments?type=SUPPLIER&page_size=1");
-    const firstConsig = consigRes.body?.data?.[0];
+    // 1. Get all tags — find season tags
+    const tagsRes = await lsFetch("2.0/tags?page_size=50");
+    const allTags = tagsRes.body?.data ?? [];
+    const seasonTags = allTags.filter(t =>
+      /^(pre)?(spring|fall)\d{2}$/i.test(t.name)
+    );
 
-    // 2. Get its line items
-    let sampleLineItem = null;
-    let lineItemsStatus = null;
-    if (firstConsig?.id) {
-      const liRes = await lsFetch(`2.0/consignments/${firstConsig.id}/products?page_size=1`);
-      lineItemsStatus = liRes.status;
-      sampleLineItem = liRes.body?.data?.[0] ?? null;
+    // 2. Get one product — show ALL fields so we can see exact structure
+    const prodRes = await lsFetch("2.0/products?page_size=1");
+    const sampleProduct = prodRes.body?.data?.[0] ?? null;
+
+    // 3. If we found a season tag, fetch a product WITH that tag to compare
+    let taggedProduct = null;
+    if (seasonTags.length > 0) {
+      const tagId = seasonTags[0].id;
+      const taggedRes = await lsFetch(`2.0/products?tag_id=${tagId}&page_size=1`);
+      taggedProduct = taggedRes.body?.data?.[0] ?? taggedRes.body ?? null;
     }
 
-    // 3. Get first sale and its line items
-    const salesRes = await lsFetch("2.0/sales?page_size=1");
-    const firstSale = salesRes.body?.data?.[0];
-    const sampleSaleLineItem = firstSale?.line_items?.[0] ?? null;
+    // 4. Get product categories (the correct endpoint, not product_types)
+    const catsRes = await lsFetch("2.0/product-categories?page_size=50");
+    const catsSample = catsRes.body?.data?.slice(0, 5) ?? catsRes.body ?? null;
+
+    // 5. Get suppliers
+    const suppRes = await lsFetch("2.0/suppliers?page_size=10");
+    const suppSample = suppRes.body?.data?.slice(0, 5) ?? suppRes.body ?? null;
 
     res.status(200).json({
-      consignment: {
-        status: consigRes.status,
-        sample: firstConsig ? {
-          id: firstConsig.id,
-          status: firstConsig.status,
-          all_keys: Object.keys(firstConsig),
-        } : null,
+      tags: {
+        total_found: allTags.length,
+        season_tags: seasonTags,
       },
-      consignment_line_item: {
-        status: lineItemsStatus,
-        // Show every field so we can see exact names for count/received/cost
-        sample: sampleLineItem,
-        all_keys: sampleLineItem ? Object.keys(sampleLineItem) : null,
+      product: {
+        status: prodRes.status,
+        all_fields: sampleProduct ? Object.keys(sampleProduct) : null,
+        sample: sampleProduct,
       },
-      sale: {
-        status: salesRes.status,
-        sample: firstSale ? {
-          id: firstSale.id,
-          status: firstSale.status,
-          line_items_count: firstSale.line_items?.length ?? 0,
-          all_keys: Object.keys(firstSale),
-        } : null,
+      tagged_product: {
+        note: "Product fetched using tag_id filter — check if this works",
+        sample: taggedProduct,
       },
-      sale_line_item: {
-        // Show every field so we can see exact names for quantity/price
-        sample: sampleSaleLineItem,
-        all_keys: sampleSaleLineItem ? Object.keys(sampleSaleLineItem) : null,
+      categories: {
+        status: catsRes.status,
+        sample: catsSample,
+      },
+      suppliers: {
+        status: suppRes.status,
+        sample: suppSample,
       },
     });
   } catch (err) {
