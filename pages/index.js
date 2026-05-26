@@ -192,7 +192,7 @@ async function apiFetchAll(path, key) {
     // Derive cursor: prefer response-level version.max, fall back to max version on items
     const cursor =
       (data.version && typeof data.version === "object" ? data.version.max : null) ??
-      items.reduce((max, i) => Math.max(max, i.version || 0), 0) ||
+      items.reduce((max, i) => Math.max(max, i.version || 0), 0)) ||
       null;
     if (!cursor) break; // no cursor available, stop
     after = cursor;
@@ -389,7 +389,7 @@ export default function FlowReport() {
           // FIX: use item version for cursor
           const cursor =
             (data.version && typeof data.version === "object" ? data.version.max : null) ??
-            items.reduce((max, i) => Math.max(max, i.version || 0), 0) ||
+            items.reduce((max, i) => Math.max(max, i.version || 0), 0)) ||
             null;
           if (!cursor) break;
           after = cursor;
