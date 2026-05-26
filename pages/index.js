@@ -274,11 +274,17 @@ export default function FlowReport() {
       // 4. Scan the full product catalog.
       //    FIX: pagination now uses max item version as cursor so ALL pages are fetched.
       //    FIX: maps supplier (not brand) and retail price (not consignment cost).
+      //    FIX: LS tags live on PARENT products only — variants have empty tag_ids.
+      //         We track variant→parent relationships and propagate season membership
+      //         after the full scan so consignment/sale line items (which reference
+      //         variant IDs) are counted correctly.
       const newPidToType = {};
       const newPidToSupplier = {};
       const newPidToPrice = {};
       const newPidToCost = {};
       const seasonPidSet = new Set();
+      const seasonParentSet = new Set(); // parent product IDs that carry the season tag
+      const variantToParent = {};        // variant product_id → parent product_id
       let productAfter = null;
       let productPage = 0;
       while (productPage < 500) {
@@ -290,15 +296,21 @@ export default function FlowReport() {
         products.forEach((p) => {
           if (!p?.id) return;
           newPidToType[p.id]     = p.product_type_id || "__none__";
-          // FIX: use supplier_id + supplier.name (not brand_id / brand.name)
           newPidToSupplier[p.id] = {
-            id:   p.supplier_id       || "__none__",
-            name: p.supplier?.name    || "Unknown",
+            id:   p.supplier_id    || "__none__",
+            name: p.supplier?.name || "Unknown",
           };
-          // FIX: store retail price and wholesale cost from the product record
           newPidToPrice[p.id] = parseFloat(p.price_excluding_tax || 0);
           newPidToCost[p.id]  = parseFloat(p.supply_price        || 0);
-          if (p.tag_ids?.includes(seasonTag.id)) seasonPidSet.add(p.id);
+          // Tags are on parent products; record parents that have the season tag
+          if (p.tag_ids?.includes(seasonTag.id)) {
+            seasonPidSet.add(p.id);
+            seasonParentSet.add(p.id);
+          }
+          // Record variant→parent mapping for later propagation
+          if (p.variant_parent_id) {
+            variantToParent[p.id] = p.variant_parent_id;
+          }
         });
         if (products.length === 0) break;
         if (products.length < 200) break;
@@ -310,6 +322,30 @@ export default function FlowReport() {
         if (!cursor) break;
         productAfter = cursor;
       }
+
+      // Propagate season membership from parent → variant.
+      // Consignment and sale line items reference variant IDs, so variants of
+      // season-tagged parents must also be in seasonPidSet.
+      // Also inherit supplier/dept/price/cost when the variant record is empty.
+      setLoadingStep("Resolving variant season tags…");
+      for (const [varId, parentId] of Object.entries(variantToParent)) {
+        if (seasonParentSet.has(parentId)) {
+          seasonPidSet.add(varId);
+        }
+        if (newPidToSupplier[varId]?.id === "__none__" && newPidToSupplier[parentId]) {
+          newPidToSupplier[varId] = newPidToSupplier[parentId];
+        }
+        if ((!newPidToType[varId] || newPidToType[varId] === "__none__") && newPidToType[parentId]) {
+          newPidToType[varId] = newPidToType[parentId];
+        }
+        if (!newPidToPrice[varId] && newPidToPrice[parentId]) {
+          newPidToPrice[varId] = newPidToPrice[parentId];
+        }
+        if (!newPidToCost[varId] && newPidToCost[parentId]) {
+          newPidToCost[varId] = newPidToCost[parentId];
+        }
+      }
+
       setPidToType(newPidToType);
       setPidToSupplier(newPidToSupplier);
       setPidToPrice(newPidToPrice);
