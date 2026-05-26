@@ -1,4 +1,4 @@
-// pages/api/debug-flow.js — product + tag structure inspection
+// pages/api/debug-flow.js — fetch all tags to see exact names
 export default async function handler(req, res) {
   const accessToken = process.env.LS_ACCESS_TOKEN;
   const domainPrefix = process.env.LS_DOMAIN_PREFIX;
@@ -10,69 +10,58 @@ export default async function handler(req, res) {
   const base = `https://${domainPrefix}.retail.lightspeed.app/api`;
   const headers = {
     Authorization: `Bearer ${accessToken}`,
-    "Content-Type": "application/json",
     Accept: "application/json",
   };
 
-  async function lsFetch(path) {
-    const r = await fetch(`${base}/${path}`, { headers });
-    const text = await r.text();
-    try { return { status: r.status, body: JSON.parse(text) }; }
-    catch { return { status: r.status, body: { raw: text.slice(0, 500) } }; }
+  async function fetchAllPages(path) {
+    const results = [];
+    let url = `${base}/${path}`;
+    let page = 1;
+    while (url && page <= 20) {
+      const r = await fetch(url, { headers });
+      const json = await r.json();
+      const items = json.data ?? [];
+      results.push(...items);
+      // LS pagination: check for next cursor or page
+      const after = json.after ?? json.next ?? null;
+      if (after && items.length > 0) {
+        const sep = path.includes("?") ? "&" : "?";
+        url = `${base}/${path}${sep}after=${after}&page_size=200`;
+      } else {
+        url = null;
+      }
+      page++;
+    }
+    return results;
   }
 
   try {
-    // 1. Get all tags — find season tags
-    const tagsRes = await lsFetch("2.0/tags?page_size=50");
-    const allTags = tagsRes.body?.data ?? [];
-    const seasonTags = allTags.filter(t =>
-      /^(pre)?(spring|fall)\d{2}$/i.test(t.name)
-    );
+    // Get ALL tags
+    const allTags = await fetchAllPages("2.0/tags?page_size=200");
 
-    // 2. Get one product — show ALL fields so we can see exact structure
-    const prodRes = await lsFetch("2.0/products?page_size=1");
-    const sampleProduct = prodRes.body?.data?.[0] ?? null;
-
-    // 3. If we found a season tag, fetch a product WITH that tag to compare
-    let taggedProduct = null;
-    if (seasonTags.length > 0) {
-      const tagId = seasonTags[0].id;
-      const taggedRes = await lsFetch(`2.0/products?tag_id=${tagId}&page_size=1`);
-      taggedProduct = taggedRes.body?.data?.[0] ?? taggedRes.body ?? null;
-    }
-
-    // 4. Get product categories (the correct endpoint, not product_types)
-    const catsRes = await lsFetch("2.0/product-categories?page_size=50");
-    const catsSample = catsRes.body?.data?.slice(0, 5) ?? catsRes.body ?? null;
-
-    // 5. Get suppliers
-    const suppRes = await lsFetch("2.0/suppliers?page_size=10");
-    const suppSample = suppRes.body?.data?.slice(0, 5) ?? suppRes.body ?? null;
+    // Get one REAL product (skip system/discount ones)
+    const prodRes = await fetch(`${base}/2.0/products?page_size=10&active=true`, { headers });
+    const prodJson = await prodRes.json();
+    const realProduct = prodJson.data?.find(p =>
+      p.source !== "SYSTEM" && p.has_inventory !== false && p.supplier_id
+    ) ?? prodJson.data?.[0] ?? null;
 
     res.status(200).json({
-      tags: {
-        total_found: allTags.length,
-        season_tags: seasonTags,
+      all_tags: {
+        total: allTags.length,
+        names: allTags.map(t => ({ id: t.id, name: t.name })),
       },
-      product: {
-        status: prodRes.status,
-        all_fields: sampleProduct ? Object.keys(sampleProduct) : null,
-        sample: sampleProduct,
-      },
-      tagged_product: {
-        note: "Product fetched using tag_id filter — check if this works",
-        sample: taggedProduct,
-      },
-      categories: {
-        status: catsRes.status,
-        sample: catsSample,
-      },
-      suppliers: {
-        status: suppRes.status,
-        sample: suppSample,
+      real_product: {
+        name: realProduct?.name,
+        supplier_id: realProduct?.supplier_id,
+        product_category: realProduct?.product_category,
+        categories: realProduct?.categories,
+        tag_ids: realProduct?.tag_ids,
+        price_excluding_tax: realProduct?.price_excluding_tax,
+        supply_price: realProduct?.supply_price,
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, stack: err.stack });
   }
 }
