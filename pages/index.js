@@ -258,23 +258,22 @@ export default function FlowReport() {
     if (demo) { setSummaryRows(DEMO_SUMMARY); setLoading(false); return; }
 
     try {
-      // 1. Resolve season tag ID
-      const tagsData = await apiFetchAll("2.0/tags", "data");
-      const seasonTag = tagsData.find((t) => t.name === season);
-      if (!seasonTag) throw new Error(`Season tag "${season}" not found in Lightspeed. Check that products are tagged correctly.`);
-
-      // 2. Fetch season-tagged products via the tag filter.
-      //    LS API never populates tag_ids[] on list responses, but ?tag_ids[]=ID
-      //    correctly filters and returns only products carrying that tag.
-      //    Tags live on PARENT products; variants are resolved in the next step.
+      // 1-2. Fetch season tag + tagged products via dedicated server-side endpoint.
+      //      The client-side proxy mangles ?tag_ids[]= brackets so LS returns all
+      //      products instead of filtered ones. /api/season-products calls LS directly.
       setLoadingStep("Finding season products…");
-      const taggedProds = await apiFetchAll(`2.0/products?tag_ids[]=${seasonTag.id}`, "data");
+      const seasonRes = await fetch(`/api/season-products?season=${encodeURIComponent(season)}`);
+      if (seasonRes.status === 401) { setAuthed(false); return; }
+      if (!seasonRes.ok) throw new Error(`Season product fetch failed: HTTP ${seasonRes.status}`);
+      const seasonData = await seasonRes.json();
+      if (!seasonData.tag) throw new Error(`Season tag "${season}" not found in Lightspeed. Check that products are tagged correctly.`);
+      const taggedProds = seasonData.products || [];
       console.log(`[FlowReport] Tagged products for "${season}":`, taggedProds.length);
 
       // Collect parent IDs (products without variant_parent_id are true parents).
       const parentIds = [];
       taggedProds.forEach((p) => { if (!p.variant_parent_id) parentIds.push(p.id); });
-
+      
       // 3. Fetch variants for each tagged parent.
       //    This replaces the old full-catalog scan — we only fetch what we need.
       setLoadingStep(`Fetching variants for ${parentIds.length} season item(s)…`);
