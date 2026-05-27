@@ -315,9 +315,7 @@ export default function FlowReport() {
 
       while (prodPages < 2000) {
         prodPages++;
-        // Small delay after the first page to avoid rapid-fire requests to LS
-        if (prodPages > 1) await new Promise(function(r) { setTimeout(r, 120); });
-        var prodPath = "2.0/products?active=1&page_size=200" + (prodAfter ? "&after=" + prodAfter : "");
+        var prodPath = "2.0/products?active=1&page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
         setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned)");
         var prodData = await apiFetch(prodPath);
         var prods    = prodData.data || [];
