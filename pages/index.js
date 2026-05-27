@@ -186,8 +186,9 @@ async function apiFetch(path, attempt) {
     }
     throw netErr;
   }
-  if (res.status === 429 && attempt < 4) {
-    await new Promise(function(r) { setTimeout(r, 1000 * (attempt + 1)); });
+  if (res.status === 429 && attempt < 6) {
+    // Exponential backoff: 3s, 6s, 12s, 24s, 48s, 96s
+    await new Promise(function(r) { setTimeout(r, 3000 * Math.pow(2, attempt)); });
     return apiFetch(path, attempt + 1);
   }
   if (!res.ok) {
@@ -358,6 +359,8 @@ export default function FlowReport() {
         var cursorP = (vfrP !== null ? vfrP : vfiP) || null;
         if (!cursorP) break;
         prodAfter = cursorP;
+        // Pace requests to stay under LS rate limit (~5 req/s)
+        await new Promise(function(r) { setTimeout(r, 200); });
       }
 
       console.log("[FlowReport] Season parents from SKU scan:", seasonParentIds.length, "/ total scanned:", totalScanned);
