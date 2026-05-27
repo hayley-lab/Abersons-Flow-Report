@@ -1,4 +1,4 @@
-// pages/api/debug-flow.js  — targeted diagnostics for zero-match scan
+// pages/api/debug-flow.js  — name-search and version diagnostic
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../lib/session";
 
@@ -21,129 +21,92 @@ export default async function handler(req, res) {
     catch { return { status: r.status, body: { raw: text.slice(0, 500) } }; }
   }
 
-  // ── Q1: Pagination sanity check ─────────────────────────────────────────────
-  // Fetch page 1, use its version.max as cursor for page 2, check page 2 SKUs.
-  // If page 2 has the SAME SKUs as page 1, the cursor is stuck and pagination
-  // is looping — that would explain why 40k products are "scanned" but always
-  // the same 200 products, finding 0 prefall26.
-  const page1 = await lsFetch("2.0/products?page_size=200");
-  const page1Items = page1.body.data || [];
-  const page1Version = page1.body.version || null;
-  const page1FirstSku = page1Items[0] ? page1Items[0].sku : null;
-  const page1LastSku  = page1Items[page1Items.length - 1] ? page1Items[page1Items.length - 1].sku : null;
-
-  let page2FirstSku = null, page2LastSku = null, page2Version = null, page2Count = 0;
-  if (page1Version && page1Version.max) {
-    const page2 = await lsFetch(`2.0/products?page_size=200&after=${page1Version.max}`);
-    const page2Items = page2.body.data || [];
-    page2Count    = page2Items.length;
-    page2Version  = page2.body.version || null;
-    page2FirstSku = page2Items[0] ? page2Items[0].sku : null;
-    page2LastSku  = page2Items[page2Items.length - 1] ? page2Items[page2Items.length - 1].sku : null;
+  function summarise(p) {
+    if (!p) return null;
+    return { id: p.id, sku: p.sku, name: p.name, version: p.version, variant_parent_id: p.variant_parent_id, product_type_id: p.product_type_id, supplier_id: p.supplier_id, price: p.price_excluding_tax, supply_price: p.supply_price };
   }
 
-  // Are page 1 and page 2 showing different products?
-  const paginationAdvancing = page1FirstSku !== page2FirstSku;
+  // ── Q1: Get the known pf26 product by ID (get its version + variant_parent_id) ─
+  const pf26ById = await lsFetch("2.0/products/9a20b2ba-ba0b-4adb-a7e7-a8a10c1ce4d1");
+  const pf26Product = pf26ById.body.data || pf26ById.body || {};
+  const pf26Version = pf26Product.version || null;
 
-  // ── Q2: What does a CONSIGNMENT line item's product look like in full? ──────
-  // Fetch first consignment → first line item → product by ID.
-  // This shows us ALL fields of a real PO product: is `sku` populated? Is it
-  // a variant (variant_parent_id set)? What does the version field look like?
-  const consResp  = await lsFetch("2.0/consignments?type=SUPPLIER&page_size=3");
-  const cons      = consResp.body.data || [];
-  const poSamples = [];
-  for (let ci = 0; ci < Math.min(cons.length, 3); ci++) {
-    const itemsResp = await lsFetch(`2.0/consignments/${cons[ci].id}/products?page_size=3`);
-    const lineItems = itemsResp.body.data || [];
-    for (let li = 0; li < Math.min(lineItems.length, 2); li++) {
-      const pid     = lineItems[li].product_id;
-      const prodResp = await lsFetch(`2.0/products/${pid}`);
-      // Single-product fetch may return {data: {...}} or just the object
-      const prod = prodResp.body.data || prodResp.body || {};
-      poSamples.push({
-        po_id:             cons[ci].id,
-        po_name:           cons[ci].name,
-        product_id:        pid,
-        // All key fields — is sku populated? Is it a variant?
-        sku:               prod.sku,
-        name:              prod.name,
-        handle:            prod.handle,
-        version:           prod.version,
-        variant_parent_id: prod.variant_parent_id,
-        product_type_id:   prod.product_type_id,
-        supplier_id:       prod.supplier_id,
-        price:             prod.price_excluding_tax,
-        supply_price:      prod.supply_price,
-        // Show all top-level keys so we can spot unexpected field names
-        all_keys:          Object.keys(prod),
-        consig_count:      lineItems[li].count,
-        consig_received:   lineItems[li].received,
-      });
+  // ── Q2: Does the general product list include the pf26 product? ─────────────
+  // Fetch the page that would contain pf26's version and check if it's there.
+  // We'll search around its version using after=(version-1).
+  let pf26InList = false;
+  let pageAroundPf26 = [];
+  if (pf26Version) {
+    const resp = await lsFetch(`2.0/products?page_size=200&after=${pf26Version - 1}`);
+    const items = resp.body.data || [];
+    pageAroundPf26 = items.slice(0, 5).map(summarise);
+    pf26InList = items.some(p => p.id === pf26Product.id);
+  }
+
+  // ── Q3: Is ?name= a CONTAINS filter? ────────────────────────────────────────
+  // If ?name=/pf26 returns many results, it's doing a contains search.
+  // This would let us find ALL prefall26 products without a full catalog scan.
+  const nameSlash   = await lsFetch("2.0/products?name=%2Fpf26&page_size=10"); // ?name=/pf26
+  const namePlain   = await lsFetch("2.0/products?name=pf26&page_size=10");    // ?name=pf26
+  const nameExact   = await lsFetch("2.0/products?name=nx5ctp063%2Fpf26&page_size=10"); // exact product name
+
+  // ── Q4: Does ?search= work for partial SKU/name matching? ────────────────────
+  const searchPf26  = await lsFetch("2.0/products?search=pf26&page_size=10");
+  const searchSlash = await lsFetch("2.0/products?search=%2Fpf26&page_size=10");
+
+  // ── Q5: What page is pf26 on relative to the full product list? ─────────────
+  // We know page1 max version = 50021080855, page2 max = 50021087386.
+  // If pf26Version > page2 max, it's on page 3+.
+  const page1Max = 50021080855;
+  const page2Max = 50021087386;
+  const versionsPerPage = 200;
+  const avgVersionStep = (page2Max - page1Max) / versionsPerPage; // ~32 per item
+  let estimatedPage = null;
+  if (pf26Version) {
+    if (pf26Version <= page1Max)      estimatedPage = "page 1 (first 200 products)";
+    else if (pf26Version <= page2Max) estimatedPage = "page 2 (products 201-400)";
+    else {
+      const pagesAfter2 = Math.ceil((pf26Version - page2Max) / (avgVersionStep * versionsPerPage));
+      estimatedPage = `page ~${2 + pagesAfter2} (approx ${(2 + pagesAfter2) * 200} products in)`;
     }
   }
 
-  // ── Q3: Can we find a prefall26 product via variant_parent_id search? ────────
-  // If we knew the parent ID of nx5ctp063/pf26, we could check if variants appear
-  // in the product list. Instead, try fetching by name pattern if the API supports it.
-  const nameSearch = await lsFetch("2.0/products?name=nx5ctp063%2Fpf26&page_size=5");
-  const nameItems  = nameSearch.body.data || [];
-
-  // ── Q4: Fetch a product KNOWN to be in the list (from page1) by ID ──────────
-  // Check if the list response and single-product response have the same fields.
-  // Specifically: does the list response include `sku`, `version`, etc.?
-  const firstListProduct = page1Items[0] || null;
-  let firstListProductById = null;
-  if (firstListProduct) {
-    const byId = await lsFetch(`2.0/products/${firstListProduct.id}`);
-    firstListProductById = byId.body.data || byId.body || null;
-  }
-
   return res.json({
-    // ── Q1: Pagination ──────────────────────────────────────────────────────
-    pagination_check: {
-      note: "Are pages 1 and 2 different? If page1_first_sku === page2_first_sku, pagination is stuck in a loop.",
-      page1_version_block: page1Version,
-      page1_first_sku:     page1FirstSku,
-      page1_last_sku:      page1LastSku,
-      cursor_used_for_p2:  page1Version ? page1Version.max : null,
-      page2_count:         page2Count,
-      page2_version_block: page2Version,
-      page2_first_sku:     page2FirstSku,
-      page2_last_sku:      page2LastSku,
-      pagination_is_advancing: paginationAdvancing,
+    // ── Q1: pf26 product details ─────────────────────────────────────────────
+    pf26_product_by_id: {
+      note: "Known pf26 product fetched by ID. variant_parent_id tells us if it's a parent or variant.",
+      sku:               pf26Product.sku,
+      name:              pf26Product.name,
+      version:           pf26Version,
+      variant_parent_id: pf26Product.variant_parent_id,
+      product_type_id:   pf26Product.product_type_id,
+      supplier_id:       pf26Product.supplier_id,
+      price:             pf26Product.price_excluding_tax,
+      supply_price:      pf26Product.supply_price,
     },
 
-    // ── Q2: Consignment product structure ───────────────────────────────────
-    consignment_product_samples: {
-      note: "Products from PO line items fetched by ID. Check: is sku populated? Does it look like a season code?",
-      samples: poSamples,
+    // ── Q2: Does it appear in the general list? ──────────────────────────────
+    pf26_in_general_list: {
+      note: "Fetched the page that should contain pf26's version. Is it actually there?",
+      pf26_version:      pf26Version,
+      estimated_page:    estimatedPage,
+      found_in_list:     pf26InList,
+      first_5_on_that_page: pageAroundPf26,
     },
 
-    // ── Q3: Name search ─────────────────────────────────────────────────────
-    name_search_pf26: {
-      note: "Search by product name = 'nx5ctp063/pf26'. LS may not support ?name= filter.",
-      status: nameSearch.status,
-      count:  nameItems.length,
-      first:  nameItems[0] ? { sku: nameItems[0].sku, name: nameItems[0].name, id: nameItems[0].id } : null,
+    // ── Q3: Name filter behavior ──────────────────────────────────────────────
+    name_filter_tests: {
+      note: "Testing whether ?name= does contains vs exact matching.",
+      "name=/pf26":           { status: nameSlash.status, count: (nameSlash.body.data || []).length, first_sku: (nameSlash.body.data || [])[0] ? (nameSlash.body.data || [])[0].sku : null },
+      "name=pf26":            { status: namePlain.status, count: (namePlain.body.data || []).length, first_sku: (namePlain.body.data || [])[0] ? (namePlain.body.data || [])[0].sku : null },
+      "name=nx5ctp063/pf26":  { status: nameExact.status, count: (nameExact.body.data || []).length, first_sku: (nameExact.body.data || [])[0] ? (nameExact.body.data || [])[0].sku : null },
     },
 
-    // ── Q4: List vs single-fetch field comparison ──────────────────────────
-    list_vs_by_id_comparison: {
-      note: "First product from page1: compare fields from list response vs. fetching by ID.",
-      in_list_response: firstListProduct ? {
-        sku:               firstListProduct.sku,
-        name:              firstListProduct.name,
-        version:           firstListProduct.version,
-        variant_parent_id: firstListProduct.variant_parent_id,
-        all_keys:          Object.keys(firstListProduct),
-      } : null,
-      by_id_response: firstListProductById ? {
-        sku:               firstListProductById.sku,
-        name:              firstListProductById.name,
-        version:           firstListProductById.version,
-        variant_parent_id: firstListProductById.variant_parent_id,
-        all_keys:          Object.keys(firstListProductById),
-      } : null,
+    // ── Q4: Search parameter ──────────────────────────────────────────────────
+    search_filter_tests: {
+      note: "Testing ?search= for full-text product search.",
+      "search=pf26":   { status: searchPf26.status,  count: (searchPf26.body.data  || []).length, first_sku: (searchPf26.body.data  || [])[0] ? (searchPf26.body.data  || [])[0].sku  : null },
+      "search=/pf26":  { status: searchSlash.status, count: (searchSlash.body.data || []).length, first_sku: (searchSlash.body.data || [])[0] ? (searchSlash.body.data || [])[0].sku  : null },
     },
   });
 }
