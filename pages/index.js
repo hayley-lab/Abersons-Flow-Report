@@ -159,8 +159,13 @@ const DEMO_PRODUCTS = {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-async function apiFetch(path) {
+async function apiFetch(path, attempt) {
+  if (!attempt) attempt = 0;
   const res = await fetch(`/api/ls/${path}`);
+  if (res.status === 429 && attempt < 4) {
+    await new Promise(function(r) { setTimeout(r, 800 * (attempt + 1)); });
+    return apiFetch(path, attempt + 1);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.message || err.error || `HTTP ${res.status}`);
