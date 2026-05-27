@@ -171,10 +171,21 @@ const DEMO_PRODUCTS = {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-// Fetch with exponential-backoff retry on 429 rate-limit responses.
+// Fetch with exponential-backoff retry on 429 rate-limit responses
+// and on network-level failures ("Failed to fetch").
 async function apiFetch(path, attempt) {
   if (!attempt) attempt = 0;
-  var res = await fetch("/api/ls/" + path);
+  var res;
+  try {
+    res = await fetch("/api/ls/" + path);
+  } catch (netErr) {
+    // Network error (connection reset, "Failed to fetch", etc.) — retry up to 4 times
+    if (attempt < 4) {
+      await new Promise(function(r) { setTimeout(r, 1500 * (attempt + 1)); });
+      return apiFetch(path, attempt + 1);
+    }
+    throw netErr;
+  }
   if (res.status === 429 && attempt < 4) {
     await new Promise(function(r) { setTimeout(r, 1000 * (attempt + 1)); });
     return apiFetch(path, attempt + 1);
@@ -304,6 +315,8 @@ export default function FlowReport() {
 
       while (prodPages < 500) {
         prodPages++;
+        // Small delay after the first page to avoid rapid-fire requests to LS
+        if (prodPages > 1) await new Promise(function(r) { setTimeout(r, 120); });
         var prodPath = "2.0/products?page_size=200" + (prodAfter ? "&after=" + prodAfter : "");
         setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned)");
         var prodData = await apiFetch(prodPath);
