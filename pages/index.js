@@ -195,7 +195,16 @@ async function apiFetch(path, attempt) {
     var err = await res.json().catch(function() { return {}; });
     throw new Error(err.message || err.error || "HTTP " + res.status);
   }
-  return res.json();
+  // Wrap JSON parse so a truncated body (partial response) retries like a network error
+  try {
+    return await res.json();
+  } catch (parseErr) {
+    if (attempt < 4) {
+      await new Promise(function(r) { setTimeout(r, 1500 * (attempt + 1)); });
+      return apiFetch(path, attempt + 1);
+    }
+    throw parseErr;
+  }
 }
 
 async function apiFetchAll(path, key) {
@@ -359,8 +368,8 @@ export default function FlowReport() {
         var cursorP = (vfrP !== null ? vfrP : vfiP) || null;
         if (!cursorP) break;
         prodAfter = cursorP;
-        // Pace requests to stay under LS rate limit (~5 req/s)
-        await new Promise(function(r) { setTimeout(r, 200); });
+        // Pace requests to stay under LS rate limit (~2 req/s)
+        await new Promise(function(r) { setTimeout(r, 500); });
       }
 
       console.log("[FlowReport] Season parents from SKU scan:", seasonParentIds.length, "/ total scanned:", totalScanned);
