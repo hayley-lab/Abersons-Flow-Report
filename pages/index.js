@@ -1,13 +1,8 @@
 // pages/index.js
 import { useState, useEffect, useCallback } from "react";
 
-// ── helpers ───────────────────────────────────────────────────────────────────
 const fmt = (n) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(n || 0);
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
 
 const pctColor = (pct, zero) => {
   if (zero || pct === 0) return { bg: "#f0ede6", color: "#9e9892" };
@@ -78,7 +73,6 @@ const TD = ({ children, right, mono }) => (
   </td>
 );
 
-// ── seasons ───────────────────────────────────────────────────────────────────
 const SEASONS = [
   { id: "prespring27", name: "Pre-Spring 2027" },
   { id: "fall26",      name: "Fall 2026" },
@@ -97,7 +91,6 @@ const SEASONS = [
   { id: "spring23",    name: "Spring 2023" },
 ];
 
-// ── demo data ─────────────────────────────────────────────────────────────────
 const DEMO_SUMMARY = [
   { id: "acc",   name: "Accessories",       ordered: 101823,  received: 98413,  sold: 55410,  cost: 40610  },
   { id: "alley", name: "Alley",             ordered: 922276,  received: 904549, sold: 604999, cost: 361475 },
@@ -164,7 +157,6 @@ const DEMO_PRODUCTS = {
   ],
 };
 
-// ── API fetch helpers (proxy through /api/ls/) ────────────────────────────────
 async function apiFetch(path) {
   const res = await fetch(`/api/ls/${path}`);
   if (!res.ok) {
@@ -174,7 +166,6 @@ async function apiFetch(path) {
   return res.json();
 }
 
-// LS v2.0 pagination: use max item version as cursor for the next page.
 async function apiFetchAll(path, key) {
   let results = [];
   let after = null;
@@ -188,21 +179,20 @@ async function apiFetchAll(path, key) {
     results = results.concat(items);
     if (items.length === 0) break;
     if (items.length < 200) break;
-    const versionFromResponse = (data.version && typeof data.version === "object") ? data.version.max : null;
-    const versionFromItems = items.reduce((max, i) => Math.max(max, i.version || 0), 0);
-    const cursor = (versionFromResponse !== null ? versionFromResponse : versionFromItems) || null;
+    const vfr = (data.version && typeof data.version === "object") ? data.version.max : null;
+    const vfi = items.reduce((mx, i) => Math.max(mx, i.version || 0), 0);
+    const cursor = (vfr !== null ? vfr : vfi) || null;
     if (!cursor) break;
     after = cursor;
   }
   return results;
 }
 
-// ── main component ────────────────────────────────────────────────────────────
 export default function FlowReport() {
   const [authed, setAuthed] = useState(null);
   const [demo, setDemo] = useState(false);
   const [screen, setScreen] = useState("summary");
-  const [season, setSeason] = useState("fall26");
+  const [season, setSeason] = useState("prefall26");
 
   const [summaryRows, setSummaryRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -227,7 +217,6 @@ export default function FlowReport() {
   const [productLoading, setProductLoading] = useState(false);
   const [productError, setProductError] = useState(null);
 
-  // ── load summary ──────────────────────────────────────────────────────────────
   const loadSummary = useCallback(async () => {
     setLoading(true);
     setLoadingStep("Finding season tag…");
@@ -249,14 +238,32 @@ export default function FlowReport() {
       const seasonTag = tagsData.find((t) => t.name === season);
       if (!seasonTag) throw new Error(`Season tag "${season}" not found in Lightspeed. Check that products are tagged correctly.`);
 
-      // 2. Fetch product types (departments) and all supplier consignments in parallel
-      setLoadingStep("Loading departments & purchase orders…");
+      // 2. Fetch season product IDs using the tag filter.
+      //    NOTE: LS API never populates tag_ids on product list responses,
+      //    but ?tag_ids[]=ID correctly filters and returns tagged products.
+      //    Tags are applied to PARENT products; variants inherit season via
+      //    the variant->parent resolution step below.
+      setLoadingStep("Finding season products…");
+      const taggedProducts = await apiFetchAll(`2.0/products?tag_ids[]=${seasonTag.id}`, "data");
+      const seasonPidSet    = new Set();
+      const seasonParentSet = new Set();
+      taggedProducts.forEach((p) => {
+        seasonPidSet.add(p.id);
+        if (p.variant_parent_id) {
+          seasonParentSet.add(p.variant_parent_id);
+        } else {
+          seasonParentSet.add(p.id);
+        }
+      });
+      setLoadingStep(`Found ${taggedProducts.length} season-tagged products. Loading purchase orders…`);
+
+      // 3. Fetch product types (departments) and all supplier consignments in parallel
       const [cats, consignments] = await Promise.all([
         apiFetchAll("2.0/product_types", "data"),
         apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
       ]);
 
-      // 3. Fetch all consignment line items
+      // 4. Fetch all consignment line items
       setLoadingStep(`Loading line items for ${consignments.length} purchase orders…`);
       const consigArrays = await Promise.all(
         consignments.map((c) => apiFetchAll(`2.0/consignments/${c.id}/products`, "data"))
@@ -264,39 +271,31 @@ export default function FlowReport() {
       const newConsigItems = consigArrays.flat();
       setAllConsigItems(newConsigItems);
 
-      // 4. Scan the full product catalog.
-      //    LS tags live on PARENT products only — variants have empty tag_ids.
-      //    We track variant->parent relationships and propagate season membership
-      //    after the full scan so consignment/sale line items (which reference
-      //    variant IDs) are counted correctly.
-      const newPidToType = {};
+      // 5. Scan the full product catalog to build lookup maps and find variant->parent links.
+      //    We no longer check tag_ids here (always empty in LS API responses).
+      //    Instead we use seasonParentSet built above to propagate season to variants.
+      const newPidToType     = {};
       const newPidToSupplier = {};
-      const newPidToPrice = {};
-      const newPidToCost = {};
-      const seasonPidSet = new Set();
-      const seasonParentSet = new Set();
-      const variantToParent = {};
+      const newPidToPrice    = {};
+      const newPidToCost     = {};
+      const variantToParent  = {};
       let productAfter = null;
-      let productPage = 0;
+      let productPage  = 0;
       while (productPage < 500) {
         productPage++;
         setLoadingStep(`Scanning product catalog… (page ${productPage})`);
-        const url = "2.0/products?page_size=200" + (productAfter ? "&after=" + productAfter : "");
+        const url  = "2.0/products?page_size=200" + (productAfter ? "&after=" + productAfter : "");
         const data = await apiFetch(url);
         const products = data.data || [];
         products.forEach((p) => {
           if (!p || !p.id) return;
-          newPidToType[p.id] = p.product_type_id || "__none__";
+          newPidToType[p.id]     = p.product_type_id || "__none__";
           newPidToSupplier[p.id] = {
             id:   p.supplier_id    || "__none__",
             name: p.supplier ? p.supplier.name : "Unknown",
           };
           newPidToPrice[p.id] = parseFloat(p.price_excluding_tax || 0);
           newPidToCost[p.id]  = parseFloat(p.supply_price        || 0);
-          if (p.tag_ids && p.tag_ids.includes(seasonTag.id)) {
-            seasonPidSet.add(p.id);
-            seasonParentSet.add(p.id);
-          }
           if (p.variant_parent_id) {
             variantToParent[p.id] = p.variant_parent_id;
           }
@@ -310,13 +309,13 @@ export default function FlowReport() {
         productAfter = cursor;
       }
 
-      // Propagate season from parent to variant IDs.
-      // Consignment/sale line items reference variant IDs which have empty tag_ids.
-      setLoadingStep("Resolving variant season tags…");
+      // 6. Propagate season from tagged parents to their variant children.
+      //    Also inherit supplier/type/price/cost from parent when variant fields are empty.
+      setLoadingStep("Resolving variant season membership…");
       const variantEntries = Object.entries(variantToParent);
-      for (let vi2 = 0; vi2 < variantEntries.length; vi2++) {
-        const varId   = variantEntries[vi2][0];
-        const parentId = variantEntries[vi2][1];
+      for (let i = 0; i < variantEntries.length; i++) {
+        const varId    = variantEntries[i][0];
+        const parentId = variantEntries[i][1];
         if (seasonParentSet.has(parentId)) {
           seasonPidSet.add(varId);
         }
@@ -340,11 +339,9 @@ export default function FlowReport() {
       setPidToCost(newPidToCost);
       setSeasonPids(new Set(seasonPidSet));
 
-      // 5. Build department summary from consignment line items
+      // 7. Build department summary from consignment line items
       const map = {};
-      cats.forEach((c) => {
-        map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 };
-      });
+      cats.forEach((c) => { map[c.id] = { id: c.id, name: c.name, ordered: 0, received: 0, sold: 0 }; });
 
       newConsigItems.forEach((item) => {
         if (!seasonPidSet.has(item.product_id)) return;
@@ -355,7 +352,7 @@ export default function FlowReport() {
         map[cid].received += retailPrice * (item.received || 0);
       });
 
-      // 6. Fetch sales and tally sold amounts
+      // 8. Fetch sales and tally sold amounts
       let newSaleLineItems = [];
       let salesError = null;
       try {
@@ -366,7 +363,7 @@ export default function FlowReport() {
           salePages++;
           const fullPath = "2.0/sales?page_size=200" + (saleAfter ? "&after=" + saleAfter : "");
           setLoadingStep(`Loading sales… (page ${salePages}, ${salesResults.length} loaded)`);
-          const saleData = await apiFetch(fullPath);
+          const saleData  = await apiFetch(fullPath);
           const saleItems = saleData.data || [];
           salesResults = salesResults.concat(saleItems);
           if (saleItems.length === 0) break;
@@ -379,9 +376,7 @@ export default function FlowReport() {
         }
         newSaleLineItems = salesResults
           .filter((s) => s.status !== "VOIDED")
-          .flatMap((s) =>
-            (s.line_items || []).filter((li) => li.product_id && li.status !== "VOIDED")
-          );
+          .flatMap((s) => (s.line_items || []).filter((li) => li.product_id && li.status !== "VOIDED"));
         setAllSaleLineItems(newSaleLineItems);
       } catch (e) {
         salesError = e.message;
@@ -392,15 +387,11 @@ export default function FlowReport() {
         const cid = newPidToType[li.product_id] || "__none__";
         if (!map[cid]) return;
         const amount = parseFloat(li.total_price || li.price || 0);
-        if (li.is_return) {
-          map[cid].sold -= amount;
-        } else {
-          map[cid].sold += amount;
-        }
+        if (li.is_return) { map[cid].sold -= amount; } else { map[cid].sold += amount; }
       });
 
       setSummaryRows(Object.values(map).sort((a, b) => b.ordered - a.ordered));
-      if (salesError) setError(`Sales fetch failed (sold totals may be incomplete): ${salesError}`);
+      if (salesError) setError(`Sales fetch incomplete: ${salesError}`);
     } catch (e) {
       if (e.message.includes("401") || e.message.toLowerCase().includes("not authenticated")) {
         setAuthed(false);
@@ -418,149 +409,102 @@ export default function FlowReport() {
       .catch(() => setAuthed(false));
   }, []);
 
-  useEffect(() => {
-    if (authed === true) loadSummary();
-  }, [authed, loadSummary]);
+  useEffect(() => { if (authed === true) loadSummary(); }, [authed, loadSummary]);
 
-  // ── open department → vendor view ─────────────────────────────────────────────
-  const openDept = useCallback(
-    (dept) => {
-      setCurrentDept(dept);
-      setVendorRows([]);
-      setVendorError(null);
-      setVendorLoading(true);
-      setScreen("vendors");
+  const openDept = useCallback((dept) => {
+    setCurrentDept(dept);
+    setVendorRows([]);
+    setVendorError(null);
+    setVendorLoading(true);
+    setScreen("vendors");
 
-      if (demo) {
-        setVendorRows(DEMO_VENDORS[dept.id] || []);
-        setVendorLoading(false);
-        return;
-      }
+    if (demo) { setVendorRows(DEMO_VENDORS[dept.id] || []); setVendorLoading(false); return; }
 
-      try {
-        const vm = {};
+    try {
+      const vm = {};
+      allConsigItems.forEach((item) => {
+        if (!seasonPids.has(item.product_id)) return;
+        if (pidToType[item.product_id] !== dept.id) return;
+        const supplier = pidToSupplier[item.product_id];
+        if (!supplier || supplier.id === "__none__") return;
+        if (!vm[supplier.id]) vm[supplier.id] = { id: supplier.id, name: supplier.name, ordered: 0, received: 0, sold: 0, cost: 0 };
+        const retailPrice = pidToPrice[item.product_id] || 0;
+        vm[supplier.id].ordered  += retailPrice * (item.count    || 0);
+        vm[supplier.id].received += retailPrice * (item.received || 0);
+        vm[supplier.id].cost     += parseFloat(item.cost || 0) * (item.received || 0);
+      });
+      allSaleLineItems.forEach((li) => {
+        if (!seasonPids.has(li.product_id)) return;
+        if (pidToType[li.product_id] !== dept.id) return;
+        const supplier = pidToSupplier[li.product_id];
+        if (!supplier || !vm[supplier.id]) return;
+        const amount = parseFloat(li.total_price || li.price || 0);
+        if (li.is_return) { vm[supplier.id].sold -= amount; } else { vm[supplier.id].sold += amount; }
+      });
+      setVendorRows(Object.values(vm).sort((a, b) => b.ordered - a.ordered));
+    } catch (e) { setVendorError(e.message); }
+    setVendorLoading(false);
+  }, [demo, allConsigItems, allSaleLineItems, pidToType, pidToSupplier, pidToPrice, seasonPids]);
 
-        allConsigItems.forEach((item) => {
-          if (!seasonPids.has(item.product_id)) return;
-          if (pidToType[item.product_id] !== dept.id) return;
-          const supplier = pidToSupplier[item.product_id];
-          if (!supplier || supplier.id === "__none__") return;
-          if (!vm[supplier.id]) {
-            vm[supplier.id] = { id: supplier.id, name: supplier.name, ordered: 0, received: 0, sold: 0, cost: 0 };
-          }
-          const retailPrice = pidToPrice[item.product_id] || 0;
-          vm[supplier.id].ordered  += retailPrice * (item.count    || 0);
-          vm[supplier.id].received += retailPrice * (item.received || 0);
-          const wholesaleCost = parseFloat(item.cost || 0);
-          vm[supplier.id].cost += wholesaleCost * (item.received || 0);
-        });
+  const openVendor = useCallback(async (vendor) => {
+    setCurrentVendor(vendor);
+    setProductRows([]);
+    setProductLoading(true);
+    setProductError(null);
+    setScreen("products");
 
-        allSaleLineItems.forEach((li) => {
-          if (!seasonPids.has(li.product_id)) return;
-          if (pidToType[li.product_id] !== dept.id) return;
-          const supplier = pidToSupplier[li.product_id];
-          if (!supplier || !vm[supplier.id]) return;
-          const amount = parseFloat(li.total_price || li.price || 0);
-          if (li.is_return) {
-            vm[supplier.id].sold -= amount;
-          } else {
-            vm[supplier.id].sold += amount;
-          }
-        });
+    if (demo) { setProductRows(DEMO_PRODUCTS[vendor.id] || []); setProductLoading(false); return; }
 
-        setVendorRows(Object.values(vm).sort((a, b) => b.ordered - a.ordered));
-      } catch (e) {
-        setVendorError(e.message);
-      }
-      setVendorLoading(false);
-    },
-    [demo, allConsigItems, allSaleLineItems, pidToType, pidToSupplier, pidToPrice, seasonPids]
-  );
+    try {
+      const allProducts = await apiFetchAll(`2.0/products?supplier_id=${vendor.id}`, "data");
+      const products = allProducts.filter((p) => seasonPids.has(p.id) && pidToType[p.id] === currentDept.id);
 
-  // ── open vendor → product view ────────────────────────────────────────────────
-  const openVendor = useCallback(
-    async (vendor) => {
-      setCurrentVendor(vendor);
-      setProductRows([]);
-      setProductLoading(true);
-      setProductError(null);
-      setScreen("products");
+      const pidSet = new Set(products.map((p) => p.id));
+      const soldMap = {}; const returnMap = {};
+      allSaleLineItems.forEach((li) => {
+        if (!pidSet.has(li.product_id)) return;
+        const qty = parseInt(li.quantity || 0);
+        if (li.is_return) { returnMap[li.product_id] = (returnMap[li.product_id] || 0) + qty; }
+        else { soldMap[li.product_id] = (soldMap[li.product_id] || 0) + qty; }
+      });
 
-      if (demo) {
-        setProductRows(DEMO_PRODUCTS[vendor.id] || []);
-        setProductLoading(false);
-        return;
-      }
+      setProductRows(products.map((p) => ({
+        name:     p.name,
+        sku:      p.sku || "",
+        variant:  p.variant_option_one_value || p.variant_name || "",
+        cost:     parseFloat(p.supply_price        || 0),
+        price:    parseFloat(p.price_excluding_tax || 0),
+        onHand:   (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
+        sold:     soldMap[p.id]   || 0,
+        returned: returnMap[p.id] || 0,
+      })));
+    } catch (e) { setProductError(e.message); }
+    setProductLoading(false);
+  }, [demo, currentDept, seasonPids, pidToType, allSaleLineItems]);
 
-      try {
-        const allProducts = await apiFetchAll(
-          `2.0/products?supplier_id=${vendor.id}`,
-          "data"
-        );
-        const products = allProducts.filter(
-          (p) => seasonPids.has(p.id) && (pidToType[p.id] === currentDept.id)
-        );
-
-        const pidSet = new Set(products.map((p) => p.id));
-        const soldMap = {};
-        const returnMap = {};
-        allSaleLineItems.forEach((li) => {
-          if (!pidSet.has(li.product_id)) return;
-          const qty = parseInt(li.quantity || 0);
-          if (li.is_return) {
-            returnMap[li.product_id] = (returnMap[li.product_id] || 0) + qty;
-          } else {
-            soldMap[li.product_id] = (soldMap[li.product_id] || 0) + qty;
-          }
-        });
-
-        setProductRows(
-          products.map((p) => ({
-            name:     p.name,
-            sku:      p.sku || "",
-            variant:  p.variant_option_one_value || p.variant_name || "",
-            cost:     parseFloat(p.supply_price        || 0),
-            price:    parseFloat(p.price_excluding_tax || 0),
-            onHand:   (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
-            sold:     soldMap[p.id]   || 0,
-            returned: returnMap[p.id] || 0,
-          }))
-        );
-      } catch (e) {
-        setProductError(e.message);
-      }
-      setProductLoading(false);
-    },
-    [demo, currentDept, seasonPids, pidToType, allSaleLineItems]
-  );
-
-  // ── computed totals ───────────────────────────────────────────────────────────
   const totalOrdered  = summaryRows.reduce((a, r) => a + r.ordered,  0);
   const totalReceived = summaryRows.reduce((a, r) => a + r.received, 0);
   const totalSold     = summaryRows.reduce((a, r) => a + r.sold,     0);
   const totalRecPct   = totalOrdered  > 0 ? (totalReceived / totalOrdered)  * 100 : 0;
   const totalSoldPct  = totalReceived > 0 ? (totalSold     / totalReceived) * 100 : 0;
-
   const vTotalOrdered  = vendorRows.reduce((a, r) => a + r.ordered,  0);
   const vTotalReceived = vendorRows.reduce((a, r) => a + r.received, 0);
   const vTotalSold     = vendorRows.reduce((a, r) => a + r.sold,     0);
   const vTotalCost     = vendorRows.reduce((a, r) => a + (r.cost || 0), 0);
-
   const seasonLabel = SEASONS.find((s2) => s2.id === season) ? SEASONS.find((s2) => s2.id === season).name : season;
 
-  // ── styles ────────────────────────────────────────────────────────────────────
   const s = {
-    app:        { fontFamily: "'DM Sans',sans-serif", background: "#f7f5f0", minHeight: "100vh", fontSize: 14 },
-    header:     { background: "#fff", borderBottom: "1px solid #e2ddd5", padding: "0 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between", height: 56, position: "sticky", top: 0, zIndex: 100 },
-    logo:       { fontFamily: "'DM Serif Display',serif", fontSize: 22, color: "#1a1816", letterSpacing: -0.5 },
-    nav:        { display: "flex", gap: 4 },
-    navBtn:     (active) => ({ background: active ? "#e8eef7" : "none", border: "none", padding: "6px 13px", borderRadius: 6, fontSize: 13, color: active ? "#3a5a8c" : "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontWeight: 500 }),
-    main:       { padding: "1.75rem 1.5rem", maxWidth: 1200, margin: "0 auto" },
-    seasonPill: { display: "flex", alignItems: "center", gap: 6, background: "#f0ede6", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 10px", fontSize: 13, fontWeight: 500 },
-    tableRow:   (clickable, zero) => ({ borderBottom: "1px solid #e2ddd5", cursor: clickable && !zero ? "pointer" : "default", opacity: zero ? 0.45 : 1, transition: "background 0.1s" }),
-    backBtn:    { background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, textDecoration: "underline", textUnderlineOffset: 2, padding: 0, marginBottom: "0.9rem" },
-    demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
-    statusDot:  (status) => {
+    app:       { fontFamily: "'DM Sans',sans-serif", background: "#f7f5f0", minHeight: "100vh", fontSize: 14 },
+    header:    { background: "#fff", borderBottom: "1px solid #e2ddd5", padding: "0 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between", height: 56, position: "sticky", top: 0, zIndex: 100 },
+    logo:      { fontFamily: "'DM Serif Display',serif", fontSize: 22, color: "#1a1816", letterSpacing: -0.5 },
+    nav:       { display: "flex", gap: 4 },
+    navBtn:    (active) => ({ background: active ? "#e8eef7" : "none", border: "none", padding: "6px 13px", borderRadius: 6, fontSize: 13, color: active ? "#3a5a8c" : "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontWeight: 500 }),
+    main:      { padding: "1.75rem 1.5rem", maxWidth: 1200, margin: "0 auto" },
+    seasonPill:{ display: "flex", alignItems: "center", gap: 6, background: "#f0ede6", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 10px", fontSize: 13, fontWeight: 500 },
+    tableRow:  (clickable, zero) => ({ borderBottom: "1px solid #e2ddd5", cursor: clickable && !zero ? "pointer" : "default", opacity: zero ? 0.45 : 1, transition: "background 0.1s" }),
+    backBtn:   { background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, textDecoration: "underline", textUnderlineOffset: 2, padding: 0, marginBottom: "0.9rem" },
+    demoBadge: { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
+    statusDot: (status) => {
       const colors = { sold: "#4a7ab5", stock: "#e05a36", ordered: "#aaa", returned: "#9b59b6" };
       return { width: 10, height: 10, borderRadius: "50%", background: colors[status] || "#aaa", display: "inline-block" };
     },
@@ -568,78 +512,49 @@ export default function FlowReport() {
 
   const fontLink = "@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap'); @keyframes spin{to{transform:rotate(360deg)}} tbody tr:hover{background:#f0f5fb!important}";
 
-  // ── login / checking screens ──────────────────────────────────────────────────
-  if (authed === null) {
-    return (
-      <div style={s.app}>
-        <style>{fontLink}</style>
-        <header style={s.header}><div style={s.logo}>abersons</div></header>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)" }}>
-          <Spinner label="Checking login…" />
-        </div>
-      </div>
-    );
-  }
+  if (authed === null) return (
+    <div style={s.app}><style>{fontLink}</style>
+      <header style={s.header}><div style={s.logo}>abersons</div></header>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)" }}><Spinner label="Checking login…" /></div>
+    </div>
+  );
 
-  if (authed === false) {
-    return (
-      <div style={s.app}>
-        <style>{fontLink}</style>
-        <header style={s.header}><div style={s.logo}>abersons</div></header>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)", gap: 16 }}>
-          <div style={{ fontFamily: "'DM Serif Display',serif", fontSize: 26, color: "#1a1816" }}>Flow Report</div>
-          <div style={{ fontSize: 13, color: "#6b6560", marginBottom: 8 }}>Connect your Lightspeed account to continue.</div>
-          <a
-            href="/api/auth/lightspeed"
-            style={{ background: "#3a5a8c", color: "#fff", padding: "10px 24px", borderRadius: 8, textDecoration: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 14, fontWeight: 500 }}
-          >
-            Connect to Lightspeed
-          </a>
-        </div>
+  if (authed === false) return (
+    <div style={s.app}><style>{fontLink}</style>
+      <header style={s.header}><div style={s.logo}>abersons</div></header>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)", gap: 16 }}>
+        <div style={{ fontFamily: "'DM Serif Display',serif", fontSize: 26, color: "#1a1816" }}>Flow Report</div>
+        <div style={{ fontSize: 13, color: "#6b6560", marginBottom: 8 }}>Connect your Lightspeed account to continue.</div>
+        <a href="/api/auth/lightspeed" style={{ background: "#3a5a8c", color: "#fff", padding: "10px 24px", borderRadius: 8, textDecoration: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 14, fontWeight: 500 }}>Connect to Lightspeed</a>
       </div>
-    );
-  }
+    </div>
+  );
 
-  // ── render ────────────────────────────────────────────────────────────────────
   return (
     <div style={s.app}>
       <style>{fontLink}</style>
-
       <header style={s.header}>
         <div style={s.logo}>abersons</div>
         <nav style={s.nav}>
-          <button style={s.navBtn(screen !== "detail")} onClick={() => setScreen("summary")}>
-            flow summary
-          </button>
-          <button style={s.navBtn(screen === "detail")} onClick={() => setScreen("detail")}>
-            flow detail
-          </button>
+          <button style={s.navBtn(screen !== "detail")} onClick={() => setScreen("summary")}>flow summary</button>
+          <button style={s.navBtn(screen === "detail")} onClick={() => setScreen("detail")}>flow detail</button>
         </nav>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {demo && <span style={s.demoBadge}>demo mode</span>}
           <div style={s.seasonPill}>
             <span style={{ color: "#9e9892", fontSize: 12 }}>▸</span>
-            <select
-              value={season}
-              onChange={(e) => { setSeason(e.target.value); setScreen("summary"); }}
-              style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}
-            >
-              {SEASONS.map((s2) => (
-                <option key={s2.id} value={s2.id}>{s2.name}</option>
-              ))}
+            <select value={season} onChange={(e) => { setSeason(e.target.value); setScreen("summary"); }}
+              style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}>
+              {SEASONS.map((s2) => <option key={s2.id} value={s2.id}>{s2.name}</option>)}
             </select>
             <span style={{ color: "#9e9892", fontSize: 12 }}>◂</span>
           </div>
-          <button
-            onClick={() => { setDemo(!demo); setScreen("summary"); }}
-            style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}
-          >
+          <button onClick={() => { setDemo(!demo); setScreen("summary"); }}
+            style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
             {demo ? "Live data" : "Demo mode"}
           </button>
-          <button
-            onClick={() => fetch("/api/auth/logout").then(() => setAuthed(false))}
-            style={{ background: "none", border: "none", padding: "5px 8px", fontSize: 12, color: "#9e9892", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}
-          >
+          <button onClick={() => fetch("/api/auth/logout").then(() => setAuthed(false))}
+            style={{ background: "none", border: "none", padding: "5px 8px", fontSize: 12, color: "#9e9892", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
             logout
           </button>
         </div>
@@ -659,26 +574,10 @@ export default function FlowReport() {
                   { label: "Total Sold",     value: fmt(totalSold),     sub: totalSoldPct.toFixed(1) + "% of received" },
                   { label: "Departments",    value: summaryRows.filter((r) => r.ordered > 0 || r.sold > 0).length },
                 ]} />
-                <TableWrap
-                  title={"Store Summary — " + seasonLabel}
-                  right={
-                    <button onClick={loadSummary} style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#6b6560", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
-                      ↺ Refresh
-                    </button>
-                  }
-                >
+                <TableWrap title={"Store Summary — " + seasonLabel}
+                  right={<button onClick={loadSummary} style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#6b6560", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>↺ Refresh</button>}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <TH>Sold %</TH>
-                        <TH>Department</TH>
-                        <TH right>Ordered</TH>
-                        <TH right>Received</TH>
-                        <TH right>Sold</TH>
-                        <TH right>Received %</TH>
-                        <TH right>Sold %</TH>
-                      </tr>
-                    </thead>
+                    <thead><tr><TH>Sold %</TH><TH>Department</TH><TH right>Ordered</TH><TH right>Received</TH><TH right>Sold</TH><TH right>Received %</TH><TH right>Sold %</TH></tr></thead>
                     <tbody>
                       {summaryRows.map((r) => {
                         const recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
@@ -708,9 +607,7 @@ export default function FlowReport() {
           <>
             <button style={s.backBtn} onClick={() => setScreen("summary")}>← Store Summary</button>
             <div style={{ color: "#9e9892", fontSize: 13, marginBottom: "1.25rem" }}>
-              <button onClick={() => setScreen("summary")} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>
-                Store Summary
-              </button>
+              <button onClick={() => setScreen("summary")} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>Store Summary</button>
               {" › "}<span style={{ color: "#1a1816", fontWeight: 500 }}>{currentDept ? currentDept.name : ""}</span>
             </div>
             {vendorLoading && <Spinner label="Loading vendors…" />}
@@ -718,26 +615,15 @@ export default function FlowReport() {
             {!vendorLoading && (
               <>
                 <KpiRow items={[
-                  { label: "Ordered (retail)",   value: fmt(vTotalOrdered) },
-                  { label: "Cost (wholesale)",    value: fmt(vTotalCost) },
-                  { label: "Received",            value: fmt(vTotalReceived), sub: vTotalOrdered  > 0 ? ((vTotalReceived / vTotalOrdered)  * 100).toFixed(1) + "%" : "—" },
-                  { label: "Sold",                value: fmt(vTotalSold),     sub: vTotalReceived > 0 ? ((vTotalSold     / vTotalReceived) * 100).toFixed(1) + "%" : "—" },
-                  { label: "Vendors",             value: vendorRows.filter((r) => r.ordered > 0 || r.sold > 0).length },
+                  { label: "Ordered (retail)", value: fmt(vTotalOrdered) },
+                  { label: "Cost (wholesale)", value: fmt(vTotalCost) },
+                  { label: "Received", value: fmt(vTotalReceived), sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "%" : "—" },
+                  { label: "Sold",     value: fmt(vTotalSold),     sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "%" : "—" },
+                  { label: "Vendors",  value: vendorRows.filter((r) => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={(currentDept ? currentDept.name : "") + " — by Vendor"}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <TH>Sold %</TH>
-                        <TH>Vendor</TH>
-                        <TH right>Ordered</TH>
-                        <TH right>Cost</TH>
-                        <TH right>Received</TH>
-                        <TH right>Sold</TH>
-                        <TH right>Received %</TH>
-                        <TH right>Sold %</TH>
-                      </tr>
-                    </thead>
+                    <thead><tr><TH>Sold %</TH><TH>Vendor</TH><TH right>Ordered</TH><TH right>Cost</TH><TH right>Received</TH><TH right>Sold</TH><TH right>Received %</TH><TH right>Sold %</TH></tr></thead>
                     <tbody>
                       {vendorRows.map((r) => {
                         const recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
@@ -768,13 +654,9 @@ export default function FlowReport() {
           <>
             <button style={s.backBtn} onClick={() => setScreen("vendors")}>← {currentDept ? currentDept.name : ""}</button>
             <div style={{ color: "#9e9892", fontSize: 13, marginBottom: "1.25rem" }}>
-              <button onClick={() => setScreen("summary")} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>
-                Store Summary
-              </button>
+              <button onClick={() => setScreen("summary")} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>Store Summary</button>
               {" › "}
-              <button onClick={() => setScreen("vendors")} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>
-                {currentDept ? currentDept.name : ""}
-              </button>
+              <button onClick={() => setScreen("vendors")} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>{currentDept ? currentDept.name : ""}</button>
               {" › "}<span style={{ color: "#1a1816", fontWeight: 500 }}>{currentVendor ? currentVendor.name : ""}</span>
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
@@ -796,59 +678,35 @@ export default function FlowReport() {
             {!productLoading && (
               <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      <TH>Status</TH>
-                      <TH>Description</TH>
-                      <TH>SKU</TH>
-                      <TH>Variant</TH>
-                      <TH right>Cost</TH>
-                      <TH right>Price</TH>
-                      <TH right>On Hand</TH>
-                      <TH right>Sold</TH>
-                      <TH right>Returned</TH>
-                    </tr>
-                  </thead>
+                  <thead><tr><TH>Status</TH><TH>Description</TH><TH>SKU</TH><TH>Variant</TH><TH right>Cost</TH><TH right>Price</TH><TH right>On Hand</TH><TH right>Sold</TH><TH right>Returned</TH></tr></thead>
                   <tbody>
                     {productRows.length === 0 ? (
                       <tr><td colSpan={9} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
-                    ) : (
-                      productRows.map((p, i) => {
-                        const status = p.returned > 0 && p.sold === 0 ? "returned"
-                                     : p.sold    > 0 ? "sold"
-                                     : p.onHand  > 0 ? "stock"
-                                     : "ordered";
-                        return (
-                          <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
-                            <TD><span style={s.statusDot(status)} /></TD>
-                            <TD>{p.name}</TD>
-                            <TD mono>{p.sku}</TD>
-                            <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
-                            <TD right>{p.cost  > 0 ? fmt(p.cost)  : "—"}</TD>
-                            <TD right>{p.price > 0 ? fmt(p.price) : "—"}</TD>
-                            <TD right>{p.onHand}</TD>
-                            <TD right>{p.sold}</TD>
-                            <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned || 0}</TD>
-                          </tr>
-                        );
-                      })
-                    )}
+                    ) : productRows.map((p, i) => {
+                      const status = p.returned > 0 && p.sold === 0 ? "returned" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
+                      return (
+                        <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
+                          <TD><span style={s.statusDot(status)} /></TD>
+                          <TD>{p.name}</TD>
+                          <TD mono>{p.sku}</TD>
+                          <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
+                          <TD right>{p.cost  > 0 ? fmt(p.cost)  : "—"}</TD>
+                          <TD right>{p.price > 0 ? fmt(p.price) : "—"}</TD>
+                          <TD right>{p.onHand}</TD>
+                          <TD right>{p.sold}</TD>
+                          <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned || 0}</TD>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
                 <div style={{ display: "flex", gap: 14, flexWrap: "wrap", padding: "9px 12px", background: "#f0ede6", borderTop: "1px solid #e2ddd5", fontSize: 12 }}>
-                  {[
-                    ["sold",     "sold",     "#4a7ab5"],
-                    ["stock",    "in stock", "#e05a36"],
-                    ["ordered",  "ordered",  "#aaa"],
-                    ["returned", "returned", "#9b59b6"],
-                  ].map(function(entry) {
-                    return (
-                      <div key={entry[0]} style={{ display: "flex", alignItems: "center", gap: 5, color: "#6b6560" }}>
-                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: entry[2], display: "inline-block" }} />
-                        {entry[1]}
-                      </div>
-                    );
-                  })}
+                  {[["sold","sold","#4a7ab5"],["stock","in stock","#e05a36"],["ordered","ordered","#aaa"],["returned","returned","#9b59b6"]].map((e) => (
+                    <div key={e[0]} style={{ display: "flex", alignItems: "center", gap: 5, color: "#6b6560" }}>
+                      <span style={{ width: 9, height: 9, borderRadius: "50%", background: e[2], display: "inline-block" }} />
+                      {e[1]}
+                    </div>
+                  ))}
                 </div>
               </TableWrap>
             )}
