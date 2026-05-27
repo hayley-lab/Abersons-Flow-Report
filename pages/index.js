@@ -342,7 +342,6 @@ export default function FlowReport() {
         }
 
         if (prods.length === 0) break;
-        if (prods.length < 200) break;
         var vfrP = (prodData.version && typeof prodData.version === "object") ? prodData.version.max : null;
         var vfiP = prods.reduce(function(mx, pp) { return Math.max(mx, pp.version || 0); }, 0);
         var cursorP = (vfrP !== null ? vfrP : vfiP) || null;
