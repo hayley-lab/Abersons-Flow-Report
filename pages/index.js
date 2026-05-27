@@ -313,7 +313,7 @@ export default function FlowReport() {
       var prodPages    = 0;
       var totalScanned = 0;
 
-      while (prodPages < 500) {
+      while (prodPages < 2000) {
         prodPages++;
         // Small delay after the first page to avoid rapid-fire requests to LS
         if (prodPages > 1) await new Promise(function(r) { setTimeout(r, 120); });
