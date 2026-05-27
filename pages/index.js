@@ -92,8 +92,7 @@ const SEASONS = [
 ];
 
 // Returns the list of SKU suffix codes that identify a product as belonging to
-// this season.  Prespring has TWO codes because older products use "rs" while
-// newer ones use "ps" — both must be accepted.
+// this season.  Prespring has TWO codes: older products use /rs, newer ones use /ps.
 // Examples: prefall26 → ["/pf26"], prespring26 → ["/rs26", "/ps26"]
 function seasonSkuCodes(seasonId) {
   var m = seasonId.match(/^(prefall|fall|spring|prespring)(\d+)$/);
@@ -172,7 +171,7 @@ const DEMO_PRODUCTS = {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-// apiFetch with exponential-backoff retry on 429 rate-limit responses.
+// Fetch with exponential-backoff retry on 429 rate-limit responses.
 async function apiFetch(path, attempt) {
   if (!attempt) attempt = 0;
   var res = await fetch("/api/ls/" + path);
@@ -210,7 +209,6 @@ async function apiFetchAll(path, key) {
 }
 
 // Run async tasks with a bounded concurrency limit (avoids flooding the LS API).
-// tasks = array of () => Promise functions.
 async function withConcurrency(tasks, limit) {
   var results = new Array(tasks.length).fill(null);
   var nextIdx = 0;
@@ -273,11 +271,10 @@ export default function FlowReport() {
 
     try {
       // Determine which SKU suffix codes identify this season.
-      // The LS API tag filter (?tag_ids[]=UUID) is silently ignored and returns
-      // all products, so we identify season products by their SKU suffix instead.
-      // prespring has TWO codes: older products use /rs, newer ones use /ps.
+      // The LS API tag filter (?tag_ids[]=UUID) is silently ignored, so we
+      // identify season products by their SKU suffix instead.
       var skuCodes = seasonSkuCodes(season);
-      if (skuCodes.length === 0) throw new Error("Unrecognized season: " + season);
+      if (skuCodes.length === 0) throw new Error("Unrecognized season format: " + season);
 
       // 1. Load departments + consignment headers in parallel
       setLoadingStep("Loading departments & purchase orders…");
@@ -285,24 +282,24 @@ export default function FlowReport() {
         apiFetchAll("2.0/product_types", "data"),
         apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
       ]);
-      var cats = parallelResult[0];
+      var cats         = parallelResult[0];
       var consignments = parallelResult[1];
-      console.log("[FlowReport] Consignments:", consignments.length, "skuCodes:", skuCodes);
+      console.log("[FlowReport] Departments:", cats.length, "Consignments:", consignments.length, "SKU codes:", skuCodes);
 
-      // 2. Scan ALL products sequentially, identifying season members by SKU.
-      //    We also record parent→variant relationships so that variants of
-      //    season parents (which may not have the season suffix themselves)
-      //    are included.
+      // 2. Scan ALL products sequentially, identifying season PARENT products by SKU.
+      //    LS 2.0/products returns parent products only — variants are separate records
+      //    fetched via ?variant_parent_id=. Consignment items reference variant IDs,
+      //    so we must also fetch variants for every season parent we find (step 2b).
       var newPidToType     = {};
       var newPidToSupplier = {};
       var newPidToPrice    = {};
       var newPidToCost     = {};
       var seasonPidSet     = new Set();
-      var variantToParent  = {}; // variantId → parentId
-      var parentStore      = {}; // parentId → {typeId,suppId,suppName,price,cost}
+      var seasonParentIds  = []; // parent IDs confirmed as season products
+      var parentStore      = {}; // pid → {typeId,suppId,suppName,price,cost} for variant inheritance
 
-      var prodAfter = null;
-      var prodPages = 0;
+      var prodAfter    = null;
+      var prodPages    = 0;
       var totalScanned = 0;
 
       while (prodPages < 500) {
@@ -310,27 +307,26 @@ export default function FlowReport() {
         var prodPath = "2.0/products?page_size=200" + (prodAfter ? "&after=" + prodAfter : "");
         setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned)");
         var prodData = await apiFetch(prodPath);
-        var prods = prodData.data || [];
+        var prods    = prodData.data || [];
         totalScanned += prods.length;
 
         for (var pi = 0; pi < prods.length; pi++) {
-          var p = prods[pi];
+          var p   = prods[pi];
           var sku = (p.sku || "").toLowerCase();
+
           var isSeason = false;
           for (var ci = 0; ci < skuCodes.length; ci++) {
             if (sku.includes(skuCodes[ci])) { isSeason = true; break; }
           }
 
           var typeId   = p.product_type_id || "__none__";
-          var suppId   = (p.supplier && p.supplier.id) || p.supplier_id || "__none__";
+          var suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
           var suppName = (p.supplier && p.supplier.name) || "Unknown";
           var price    = parseFloat(p.price_excluding_tax || 0);
-          var cost     = parseFloat(p.supply_price || 0);
+          var cost     = parseFloat(p.supply_price        || 0);
 
-          if (p.variant_parent_id) {
-            variantToParent[p.id] = p.variant_parent_id;
-          } else {
-            // Store parent data for later variant inheritance
+          // Always store parent data so variants can inherit it in step 2b
+          if (!p.variant_parent_id) {
             parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
           }
 
@@ -340,6 +336,8 @@ export default function FlowReport() {
             newPidToSupplier[p.id] = { id: suppId, name: suppName };
             newPidToPrice[p.id]    = price;
             newPidToCost[p.id]     = cost;
+            // Queue parent products for variant fetching in step 2b
+            if (!p.variant_parent_id) seasonParentIds.push(p.id);
           }
         }
 
@@ -352,26 +350,46 @@ export default function FlowReport() {
         prodAfter = cursorP;
       }
 
-      // Propagate season membership from parent to variants that we found in
-      // the scan (variants whose parent is a season product but which may not
-      // carry the SKU suffix themselves, e.g. color/size variants).
-      var varIds = Object.keys(variantToParent);
-      for (var vi = 0; vi < varIds.length; vi++) {
-        var varId = varIds[vi];
-        var parId = variantToParent[varId];
-        if (seasonPidSet.has(parId) && !seasonPidSet.has(varId)) {
-          seasonPidSet.add(varId);
-          var par = parentStore[parId];
-          if (par) {
-            newPidToType[varId]     = par.typeId;
-            newPidToSupplier[varId] = { id: par.suppId, name: par.suppName };
-            newPidToPrice[varId]    = par.price;
-            newPidToCost[varId]     = par.cost;
-          }
-        }
+      console.log("[FlowReport] Season parents from SKU scan:", seasonParentIds.length, "/ total scanned:", totalScanned);
+
+      // Diagnostic: if 0 parents found, the SKU pattern probably doesn't match.
+      if (seasonParentIds.length === 0) {
+        throw new Error(
+          "No products found matching season code(s) " + skuCodes.join(", ") +
+          " (checked " + totalScanned.toLocaleString() + " products). " +
+          "Verify the SKU suffix format in Lightspeed, e.g. open a known Pre-Fall 2026 product and check its SKU."
+        );
       }
 
-      console.log("[FlowReport] Season PID set size:", seasonPidSet.size);
+      // 2b. Fetch variants for each season parent.
+      //     PO/consignment line items reference VARIANT product IDs, not parent IDs.
+      //     We only fetch variants for the N season parents (not all 40k products),
+      //     so this is fast and won't hit rate limits.
+      setLoadingStep("Fetching variants for " + seasonParentIds.length + " season product(s)…");
+      await withConcurrency(
+        seasonParentIds.map(function(pid) {
+          return async function() {
+            var variants = await apiFetchAll("2.0/products?variant_parent_id=" + pid, "data");
+            var par      = parentStore[pid];
+            for (var vvi = 0; vvi < variants.length; vvi++) {
+              var vp = variants[vvi];
+              if (seasonPidSet.has(vp.id)) continue; // already added
+              seasonPidSet.add(vp.id);
+              // Prefer variant's own values; fall back to parent
+              newPidToType[vp.id]     = vp.product_type_id || (par && par.typeId) || "__none__";
+              newPidToSupplier[vp.id] = {
+                id:   (vp.supplier && vp.supplier.id)   || vp.supplier_id   || (par && par.suppId)   || "__none__",
+                name: (vp.supplier && vp.supplier.name) || (par && par.suppName) || "Unknown",
+              };
+              newPidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || 0) || (par ? par.price : 0);
+              newPidToCost[vp.id]  = parseFloat(vp.supply_price        || 0) || (par ? par.cost  : 0);
+            }
+          };
+        }),
+        5
+      );
+
+      console.log("[FlowReport] Season PID set size (parents + variants):", seasonPidSet.size);
       setPidToType(newPidToType);
       setPidToSupplier(newPidToSupplier);
       setPidToPrice(newPidToPrice);
@@ -379,7 +397,6 @@ export default function FlowReport() {
       setSeasonPids(new Set(seasonPidSet));
 
       // 3. Fetch consignment line items with bounded concurrency (3 at a time).
-      //    Keeps us well under the LS API rate limit.
       var newConsigItems = [];
       var posDone = 0;
       await withConcurrency(
@@ -404,30 +421,29 @@ export default function FlowReport() {
         var cat = cats[ki];
         map[cat.id] = { id: cat.id, name: cat.name, ordered: 0, received: 0, sold: 0 };
       }
-
       for (var ni = 0; ni < newConsigItems.length; ni++) {
-        var item = newConsigItems[ni];
-        var cid = newPidToType[item.product_id] || "__none__";
+        var item    = newConsigItems[ni];
+        var cid     = newPidToType[item.product_id] || "__none__";
         if (!map[cid]) map[cid] = { id: cid, name: "Other", ordered: 0, received: 0, sold: 0 };
-        var itemPrice = newPidToPrice[item.product_id] || 0;
-        map[cid].ordered  += itemPrice * (item.count    || 0);
-        map[cid].received += itemPrice * (item.received || 0);
+        var iPrice  = newPidToPrice[item.product_id] || 0;
+        map[cid].ordered  += iPrice * (item.count    || 0);
+        map[cid].received += iPrice * (item.received || 0);
       }
 
-      // 5. Fetch sales (all pages, sequential) and tally sold amounts
+      // 5. Fetch all sales (sequential pages) and tally sold amounts
       var newSaleLineItems = [];
-      var salesError = null;
+      var salesError       = null;
       try {
         var salesResults = [];
-        var saleAfter = null;
-        var salePages = 0;
+        var saleAfter    = null;
+        var salePages    = 0;
         while (salePages < 200) {
           salePages++;
           var salePath = "2.0/sales?page_size=200" + (saleAfter ? "&after=" + saleAfter : "");
           setLoadingStep("Loading sales… (page " + salePages + ", " + salesResults.length + " loaded)");
           var saleData  = await apiFetch(salePath);
           var saleItems = saleData.data || [];
-          salesResults = salesResults.concat(saleItems);
+          salesResults  = salesResults.concat(saleItems);
           if (saleItems.length === 0) break;
           if (saleItems.length < 200) break;
           var svp = (saleData.version && typeof saleData.version === "object") ? saleData.version.max : null;
@@ -436,7 +452,6 @@ export default function FlowReport() {
           if (!saleCursor) break;
           saleAfter = saleCursor;
         }
-        newSaleLineItems = [];
         for (var si = 0; si < salesResults.length; si++) {
           var sale = salesResults[si];
           if (sale.status === "VOIDED") continue;
@@ -451,7 +466,7 @@ export default function FlowReport() {
         salesError = e.message;
       }
 
-      // Tally sold (returns subtracted)
+      // Tally sold amounts (returns subtracted)
       for (var sli = 0; sli < newSaleLineItems.length; sli++) {
         var lineItem = newSaleLineItems[sli];
         if (!seasonPidSet.has(lineItem.product_id)) continue;
@@ -515,8 +530,8 @@ export default function FlowReport() {
         if (pidToType[li.product_id] !== dept.id) continue;
         var sup = pidToSupplier[li.product_id];
         if (!sup || !vm[sup.id]) continue;
-        var saleAmount = parseFloat(li.total_price || li.price || 0);
-        if (li.is_return) { vm[sup.id].sold -= saleAmount; } else { vm[sup.id].sold += saleAmount; }
+        var saleAmt = parseFloat(li.total_price || li.price || 0);
+        if (li.is_return) { vm[sup.id].sold -= saleAmt; } else { vm[sup.id].sold += saleAmt; }
       }
       setVendorRows(Object.values(vm).sort(function(a, b) { return b.ordered - a.ordered; }));
     } catch (e) { setVendorError(e.message); }
@@ -536,12 +551,13 @@ export default function FlowReport() {
 
     try {
       var allProducts = await apiFetchAll("2.0/products?supplier_id=" + vendor.id, "data");
-      var products = allProducts.filter(function(p) {
+      var products    = allProducts.filter(function(p) {
         return seasonPids.has(p.id) && pidToType[p.id] === currentDept.id;
       });
 
-      var pidSet = new Set(products.map(function(p) { return p.id; }));
-      var soldMap = {}; var returnMap = {};
+      var pidSet    = new Set(products.map(function(p) { return p.id; }));
+      var soldMap   = {};
+      var returnMap = {};
       for (var i = 0; i < allSaleLineItems.length; i++) {
         var li = allSaleLineItems[i];
         if (!pidSet.has(li.product_id)) continue;
@@ -581,7 +597,7 @@ export default function FlowReport() {
   const vTotalSold     = vendorRows.reduce(function(a, r) { return a + r.sold;     }, 0);
   const vTotalCost     = vendorRows.reduce(function(a, r) { return a + (r.cost || 0); }, 0);
   var seasonLabel = "";
-  for (var si2 = 0; si2 < SEASONS.length; si2++) { if (SEASONS[si2].id === season) { seasonLabel = SEASONS[si2].name; break; } }
+  for (var sIdx = 0; sIdx < SEASONS.length; sIdx++) { if (SEASONS[sIdx].id === season) { seasonLabel = SEASONS[sIdx].name; break; } }
   if (!seasonLabel) seasonLabel = season;
 
   // ── styles ────────────────────────────────────────────────────────────────
