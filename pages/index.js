@@ -269,6 +269,9 @@ export default function FlowReport() {
       if (!seasonData.tag) throw new Error(`Season tag "${season}" not found in Lightspeed. Check that products are tagged correctly.`);
       const taggedProds = seasonData.products || [];
       console.log(`[FlowReport] Tagged products for "${season}":`, taggedProds.length);
+            if (taggedProds.length > 200) {
+        throw new Error(`Tag filter returned ${taggedProds.length} products — the filter is not working correctly. Visit /api/debug-flow for diagnostics.`);
+      }
 
       // Collect parent IDs (products without variant_parent_id are true parents).
       const parentIds = [];
