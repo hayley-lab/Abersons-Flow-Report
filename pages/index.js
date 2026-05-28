@@ -229,6 +229,33 @@ async function apiFetchAll(path, key) {
   return results;
 }
 
+// ── localStorage cache ────────────────────────────────────────────────────────
+// After the first (slow) full scan, the season's computed data is stored in
+// localStorage so subsequent loads are instant.  The Refresh button clears the
+// entry and forces a fresh scan.
+var CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
+
+function cacheKey(seasonId) { return "flow-v2-" + seasonId; }
+
+function readCache(seasonId) {
+  try {
+    var raw = localStorage.getItem(cacheKey(seasonId));
+    if (!raw) return null;
+    var c = JSON.parse(raw);
+    if (!c || Date.now() - c.ts > CACHE_TTL) return null;
+    return c;
+  } catch (e) { return null; }
+}
+
+function writeCache(seasonId, payload) {
+  try { localStorage.setItem(cacheKey(seasonId), JSON.stringify({ ts: Date.now(), ...payload })); }
+  catch (e) { /* quota exceeded — skip silently */ }
+}
+
+function clearCache(seasonId) {
+  try { localStorage.removeItem(cacheKey(seasonId)); } catch (e) {}
+}
+
 // Run async tasks with a bounded concurrency limit (avoids flooding the LS API).
 async function withConcurrency(tasks, limit) {
   var results = new Array(tasks.length).fill(null);
@@ -289,6 +316,21 @@ export default function FlowReport() {
     setSeasonPids(new Set());
 
     if (demo) { setSummaryRows(DEMO_SUMMARY); setLoading(false); return; }
+
+    // Restore from localStorage cache if fresh — skips the entire scan
+    var cached = readCache(season);
+    if (cached) {
+      setSummaryRows(cached.summaryRows || []);
+      setAllConsigItems(cached.allConsigItems || []);
+      setAllSaleLineItems(cached.allSaleLineItems || []);
+      setSeasonPids(new Set(cached.seasonPids || []));
+      setPidToType(cached.pidToType || {});
+      setPidToSupplier(cached.pidToSupplier || {});
+      setPidToPrice(cached.pidToPrice || {});
+      setPidToCost(cached.pidToCost || {});
+      setLoading(false);
+      return;
+    }
 
     try {
       // Determine which SKU suffix codes identify this season.
@@ -533,7 +575,18 @@ export default function FlowReport() {
         if (lineItem.is_return) { map[lcid].sold -= amount; } else { map[lcid].sold += amount; }
       }
 
-      setSummaryRows(Object.values(map).sort(function(a, b) { return b.ordered - a.ordered; }));
+      var finalRows = Object.values(map).sort(function(a, b) { return b.ordered - a.ordered; });
+      writeCache(season, {
+        summaryRows:      finalRows,
+        allConsigItems:   newConsigItems,
+        allSaleLineItems: newSaleLineItems,
+        seasonPids:       Array.from(seasonPidSet),
+        pidToType:        newPidToType,
+        pidToSupplier:    newPidToSupplier,
+        pidToPrice:       newPidToPrice,
+        pidToCost:        newPidToCost,
+      });
+      setSummaryRows(finalRows);
       if (salesError) setError("Sales data may be incomplete: " + salesError);
     } catch (e) {
       if (e.message.includes("401") || e.message.toLowerCase().includes("not authenticated")) {
@@ -747,7 +800,7 @@ export default function FlowReport() {
                   { label: "Departments",    value: summaryRows.filter(function(r) { return r.ordered > 0 || r.sold > 0; }).length },
                 ]} />
                 <TableWrap title={"Store Summary — " + seasonLabel}
-                  right={<button onClick={loadSummary} style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#6b6560", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>↺ Refresh</button>}>
+                  right={<button onClick={function() { clearCache(season); loadSummary(); }} style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#6b6560", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>↺ Refresh</button>}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
                       <tr>
