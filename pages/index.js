@@ -585,17 +585,20 @@ export default function FlowReport() {
         }
         // Tally status distribution for diagnostics
         var statusCounts = {};
+        // Log first sale's raw status so we know exact LS string without expanding an object
+        if (salesResults.length > 0) console.log("[FlowReport] First sale status raw:", JSON.stringify(salesResults[0].status));
         for (var si = 0; si < salesResults.length; si++) {
           var sale = salesResults[si];
           statusCounts[sale.status] = (statusCounts[sale.status] || 0) + 1;
-          // Only count COMPLETED sales — LS sales report excludes LAYBY, PARKING_LOT, QUOTE, etc.
-          if (sale.status !== "COMPLETED") continue;
+          // Exclude VOIDED sales; include all others (COMPLETED, LAYBY, etc.)
+          // We'll tighten this once we confirm the exact LS status strings from the log above.
+          if (sale.status === "VOIDED") continue;
           var lis = sale.line_items || [];
           for (var li = 0; li < lis.length; li++) {
             if (lis[li].product_id && lis[li].status !== "VOIDED") newSaleLineItems.push(lis[li]);
           }
         }
-        console.log("[FlowReport] Sale status breakdown:", statusCounts);
+        console.log("[FlowReport] Sale status breakdown:", JSON.stringify(statusCounts));
         setAllSaleLineItems(newSaleLineItems);
         console.log("[FlowReport] Total sale line items:", newSaleLineItems.length);
       } catch (e) {
