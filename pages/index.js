@@ -307,10 +307,11 @@ export default function FlowReport() {
       var consignments = parallelResult[1];
       console.log("[FlowReport] Departments:", cats.length, "Consignments:", consignments.length, "SKU codes:", skuCodes);
 
-      // 2. Scan ALL products sequentially, identifying season PARENT products by SKU.
-      //    LS 2.0/products returns parent products only — variants are separate records
-      //    fetched via ?variant_parent_id=. Consignment items reference variant IDs,
-      //    so we must also fetch variants for every season parent we find (step 2b).
+      // 2. Find season products by SKU suffix.
+      //    Fast path: ?search=CODE returns results in 1-2 calls if LS full-text search
+      //    matches SKU/name. We post-filter by exact suffix to eliminate false positives.
+      //    Slow path: full page scan when search returns nothing (older LS versions or
+      //    seasons whose code doesn't surface well in search).
       var newPidToType     = {};
       var newPidToSupplier = {};
       var newPidToPrice    = {};
@@ -318,61 +319,95 @@ export default function FlowReport() {
       var seasonPidSet     = new Set();
       var seasonParentIds  = []; // parent IDs confirmed as season products
       var parentStore      = {}; // pid → {typeId,suppId,suppName,price,cost} for variant inheritance
+      var totalScanned     = 0;
 
-      var prodAfter    = null;
-      var prodPages    = 0;
-      var totalScanned = 0;
-
-      while (prodPages < 2000) {
-        prodPages++;
-        var prodPath = "2.0/products?page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
-        setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned)");
-        var prodData = await apiFetch(prodPath);
-        var prods    = prodData.data || [];
-        totalScanned += prods.length;
-
-        for (var pi = 0; pi < prods.length; pi++) {
-          var p   = prods[pi];
-          var sku = (p.sku || "").toLowerCase();
-
-          var isSeason = false;
-          for (var ci = 0; ci < skuCodes.length; ci++) {
-            if (sku.includes(skuCodes[ci])) { isSeason = true; break; }
-          }
-
-          var typeId   = p.product_type_id || "__none__";
-          var suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
-          var suppName = (p.supplier && p.supplier.name) || "Unknown";
-          var price    = parseFloat(p.price_excluding_tax || 0);
-          var cost     = parseFloat(p.supply_price        || 0);
-
-          // Always store parent data so variants can inherit it in step 2b
-          if (!p.variant_parent_id) {
-            parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
-          }
-
-          if (isSeason) {
-            seasonPidSet.add(p.id);
-            newPidToType[p.id]     = typeId;
-            newPidToSupplier[p.id] = { id: suppId, name: suppName };
-            newPidToPrice[p.id]    = price;
-            newPidToCost[p.id]     = cost;
-            // Queue parent products for variant fetching in step 2b
-            if (!p.variant_parent_id) seasonParentIds.push(p.id);
-          }
+      function registerProduct(p) {
+        var typeId   = p.product_type_id || "__none__";
+        var suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
+        var suppName = (p.supplier && p.supplier.name) || "Unknown";
+        var price    = parseFloat(p.price_excluding_tax || 0);
+        var cost     = parseFloat(p.supply_price        || 0);
+        seasonPidSet.add(p.id);
+        newPidToType[p.id]     = typeId;
+        newPidToSupplier[p.id] = { id: suppId, name: suppName };
+        newPidToPrice[p.id]    = price;
+        newPidToCost[p.id]     = cost;
+        if (!p.variant_parent_id) {
+          parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
+          seasonParentIds.push(p.id);
+        } else if (!seasonParentIds.includes(p.variant_parent_id)) {
+          // Variant found before its parent — queue parent for step 2b variant expansion
+          seasonParentIds.push(p.variant_parent_id);
         }
-
-        if (prods.length === 0) break;
-        var vfrP = (prodData.version && typeof prodData.version === "object") ? prodData.version.max : null;
-        var vfiP = prods.reduce(function(mx, pp) { return Math.max(mx, pp.version || 0); }, 0);
-        var cursorP = (vfrP !== null ? vfrP : vfiP) || null;
-        if (!cursorP) break;
-        prodAfter = cursorP;
-        // Pace requests to stay under LS rate limit (~2 req/s)
-        await new Promise(function(r) { setTimeout(r, 500); });
       }
 
-      console.log("[FlowReport] Season parents from SKU scan:", seasonParentIds.length, "/ total scanned:", totalScanned);
+      // ── Fast path ────────────────────────────────────────────────────────────
+      setLoadingStep("Searching for " + seasonLabel + " products…");
+      var fastPathFound = false;
+      for (var sci = 0; sci < skuCodes.length; sci++) {
+        var searchCode = skuCodes[sci].replace("/", ""); // "/pf26" → "pf26"
+        var searchAfter = null;
+        for (var sp = 0; sp < 20; sp++) {
+          var sData = await apiFetch("2.0/products?active=1&page_size=200&search=" + encodeURIComponent(searchCode) + (searchAfter ? "&after=" + searchAfter : ""));
+          var sItems = sData.data || [];
+          for (var si2 = 0; si2 < sItems.length; si2++) {
+            var sItem = sItems[si2];
+            var sSku  = (sItem.sku || "").toLowerCase();
+            if (skuCodes.some(function(c) { return sSku.includes(c); })) {
+              registerProduct(sItem);
+              fastPathFound = true;
+            }
+          }
+          if (sItems.length < 200) break;
+          var sVfr = (sData.version && typeof sData.version === "object") ? sData.version.max : null;
+          var sVfi = sItems.reduce(function(mx, i) { return Math.max(mx, i.version || 0); }, 0);
+          var sCursor = (sVfr !== null ? sVfr : sVfi) || null;
+          if (!sCursor) break;
+          searchAfter = sCursor;
+        }
+      }
+      totalScanned = seasonPidSet.size;
+      console.log("[FlowReport] Fast-path search found:", seasonParentIds.length, "parents");
+
+      // ── Slow path (full scan) ─────────────────────────────────────────────────
+      if (!fastPathFound) {
+        setLoadingStep("Searching… (full catalog scan, this takes ~10 min)");
+        var prodAfter = null;
+        var prodPages = 0;
+        while (prodPages < 2000) {
+          prodPages++;
+          var prodPath = "2.0/products?active=1&page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
+          setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned — season products near the end of catalog)");
+          var prodData = await apiFetch(prodPath);
+          var prods    = prodData.data || [];
+          totalScanned += prods.length;
+
+          for (var pi = 0; pi < prods.length; pi++) {
+            var p   = prods[pi];
+            var sku = (p.sku || "").toLowerCase();
+            var isSeason = skuCodes.some(function(c) { return sku.includes(c); });
+            if (!p.variant_parent_id) {
+              var typeId   = p.product_type_id || "__none__";
+              var suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
+              var suppName = (p.supplier && p.supplier.name) || "Unknown";
+              var price    = parseFloat(p.price_excluding_tax || 0);
+              var cost     = parseFloat(p.supply_price        || 0);
+              parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
+            }
+            if (isSeason) registerProduct(p);
+          }
+
+          if (prods.length === 0) break;
+          var vfrP = (prodData.version && typeof prodData.version === "object") ? prodData.version.max : null;
+          var vfiP = prods.reduce(function(mx, pp) { return Math.max(mx, pp.version || 0); }, 0);
+          var cursorP = (vfrP !== null ? vfrP : vfiP) || null;
+          if (!cursorP) break;
+          prodAfter = cursorP;
+          await new Promise(function(r) { setTimeout(r, 500); });
+        }
+      }
+
+      console.log("[FlowReport] Season parents found:", seasonParentIds.length, "/ total scanned:", totalScanned);
 
       // Diagnostic: if 0 parents found, the SKU pattern probably doesn't match.
       if (seasonParentIds.length === 0) {
