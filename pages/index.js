@@ -375,18 +375,25 @@ export default function FlowReport() {
         var suppName = (p.supplier && p.supplier.name) || "Unknown";
         var price    = parseFloat(p.price_excluding_tax || 0);
         var cost     = parseFloat(p.supply_price        || 0);
+        // LS variants often omit product_type_id and supplier — inherit from the parent
+        if (p.variant_parent_id) {
+          var par = parentStore[p.variant_parent_id];
+          if (par) {
+            if (typeId   === "__none__") typeId   = par.typeId;
+            if (suppId   === "__none__") { suppId = par.suppId; suppName = par.suppName; }
+            if (price    === 0)          price    = par.price;
+            if (cost     === 0)          cost     = par.cost;
+          }
+          variantsSeenInScan = true;
+        } else {
+          parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
+          seasonParentIds.push(p.id);
+        }
         seasonPidSet.add(p.id);
         newPidToType[p.id]     = typeId;
         newPidToSupplier[p.id] = { id: suppId, name: suppName };
         newPidToPrice[p.id]    = price;
         newPidToCost[p.id]     = cost;
-        if (!p.variant_parent_id) {
-          parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
-          seasonParentIds.push(p.id);
-        } else {
-          // Variant found in scan/search — step 2b can be skipped; all IDs already captured
-          variantsSeenInScan = true;
-        }
       }
 
       // ── Fast path ────────────────────────────────────────────────────────────
@@ -700,7 +707,10 @@ export default function FlowReport() {
     try {
       var allProducts = await apiFetchAll("2.0/products?supplier_id=" + vendor.id, "data");
       var products    = allProducts.filter(function(p) {
-        return seasonPids.has(p.id) && pidToType[p.id] === currentDept.id;
+        if (!seasonPids.has(p.id)) return false;
+        var t = pidToType[p.id];
+        // Accept correct type, or "__none__" (variants often lack product_type_id in LS)
+        return t === currentDept.id || t === "__none__";
       });
 
       var pidSet    = new Set(products.map(function(p) { return p.id; }));
