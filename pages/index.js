@@ -848,7 +848,7 @@ export default function FlowReport() {
                       </tr>
                     </thead>
                     <tbody>
-                      {summaryRows.map(function(r) {
+                      {summaryRows.filter(function(r) { return r.ordered > 0 || r.received > 0 || r.sold > 0; }).map(function(r) {
                         var recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
                         var soldPct = r.received > 0 ? (r.sold     / r.received) * 100 : 0;
                         var zero    = r.ordered === 0 && r.sold === 0;
