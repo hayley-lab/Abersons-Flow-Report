@@ -254,6 +254,8 @@ function writeCache(seasonId, payload) {
 
 function clearCache(seasonId) {
   try { localStorage.removeItem(cacheKey(seasonId)); } catch (e) {}
+  // Also clear the now-removed scan-hint system so stale entries don't interfere
+  try { localStorage.removeItem("flow-scan-hints"); } catch (e) {}
 }
 
 // Run async tasks with a bounded concurrency limit (avoids flooding the LS API).
@@ -316,6 +318,9 @@ export default function FlowReport() {
     setSeasonPids(new Set());
 
     if (demo) { setSummaryRows(DEMO_SUMMARY); setLoading(false); return; }
+
+    // Remove stale scan-hint entries left over from the removed hint system
+    try { localStorage.removeItem("flow-scan-hints"); } catch (e) {}
 
     // Restore from localStorage cache if fresh — skips the entire scan
     var cached = readCache(season);
@@ -416,34 +421,28 @@ export default function FlowReport() {
 
       // ── Slow path (full scan) ─────────────────────────────────────────────────
       if (!fastPathFound) {
-        // Determine start cursor: saved hint → bootstrap from known product ID → full scan from start
-        var scanHints = {};
-        try { scanHints = JSON.parse(localStorage.getItem("flow-scan-hints") || "{}"); } catch {}
-        var prodAfter = (scanHints[season] != null) ? scanHints[season] : null;
-
-        if (prodAfter === null) {
-          // Per-season bootstrap: fetch a known product to get its version and jump near it.
-          var knownProductIds = { pf26: "9a20b2ba-ba0b-4adb-a7e7-a8a10c1ce4d1" };
-          var skuBase = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
-          var knownId = skuBase ? (knownProductIds[skuBase] || null) : null;
-          if (knownId) {
-            try {
-              setLoadingStep("Locating season in catalog…");
-              var knownProdData = await apiFetch("2.0/products/" + knownId);
-              var knownVersion = ((knownProdData.data || knownProdData).version) || null;
-              if (knownVersion) {
-                anchorVersion = knownVersion;
-                prodAfter = Math.max(0, knownVersion - 1500000); // ~45k products of buffer before anchor
-                console.log("[FlowReport] Cursor jump: starting at version", prodAfter, "(anchor version:", knownVersion, ")");
-              }
-            } catch (e) {
-              console.warn("[FlowReport] Bootstrap fetch failed, scanning from start:", e.message);
-            }
+        // Always fetch the anchor product to get a reliable version reference.
+        // A saved-hint approach was tried but caused a feedback-loop bug where each
+        // run saved a tighter cursor based on a truncated scan, eventually leaving
+        // only ~511 products visible. The anchor-based cursor (anchor - 1.5M) is
+        // predictably correct every time: it starts ~45k products before the anchor,
+        // which covers the entire pf26 collection and all products added after it.
+        var knownProductIds = { pf26: "9a20b2ba-ba0b-4adb-a7e7-a8a10c1ce4d1" };
+        var skuBase = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
+        var knownId = skuBase ? (knownProductIds[skuBase] || null) : null;
+        if (knownId) {
+          try {
+            setLoadingStep("Locating season in catalog…");
+            var knownProdData = await apiFetch("2.0/products/" + knownId);
+            anchorVersion = ((knownProdData.data || knownProdData).version) || null;
+            console.log("[FlowReport] Anchor version:", anchorVersion);
+          } catch (e) {
+            console.warn("[FlowReport] Bootstrap fetch failed, scanning from start:", e.message);
           }
         }
 
+        var prodAfter = anchorVersion ? Math.max(0, anchorVersion - 1500000) : null;
         var prodPages = 0;
-        var firstSeasonVersion = null;
         while (prodPages < 2000) {
           prodPages++;
           var prodPath = "2.0/products?active=1&page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
@@ -464,10 +463,7 @@ export default function FlowReport() {
               var cost     = parseFloat(p.supply_price        || 0);
               parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
             }
-            if (isSeason) {
-              if (firstSeasonVersion === null && p.version) firstSeasonVersion = p.version;
-              registerProduct(p);
-            }
+            if (isSeason) registerProduct(p);
           }
 
           if (prods.length === 0) break;
@@ -477,14 +473,6 @@ export default function FlowReport() {
           if (!cursorP) break;
           prodAfter = cursorP;
           await new Promise(function(r) { setTimeout(r, 500); });
-        }
-
-        // Save tighter hint for next cold start: begin just before the earliest season product found
-        if (firstSeasonVersion !== null) {
-          try {
-            scanHints[season] = Math.max(0, firstSeasonVersion - 300000); // ~9k product buffer
-            localStorage.setItem("flow-scan-hints", JSON.stringify(scanHints));
-          } catch {}
         }
       }
 
@@ -581,16 +569,11 @@ export default function FlowReport() {
       var salesError       = null;
       try {
         var salesResults = [];
-        var saleHints    = {};
-        try { saleHints = JSON.parse(localStorage.getItem("flow-scan-hints") || "{}"); } catch {}
-        var salesCursorKey = season + "-salesafter";
-        var saleAfter =
-          (saleHints[salesCursorKey] != null) ? saleHints[salesCursorKey] :
-          (anchorVersion != null)             ? Math.max(0, anchorVersion - 1000000) :
-          null;
+        // Use anchor version as sales cursor — same reliable fixed-offset approach as products.
+        // No saved-hint system: same drift feedback-loop risk, and anchor-based is fast enough.
+        var saleAfter = anchorVersion ? Math.max(0, anchorVersion - 1000000) : null;
         console.log("[FlowReport] Sales scan start cursor:", saleAfter, "(anchor:", anchorVersion, ")");
         var salePages    = 0;
-        var firstSeasonSaleVersion = null;
         while (salePages < 2000) {
           salePages++;
           var salePath = "2.0/sales?page_size=200" + (saleAfter ? "&after=" + saleAfter : "");
@@ -611,23 +594,11 @@ export default function FlowReport() {
           if (sale.status === "VOIDED") continue;
           var lis = sale.line_items || [];
           for (var li = 0; li < lis.length; li++) {
-            if (lis[li].product_id && lis[li].status !== "VOIDED") {
-              newSaleLineItems.push(lis[li]);
-              if (firstSeasonSaleVersion === null && seasonPidSet.has(lis[li].product_id) && sale.version) {
-                firstSeasonSaleVersion = sale.version;
-              }
-            }
+            if (lis[li].product_id && lis[li].status !== "VOIDED") newSaleLineItems.push(lis[li]);
           }
         }
         setAllSaleLineItems(newSaleLineItems);
-        console.log("[FlowReport] Total sale line items:", newSaleLineItems.length, "/ first season sale version:", firstSeasonSaleVersion);
-        // Save tighter sales cursor hint for future cold starts
-        if (firstSeasonSaleVersion !== null) {
-          try {
-            saleHints[salesCursorKey] = Math.max(0, firstSeasonSaleVersion - 300000);
-            localStorage.setItem("flow-scan-hints", JSON.stringify(saleHints));
-          } catch {}
-        }
+        console.log("[FlowReport] Total sale line items:", newSaleLineItems.length);
       } catch (e) {
         salesError = e.message;
       }
