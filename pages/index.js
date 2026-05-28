@@ -583,14 +583,19 @@ export default function FlowReport() {
           if (!saleCursor) break;
           saleAfter = saleCursor;
         }
+        // Tally status distribution for diagnostics
+        var statusCounts = {};
         for (var si = 0; si < salesResults.length; si++) {
           var sale = salesResults[si];
-          if (sale.status === "VOIDED") continue;
+          statusCounts[sale.status] = (statusCounts[sale.status] || 0) + 1;
+          // Only count COMPLETED sales — LS sales report excludes LAYBY, PARKING_LOT, QUOTE, etc.
+          if (sale.status !== "COMPLETED") continue;
           var lis = sale.line_items || [];
           for (var li = 0; li < lis.length; li++) {
             if (lis[li].product_id && lis[li].status !== "VOIDED") newSaleLineItems.push(lis[li]);
           }
         }
+        console.log("[FlowReport] Sale status breakdown:", statusCounts);
         setAllSaleLineItems(newSaleLineItems);
         console.log("[FlowReport] Total sale line items:", newSaleLineItems.length);
       } catch (e) {
