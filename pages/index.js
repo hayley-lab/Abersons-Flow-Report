@@ -417,31 +417,25 @@ export default function FlowReport() {
       totalScanned = seasonPidSet.size;
       console.log("[FlowReport] Fast-path search found:", seasonParentIds.length, "parents");
 
-      var anchorVersion = null; // version of a known season product — reused for sales cursor jump
+      var anchorVersion = null; // reused as sales scan start cursor
 
       // ── Slow path (full scan) ─────────────────────────────────────────────────
       if (!fastPathFound) {
-        // Always fetch the anchor product to get a reliable version reference.
-        // A saved-hint approach was tried but caused a feedback-loop bug where each
-        // run saved a tighter cursor based on a truncated scan, eventually leaving
-        // only ~511 products visible. The anchor-based cursor (anchor - 1.5M) is
-        // predictably correct every time: it starts ~45k products before the anchor,
-        // which covers the entire pf26 collection and all products added after it.
-        var knownProductIds = { pf26: "9a20b2ba-ba0b-4adb-a7e7-a8a10c1ce4d1" };
+        // Use a hardcoded lower-bound cursor based on when pf26 was first cataloged.
+        // Fetching a known product by ID and subtracting a buffer fails when that
+        // product has been recently modified — its current version is then near the
+        // end of the catalog (~52.6B), leaving only ~511 products in scope.
+        // The original creation version of pf26 products was ~50,024,355,046.
+        // Starting at 50,022,000,000 provides a ~61k-product buffer and catches
+        // ALL pf26 products regardless of subsequent modifications.
+        // For seasons not in the table, fall back to null (full scan from start).
+        var seasonStartCursors = { pf26: 50022000000 };
         var skuBase = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
-        var knownId = skuBase ? (knownProductIds[skuBase] || null) : null;
-        if (knownId) {
-          try {
-            setLoadingStep("Locating season in catalog…");
-            var knownProdData = await apiFetch("2.0/products/" + knownId);
-            anchorVersion = ((knownProdData.data || knownProdData).version) || null;
-            console.log("[FlowReport] Anchor version:", anchorVersion);
-          } catch (e) {
-            console.warn("[FlowReport] Bootstrap fetch failed, scanning from start:", e.message);
-          }
-        }
+        var startCursor = (skuBase && seasonStartCursors[skuBase] != null) ? seasonStartCursors[skuBase] : null;
+        anchorVersion = startCursor; // sales cursor: no pf26 sale can predate product creation
+        console.log("[FlowReport] Product scan start cursor:", startCursor, "(season:", skuBase, ")");
 
-        var prodAfter = anchorVersion ? Math.max(0, anchorVersion - 1500000) : null;
+        var prodAfter = startCursor;
         var prodPages = 0;
         while (prodPages < 2000) {
           prodPages++;
