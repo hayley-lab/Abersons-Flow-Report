@@ -414,13 +414,37 @@ export default function FlowReport() {
 
       // ── Slow path (full scan) ─────────────────────────────────────────────────
       if (!fastPathFound) {
-        setLoadingStep("Searching… (full catalog scan, this takes ~10 min)");
-        var prodAfter = null;
+        // Determine start cursor: saved hint → bootstrap from known product ID → full scan from start
+        var scanHints = {};
+        try { scanHints = JSON.parse(localStorage.getItem("flow-scan-hints") || "{}"); } catch {}
+        var prodAfter = (scanHints[season] != null) ? scanHints[season] : null;
+
+        if (prodAfter === null) {
+          // Per-season bootstrap: fetch a known product to get its version and jump near it.
+          var knownProductIds = { pf26: "9a20b2ba-ba0b-4adb-a7e7-a8a10c1ce4d1" };
+          var skuBase = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
+          var knownId = skuBase ? (knownProductIds[skuBase] || null) : null;
+          if (knownId) {
+            try {
+              setLoadingStep("Locating season in catalog…");
+              var knownProdData = await apiFetch("2.0/products/" + knownId);
+              var knownVersion = ((knownProdData.data || knownProdData).version) || null;
+              if (knownVersion) {
+                prodAfter = Math.max(0, knownVersion - 1500000); // ~45k products of buffer before anchor
+                console.log("[FlowReport] Cursor jump: starting at version", prodAfter, "(anchor version:", knownVersion, ")");
+              }
+            } catch (e) {
+              console.warn("[FlowReport] Bootstrap fetch failed, scanning from start:", e.message);
+            }
+          }
+        }
+
         var prodPages = 0;
+        var firstSeasonVersion = null;
         while (prodPages < 2000) {
           prodPages++;
           var prodPath = "2.0/products?active=1&page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
-          setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned — season products near the end of catalog)");
+          setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned)");
           var prodData = await apiFetch(prodPath);
           var prods    = prodData.data || [];
           totalScanned += prods.length;
@@ -437,7 +461,10 @@ export default function FlowReport() {
               var cost     = parseFloat(p.supply_price        || 0);
               parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
             }
-            if (isSeason) registerProduct(p);
+            if (isSeason) {
+              if (firstSeasonVersion === null && p.version) firstSeasonVersion = p.version;
+              registerProduct(p);
+            }
           }
 
           if (prods.length === 0) break;
@@ -447,6 +474,14 @@ export default function FlowReport() {
           if (!cursorP) break;
           prodAfter = cursorP;
           await new Promise(function(r) { setTimeout(r, 500); });
+        }
+
+        // Save tighter hint for next cold start: begin just before the earliest season product found
+        if (firstSeasonVersion !== null) {
+          try {
+            scanHints[season] = Math.max(0, firstSeasonVersion - 300000); // ~9k product buffer
+            localStorage.setItem("flow-scan-hints", JSON.stringify(scanHints));
+          } catch {}
         }
       }
 
