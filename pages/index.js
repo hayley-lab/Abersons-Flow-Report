@@ -362,6 +362,7 @@ export default function FlowReport() {
       var seasonParentIds  = []; // parent IDs confirmed as season products
       var parentStore      = {}; // pid → {typeId,suppId,suppName,price,cost} for variant inheritance
       var totalScanned     = 0;
+      var variantsSeenInScan = false; // true when 2.0/products returns variants in results
 
       function registerProduct(p) {
         var typeId   = p.product_type_id || "__none__";
@@ -377,9 +378,9 @@ export default function FlowReport() {
         if (!p.variant_parent_id) {
           parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
           seasonParentIds.push(p.id);
-        } else if (!seasonParentIds.includes(p.variant_parent_id)) {
-          // Variant found before its parent — queue parent for step 2b variant expansion
-          seasonParentIds.push(p.variant_parent_id);
+        } else {
+          // Variant found in scan/search — step 2b can be skipped; all IDs already captured
+          variantsSeenInScan = true;
         }
       }
 
@@ -460,10 +461,12 @@ export default function FlowReport() {
         );
       }
 
-      // 2b. Fetch variants for each season parent.
-      //     PO/consignment line items reference VARIANT product IDs, not parent IDs.
-      //     We only fetch variants for the N season parents (not all 40k products),
-      //     so this is fast and won't hit rate limits.
+      // 2b. Fetch variants for each season parent — only needed when the main product
+      //     scan returns parents only (variantsSeenInScan=false).  When the scan
+      //     already returned variants (the common case for LS v2), all variant IDs are
+      //     already in seasonPidSet and this entire step can be skipped, saving
+      //     ~1 API call per parent (potentially thousands of calls).
+      if (!variantsSeenInScan && seasonParentIds.length > 0) {
       setLoadingStep("Fetching variants for " + seasonParentIds.length + " season product(s)…");
       await withConcurrency(
         seasonParentIds.map(function(pid) {
@@ -485,8 +488,9 @@ export default function FlowReport() {
             }
           };
         }),
-        5
+        15  // high concurrency — these are lightweight variant lookups
       );
+      } // end if (!variantsSeenInScan)
 
       console.log("[FlowReport] Season PID set size (parents + variants):", seasonPidSet.size);
       setPidToType(newPidToType);
