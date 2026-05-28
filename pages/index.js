@@ -412,6 +412,8 @@ export default function FlowReport() {
       totalScanned = seasonPidSet.size;
       console.log("[FlowReport] Fast-path search found:", seasonParentIds.length, "parents");
 
+      var anchorVersion = null; // version of a known season product — reused for sales cursor jump
+
       // ── Slow path (full scan) ─────────────────────────────────────────────────
       if (!fastPathFound) {
         // Determine start cursor: saved hint → bootstrap from known product ID → full scan from start
@@ -430,6 +432,7 @@ export default function FlowReport() {
               var knownProdData = await apiFetch("2.0/products/" + knownId);
               var knownVersion = ((knownProdData.data || knownProdData).version) || null;
               if (knownVersion) {
+                anchorVersion = knownVersion;
                 prodAfter = Math.max(0, knownVersion - 1500000); // ~45k products of buffer before anchor
                 console.log("[FlowReport] Cursor jump: starting at version", prodAfter, "(anchor version:", knownVersion, ")");
               }
@@ -568,14 +571,27 @@ export default function FlowReport() {
         map[cid].received += iPrice * (item.received || 0);
       }
 
-      // 5. Fetch all sales (sequential pages) and tally sold amounts
+      // 5. Fetch sales starting from near the season's creation date.
+      //    LS uses a global monotonic version counter shared by all entities, so the
+      //    anchor product version is a reliable proxy for "when this season was added".
+      //    Any sale of a pf26 product happened AFTER pf26 existed, so starting just
+      //    before anchorVersion captures 100% of season sales while skipping years of
+      //    unrelated history.
       var newSaleLineItems = [];
       var salesError       = null;
       try {
         var salesResults = [];
-        var saleAfter    = null;
+        var saleHints    = {};
+        try { saleHints = JSON.parse(localStorage.getItem("flow-scan-hints") || "{}"); } catch {}
+        var salesCursorKey = season + "-salesafter";
+        var saleAfter =
+          (saleHints[salesCursorKey] != null) ? saleHints[salesCursorKey] :
+          (anchorVersion != null)             ? Math.max(0, anchorVersion - 1000000) :
+          null;
+        console.log("[FlowReport] Sales scan start cursor:", saleAfter, "(anchor:", anchorVersion, ")");
         var salePages    = 0;
-        while (salePages < 200) {
+        var firstSeasonSaleVersion = null;
+        while (salePages < 2000) {
           salePages++;
           var salePath = "2.0/sales?page_size=200" + (saleAfter ? "&after=" + saleAfter : "");
           setLoadingStep("Loading sales… (page " + salePages + ", " + salesResults.length + " loaded)");
@@ -595,11 +611,23 @@ export default function FlowReport() {
           if (sale.status === "VOIDED") continue;
           var lis = sale.line_items || [];
           for (var li = 0; li < lis.length; li++) {
-            if (lis[li].product_id && lis[li].status !== "VOIDED") newSaleLineItems.push(lis[li]);
+            if (lis[li].product_id && lis[li].status !== "VOIDED") {
+              newSaleLineItems.push(lis[li]);
+              if (firstSeasonSaleVersion === null && seasonPidSet.has(lis[li].product_id) && sale.version) {
+                firstSeasonSaleVersion = sale.version;
+              }
+            }
           }
         }
         setAllSaleLineItems(newSaleLineItems);
-        console.log("[FlowReport] Total sale line items:", newSaleLineItems.length);
+        console.log("[FlowReport] Total sale line items:", newSaleLineItems.length, "/ first season sale version:", firstSeasonSaleVersion);
+        // Save tighter sales cursor hint for future cold starts
+        if (firstSeasonSaleVersion !== null) {
+          try {
+            saleHints[salesCursorKey] = Math.max(0, firstSeasonSaleVersion - 300000);
+            localStorage.setItem("flow-scan-hints", JSON.stringify(saleHints));
+          } catch {}
+        }
       } catch (e) {
         salesError = e.message;
       }
