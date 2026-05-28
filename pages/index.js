@@ -325,7 +325,7 @@ export default function FlowReport() {
 
       while (prodPages < 2000) {
         prodPages++;
-        var prodPath = "2.0/products?active=1&page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
+        var prodPath = "2.0/products?page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
         setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned)");
         var prodData = await apiFetch(prodPath);
         var prods    = prodData.data || [];
