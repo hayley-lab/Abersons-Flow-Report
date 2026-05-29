@@ -576,13 +576,13 @@ export default function FlowReport() {
         var salePages    = 0;
         while (salePages < 2000) {
           salePages++;
-          var salePath = "2.0/sales?page_size=200" + (saleAfter ? "&after=" + saleAfter : "");
+          var salePath = "2.0/sales?page_size=500" + (saleAfter ? "&after=" + saleAfter : "");
           setLoadingStep("Loading sales… (page " + salePages + ", " + salesResults.length + " loaded)");
           var saleData  = await apiFetch(salePath);
           var saleItems = saleData.data || [];
-          salesResults  = salesResults.concat(saleItems);
+          for (var sii = 0; sii < saleItems.length; sii++) salesResults.push(saleItems[sii]);
           if (saleItems.length === 0) break;
-          if (saleItems.length < 200) break;
+          if (saleItems.length < 500) break;
           var svp = (saleData.version && typeof saleData.version === "object") ? saleData.version.max : null;
           var svi = saleItems.reduce(function(mx, i) { return Math.max(mx, i.version || 0); }, 0);
           var saleCursor = (svp !== null ? svp : svi) || null;
