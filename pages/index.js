@@ -705,13 +705,30 @@ export default function FlowReport() {
     if (demo) { setProductRows(DEMO_PRODUCTS[vendor.id] || []); setProductLoading(false); return; }
 
     try {
-      var allProducts = await apiFetchAll("2.0/products?supplier_id=" + vendor.id, "data");
-      var products    = allProducts.filter(function(p) {
-        if (!seasonPids.has(p.id)) return false;
-        var t = pidToType[p.id];
-        // Accept correct type, or "__none__" (variants often lack product_type_id in LS)
-        return t === currentDept.id || t === "__none__";
+      // Find this vendor's pf26 product IDs directly from our already-scanned data.
+      // The LS ?supplier_id= param is unreliable in v2 (returns oldest catalog products
+      // instead of filtering), so we use seasonPids + pidToSupplier instead.
+      var targetIds = Array.from(seasonPids).filter(function(id) {
+        var sup = pidToSupplier[id];
+        var typ = pidToType[id];
+        return sup && sup.id === vendor.id &&
+               (typ === currentDept.id || typ === "__none__");
       });
+
+      // Fetch full product details concurrently (name, SKU, inventory, etc.)
+      var products = [];
+      if (targetIds.length > 0) {
+        var fetched = await withConcurrency(
+          targetIds.map(function(id) {
+            return async function() {
+              var d = await apiFetch("2.0/products/" + id);
+              return d.data || d;
+            };
+          }),
+          8
+        );
+        products = fetched.filter(Boolean);
+      }
 
       var pidSet    = new Set(products.map(function(p) { return p.id; }));
       var soldMap   = {};
