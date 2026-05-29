@@ -233,7 +233,7 @@ async function apiFetchAll(path, key) {
 // After the first (slow) full scan, the season's computed data is stored in
 // localStorage so subsequent loads are instant.  The Refresh button clears the
 // entry and forces a fresh scan.
-var CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
+var CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 function cacheKey(seasonId) { return "flow-v2-" + seasonId; }
 
@@ -473,7 +473,6 @@ export default function FlowReport() {
           var cursorP = (vfrP !== null ? vfrP : vfiP) || null;
           if (!cursorP) break;
           prodAfter = cursorP;
-          await new Promise(function(r) { setTimeout(r, 500); });
         }
       }
 
