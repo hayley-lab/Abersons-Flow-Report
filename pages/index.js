@@ -731,16 +731,27 @@ export default function FlowReport() {
       }
 
       var pidSet    = new Set(products.map(function(p) { return p.id; }));
+      var priceMap  = {};
+      products.forEach(function(p) { priceMap[p.id] = parseFloat(p.price_excluding_tax || 0); });
       var soldMap   = {};
       var returnMap = {};
+      var saleMap   = {};
       for (var i = 0; i < allSaleLineItems.length; i++) {
         var li = allSaleLineItems[i];
         if (!pidSet.has(li.product_id)) continue;
-        var qty = parseInt(li.quantity || 0);
+        var qty = parseInt(li.quantity || 1);
         if (li.is_return) {
           returnMap[li.product_id] = (returnMap[li.product_id] || 0) + qty;
         } else {
           soldMap[li.product_id] = (soldMap[li.product_id] || 0) + qty;
+          // Mark as on-sale if LS recorded a discount, or if the unit price is
+          // meaningfully below retail (>1% difference handles floating-point noise).
+          var unitPrice   = parseFloat(li.price || 0) || (qty > 0 ? parseFloat(li.total_price || 0) / qty : 0);
+          var retailPrice = priceMap[li.product_id] || 0;
+          var discounted  = parseFloat(li.discount || li.line_discount || 0) > 0;
+          if (discounted || (retailPrice > 0 && unitPrice > 0 && unitPrice < retailPrice * 0.99)) {
+            saleMap[li.product_id] = (saleMap[li.product_id] || 0) + qty;
+          }
         }
       }
 
@@ -753,6 +764,7 @@ export default function FlowReport() {
           price:    parseFloat(p.price_excluding_tax || 0),
           onHand:   (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
           sold:     soldMap[p.id]   || 0,
+          onSale:   saleMap[p.id]   || 0,
           returned: returnMap[p.id] || 0,
         };
       }));
@@ -789,7 +801,7 @@ export default function FlowReport() {
     backBtn:    { background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, textDecoration: "underline", textUnderlineOffset: 2, padding: 0, marginBottom: "0.9rem" },
     demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
     statusDot:  function(status) {
-      var colors = { sold: "#4a7ab5", stock: "#e05a36", ordered: "#aaa", returned: "#9b59b6" };
+      var colors = { sold: "#4a7ab5", sale: "#e07b39", stock: "#e05a36", ordered: "#aaa", returned: "#9b59b6" };
       return { width: 10, height: 10, borderRadius: "50%", background: colors[status] || "#aaa", display: "inline-block" };
     },
   };
@@ -988,14 +1000,14 @@ export default function FlowReport() {
                     <tr>
                       <TH>Status</TH><TH>Description</TH><TH>SKU</TH><TH>Variant</TH>
                       <TH right>Cost</TH><TH right>Price</TH>
-                      <TH right>On Hand</TH><TH right>Sold</TH><TH right>Returned</TH>
+                      <TH right>On Hand</TH><TH right>Sold</TH><TH right>On Sale</TH><TH right>Returned</TH>
                     </tr>
                   </thead>
                   <tbody>
                     {productRows.length === 0 ? (
-                      <tr><td colSpan={9} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
+                      <tr><td colSpan={10} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
                     ) : productRows.map(function(p, i) {
-                      var status = p.returned > 0 && p.sold === 0 ? "returned" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
+                      var status = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
                       return (
                         <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
                           <TD><span style={s.statusDot(status)} /></TD>
@@ -1006,6 +1018,7 @@ export default function FlowReport() {
                           <TD right>{p.price > 0 ? fmt(p.price) : "—"}</TD>
                           <TD right>{p.onHand}</TD>
                           <TD right>{p.sold}</TD>
+                          <TD right style={{ color: p.onSale > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale || "—"}</TD>
                           <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned || 0}</TD>
                         </tr>
                       );
@@ -1013,7 +1026,7 @@ export default function FlowReport() {
                   </tbody>
                 </table>
                 <div style={{ display: "flex", gap: 14, flexWrap: "wrap", padding: "9px 12px", background: "#f0ede6", borderTop: "1px solid #e2ddd5", fontSize: 12 }}>
-                  {[["sold","sold","#4a7ab5"],["stock","in stock","#e05a36"],["ordered","ordered","#aaa"],["returned","returned","#9b59b6"]].map(function(e) {
+                  {[["sold","sold","#4a7ab5"],["sale","on sale","#e07b39"],["stock","in stock","#e05a36"],["ordered","ordered","#aaa"],["returned","returned","#9b59b6"]].map(function(e) {
                     return (
                       <div key={e[0]} style={{ display: "flex", alignItems: "center", gap: 5, color: "#6b6560" }}>
                         <span style={{ width: 9, height: 9, borderRadius: "50%", background: e[2], display: "inline-block" }} />
