@@ -3,8 +3,9 @@
 // phase === "done" or phase === "error".
 //
 // KV keys:
-//   scan:job:{season}  — in-progress job state (1h TTL, auto-cleaned on done)
-//   scan:data:{season} — final computed report (48h TTL)
+//   scan:job:{season}     — small operational state (phase, cursors, progress)
+//   scan:job:big:{season} — large data blobs (pidMaps, deptVendorData, etc.)
+//   scan:data:{season}    — final computed report (48h TTL)
 //
 // Required env vars: LS_DOMAIN_PREFIX, LS_CLIENT_ID, LS_CLIENT_SECRET,
 //   LS_REFRESH_TOKEN, REPORT_PASSWORD, SESSION_SECRET, KV_REST_API_URL,
@@ -79,9 +80,14 @@ export default async function handler(req, res) {
   if (!season) return res.status(400).json({ error: "season required" });
 
   const jobKey  = `scan:job:${season}`;
+  const bigKey  = `scan:job:big:${season}`;
   const dataKey = `scan:data:${season}`;
 
-  let state = (req.query.restart === "1") ? null : await kv.get(jobKey);
+  // Load small + big state and merge
+  const restart = req.query.restart === "1";
+  let [smallState, bigData] = restart ? [null, null] : await Promise.all([kv.get(jobKey), kv.get(bigKey)]);
+  let state = smallState ? { ...smallState, ...(bigData || {}) } : null;
+
   if (!state || state.phase === "done" || state.phase === "error") {
     state = {
       phase: "init",
@@ -406,19 +412,27 @@ export default async function handler(req, res) {
       };
 
       await kv.set(dataKey, result, { ex: 48 * 3600 });
-      await kv.del(jobKey);
+      await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
 
       return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "Scan complete!" });
     }
 
     // ── ERROR ────────────────────────────────────────────────────────────────
     if (state.phase === "error") {
-      await kv.set(jobKey, state, { ex: 300 });
+      await kv.set(jobKey, { phase: "error", season, error: state.error }, { ex: 300 });
       return res.json({ phase: "error", error: state.error });
     }
 
-    // Save job state and return progress for next chunk
-    await kv.set(jobKey, state, { ex: 3600 });
+    // Save job state split across two keys to stay under KV 10MB limit
+    const BIG_FIELDS = ["parentStore","seasonPids","seasonParentIds","pidToType","pidToSupplier","pidToPrice","deptVendorData","productStats","cats","consignments"];
+    const small = {}, big = {};
+    for (const [k, v] of Object.entries(state)) {
+      if (BIG_FIELDS.includes(k)) big[k] = v; else small[k] = v;
+    }
+    await Promise.all([
+      kv.set(jobKey, small, { ex: 3600 }),
+      kv.set(bigKey,  big,  { ex: 3600 }),
+    ]);
     return res.json({ phase: state.phase, progress: state.progress || "…" });
 
   } catch (e) {
