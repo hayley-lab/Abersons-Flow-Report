@@ -1,39 +1,18 @@
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
+import { getLsToken, lsBase } from "../../../lib/ls-auth";
 
 export default async function handler(req, res) {
   const session = await getIronSession(req, res, sessionOptions);
-  let { accessToken, refreshToken, expiresAt, domainPrefix } = session;
-
-  if (!accessToken || !domainPrefix) {
+  if (!session.authed) {
     return res.status(401).json({ error: "Not authenticated" });
   }
 
-  // Refresh token if within 5 minutes of expiry
-  if (expiresAt && Date.now() > expiresAt - 5 * 60 * 1000) {
-    try {
-      const r = await fetch(`https://${domainPrefix}.retail.lightspeed.app/api/1.0/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          client_id: process.env.LS_CLIENT_ID,
-          client_secret: process.env.LS_CLIENT_SECRET,
-          refresh_token: refreshToken,
-        }),
-      });
-      if (r.ok) {
-        const d = await r.json();
-        session.accessToken = d.access_token;
-        session.refreshToken = d.refresh_token || refreshToken;
-        session.expiresAt = Date.now() + d.expires_in * 1000;
-        await session.save();
-        accessToken = session.accessToken;
-      } else {
-        await session.destroy();
-        return res.status(401).json({ error: "Session expired" });
-      }
-    } catch { /* continue with existing token on network error */ }
+  let token;
+  try {
+    token = await getLsToken();
+  } catch (e) {
+    return res.status(503).json({ error: "LS auth failed: " + e.message });
   }
 
   const { path } = req.query;
@@ -41,13 +20,13 @@ export default async function handler(req, res) {
   const query = { ...req.query };
   delete query.path;
   const queryStr = new URLSearchParams(query).toString();
-  const url = `https://${domainPrefix}.retail.lightspeed.app/api/${pathStr}${queryStr ? "?" + queryStr : ""}`;
+  const url = `${lsBase()}/${pathStr}${queryStr ? "?" + queryStr : ""}`;
 
   try {
     const lsRes = await fetch(url, {
       method: req.method,
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
         Accept: "application/json",
       },

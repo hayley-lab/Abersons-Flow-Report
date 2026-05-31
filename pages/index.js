@@ -1,5 +1,5 @@
 // pages/index.js
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
@@ -67,8 +67,8 @@ const TH = ({ children, right }) => (
   </th>
 );
 
-const TD = ({ children, right, mono }) => (
-  <td style={{ padding: "9px 12px", textAlign: right ? "right" : "left", fontVariantNumeric: right ? "tabular-nums" : "normal", fontFamily: mono ? "monospace" : "inherit", fontSize: mono ? 12 : 13, color: mono ? "#6b6560" : "#1a1816", verticalAlign: "middle" }}>
+const TD = ({ children, right, mono, style: extraStyle }) => (
+  <td style={{ padding: "9px 12px", textAlign: right ? "right" : "left", fontVariantNumeric: right ? "tabular-nums" : "normal", fontFamily: mono ? "monospace" : "inherit", fontSize: mono ? 12 : 13, color: mono ? "#6b6560" : "#1a1816", verticalAlign: "middle", ...extraStyle }}>
     {children}
   </td>
 );
@@ -91,29 +91,17 @@ const SEASONS = [
   { id: "spring23",    name: "Spring 2023" },
 ];
 
-// Returns the list of SKU suffix codes that identify a product as belonging to
-// this season.  Prespring has TWO codes: older products use /rs, newer ones use /ps.
-// Examples: prefall26 → ["/pf26"], prespring26 → ["/rs26", "/ps26"]
-function seasonSkuCodes(seasonId) {
-  var m = seasonId.match(/^(prefall|fall|spring|prespring)(\d+)$/);
-  if (!m) return [];
-  var year = m[2].slice(-2);
-  if (m[1] === "prespring") return ["/rs" + year, "/ps" + year];
-  var map = { prefall: "pf", fall: "f", spring: "s" };
-  return ["/" + map[m[1]] + year];
-}
-
 const DEMO_SUMMARY = [
-  { id: "acc",   name: "Accessories",       ordered: 101823,  received: 98413,  sold: 55410,  cost: 40610  },
-  { id: "alley", name: "Alley",             ordered: 922276,  received: 904549, sold: 604999, cost: 361475 },
-  { id: "alt",   name: "Alterations",       ordered: 0,       received: 0,      sold: 0,      cost: 0      },
-  { id: "denim", name: "Denim",             ordered: 69531,   received: 68231,  sold: 45600,  cost: 27290  },
-  { id: "des",   name: "Designer",          ordered: 306105,  received: 282960, sold: 149860, cost: 113184 },
-  { id: "gc",    name: "Gift Certificates", ordered: 0,       received: 0,      sold: 0,      cost: 0      },
-  { id: "hg",    name: "Home Gifts",        ordered: 0,       received: 0,      sold: 0,      cost: 0      },
-  { id: "mens",  name: "Mens",              ordered: 472591,  received: 428733, sold: 240091, cost: 171493 },
-  { id: "next",  name: "Next",              ordered: 617680,  received: 588475, sold: 452816, cost: 235390 },
-  { id: "shoes", name: "Shoes",             ordered: 329474,  received: 293793, sold: 164143, cost: 117517 },
+  { id: "acc",   name: "Accessories",       ordered: 101823,  received: 98413,  sold: 55410  },
+  { id: "alley", name: "Alley",             ordered: 922276,  received: 904549, sold: 604999 },
+  { id: "alt",   name: "Alterations",       ordered: 0,       received: 0,      sold: 0      },
+  { id: "denim", name: "Denim",             ordered: 69531,   received: 68231,  sold: 45600  },
+  { id: "des",   name: "Designer",          ordered: 306105,  received: 282960, sold: 149860 },
+  { id: "gc",    name: "Gift Certificates", ordered: 0,       received: 0,      sold: 0      },
+  { id: "hg",    name: "Home Gifts",        ordered: 0,       received: 0,      sold: 0      },
+  { id: "mens",  name: "Mens",              ordered: 472591,  received: 428733, sold: 240091 },
+  { id: "next",  name: "Next",              ordered: 617680,  received: 588475, sold: 452816 },
+  { id: "shoes", name: "Shoes",             ordered: 329474,  received: 293793, sold: 164143 },
 ];
 
 const DEMO_VENDORS = {
@@ -160,26 +148,23 @@ const DEMO_VENDORS = {
 
 const DEMO_PRODUCTS = {
   dk: [
-    { name: "dia 14k dia/14k",        sku: "adc2726/pf2501",  variant: "dia/14k",      cost: 825,  price: 2063, onHand: 0, sold: 1 },
-    { name: "dia sil 14k",            sku: "adc2806s/pf2501", variant: "dia/sil/14k",  cost: 350,  price: 875,  onHand: 1, sold: 0 },
-    { name: "ear kyanite 14k",        sku: "ade2939/f2501",   variant: "14k/kyanite",  cost: 1075, price: 2688, onHand: 1, sold: 0 },
-    { name: "ear tahitian pearl 14k", sku: "ade2058/f2501",   variant: "14k",          cost: 526,  price: 1315, onHand: 1, sold: 0 },
-    { name: "neck 14k",               sku: "adc266/f2501",    variant: "14k",          cost: 476,  price: 1190, onHand: 1, sold: 0 },
-    { name: "neck sunstone 14k",      sku: "adc2953/f2501",   variant: "14k/sunstone", cost: 1475, price: 3688, onHand: 1, sold: 0 },
+    { name: "dia 14k dia/14k",        sku: "adc2726/pf2501",  variant: "dia/14k",      cost: 825,  price: 2063, onHand: 0, sold: 1, onSale: 0, returned: 0 },
+    { name: "dia sil 14k",            sku: "adc2806s/pf2501", variant: "dia/sil/14k",  cost: 350,  price: 875,  onHand: 1, sold: 0, onSale: 0, returned: 0 },
+    { name: "ear kyanite 14k",        sku: "ade2939/f2501",   variant: "14k/kyanite",  cost: 1075, price: 2688, onHand: 1, sold: 0, onSale: 0, returned: 0 },
+    { name: "ear tahitian pearl 14k", sku: "ade2058/f2501",   variant: "14k",          cost: 526,  price: 1315, onHand: 1, sold: 0, onSale: 0, returned: 0 },
+    { name: "neck 14k",               sku: "adc266/f2501",    variant: "14k",          cost: 476,  price: 1190, onHand: 1, sold: 0, onSale: 0, returned: 0 },
+    { name: "neck sunstone 14k",      sku: "adc2953/f2501",   variant: "14k/sunstone", cost: 1475, price: 3688, onHand: 1, sold: 0, onSale: 0, returned: 0 },
   ],
 };
 
-// ── API helpers ───────────────────────────────────────────────────────────────
+// ── LS API proxy helper (still used for per-product fetches in vendor drilldown)
 
-// Fetch with exponential-backoff retry on 429 rate-limit responses
-// and on network-level failures ("Failed to fetch").
 async function apiFetch(path, attempt) {
   if (!attempt) attempt = 0;
   var res;
   try {
     res = await fetch("/api/ls/" + path);
   } catch (netErr) {
-    // Network error (connection reset, "Failed to fetch", etc.) — retry up to 4 times
     if (attempt < 4) {
       await new Promise(function(r) { setTimeout(r, 1500 * (attempt + 1)); });
       return apiFetch(path, attempt + 1);
@@ -187,7 +172,6 @@ async function apiFetch(path, attempt) {
     throw netErr;
   }
   if (res.status === 429 && attempt < 6) {
-    // Exponential backoff: 3s, 6s, 12s, 24s, 48s, 96s
     await new Promise(function(r) { setTimeout(r, 3000 * Math.pow(2, attempt)); });
     return apiFetch(path, attempt + 1);
   }
@@ -195,7 +179,6 @@ async function apiFetch(path, attempt) {
     var err = await res.json().catch(function() { return {}; });
     throw new Error(err.message || err.error || "HTTP " + res.status);
   }
-  // Wrap JSON parse so a truncated body (partial response) retries like a network error
   try {
     return await res.json();
   } catch (parseErr) {
@@ -207,58 +190,6 @@ async function apiFetch(path, attempt) {
   }
 }
 
-async function apiFetchAll(path, key) {
-  var results = [];
-  var after = null;
-  var pages = 0;
-  while (pages < 200) {
-    pages++;
-    var sep = path.includes("?") ? "&" : "?";
-    var fullPath = path + sep + "page_size=200" + (after ? "&after=" + after : "");
-    var data = await apiFetch(fullPath);
-    var items = data[key] || data.data || [];
-    results = results.concat(items);
-    if (items.length === 0) break;
-    if (items.length < 200) break;
-    var vfr = (data.version && typeof data.version === "object") ? data.version.max : null;
-    var vfi = items.reduce(function(mx, i) { return Math.max(mx, i.version || 0); }, 0);
-    var cursor = (vfr !== null ? vfr : vfi) || null;
-    if (!cursor) break;
-    after = cursor;
-  }
-  return results;
-}
-
-// ── localStorage cache ────────────────────────────────────────────────────────
-// After the first (slow) full scan, the season's computed data is stored in
-// localStorage so subsequent loads are instant.  The Refresh button clears the
-// entry and forces a fresh scan.
-var CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
-
-function cacheKey(seasonId) { return "flow-v2-" + seasonId; }
-
-function readCache(seasonId) {
-  try {
-    var raw = localStorage.getItem(cacheKey(seasonId));
-    if (!raw) return null;
-    var c = JSON.parse(raw);
-    if (!c || Date.now() - c.ts > CACHE_TTL) return null;
-    return c;
-  } catch (e) { return null; }
-}
-
-function writeCache(seasonId, payload) {
-  try { localStorage.setItem(cacheKey(seasonId), JSON.stringify({ ts: Date.now(), ...payload })); }
-  catch (e) { /* quota exceeded — skip silently */ }
-}
-
-function clearCache(seasonId) {
-  try { localStorage.removeItem(cacheKey(seasonId)); } catch (e) {}
-  // Also clear the now-removed scan-hint system so stale entries don't interfere
-  try { localStorage.removeItem("flow-scan-hints"); } catch (e) {}
-}
-
-// Run async tasks with a bounded concurrency limit (avoids flooding the LS API).
 async function withConcurrency(tasks, limit) {
   var results = new Array(tasks.length).fill(null);
   var nextIdx = 0;
@@ -278,382 +209,144 @@ async function withConcurrency(tasks, limit) {
 // ── main component ────────────────────────────────────────────────────────────
 
 export default function FlowReport() {
-  const [authed, setAuthed] = useState(null);
-  const [demo, setDemo] = useState(false);
-  const [screen, setScreen] = useState("summary");
-  const [season, setSeason] = useState("prefall26");
+  const [authed, setAuthed]       = useState(null);
+  const [password, setPassword]   = useState("");
+  const [loginError, setLoginError] = useState(null);
+  const [loginLoading, setLoginLoading] = useState(false);
 
-  const [summaryRows, setSummaryRows] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState("");
-  const [error, setError] = useState(null);
+  const [demo, setDemo]           = useState(false);
+  const [screen, setScreen]       = useState("summary");
+  const [season, setSeason]       = useState("prefall26");
 
-  const [seasonPids, setSeasonPids] = useState(new Set());
-  const [pidToType, setPidToType] = useState({});
-  const [pidToSupplier, setPidToSupplier] = useState({});
-  const [pidToPrice, setPidToPrice] = useState({});
-  const [pidToCost, setPidToCost] = useState({});
-  const [allConsigItems, setAllConsigItems] = useState([]);
-  const [allSaleLineItems, setAllSaleLineItems] = useState([]);
+  const [summaryRows, setSummaryRows]   = useState([]);
+  const [scanData, setScanData]         = useState(null);   // full KV data for current season
+  const [dataLoading, setDataLoading]   = useState(false);
+  const [dataError, setDataError]       = useState(null);
+  const [dataTs, setDataTs]             = useState(null);   // timestamp of last successful scan
 
-  const [currentDept, setCurrentDept] = useState(null);
-  const [vendorRows, setVendorRows] = useState([]);
+  const [scanning, setScanning]         = useState(false);
+  const [scanProgress, setScanProgress] = useState("");
+  const [scanError, setScanError]       = useState(null);
+  const scanAbort = useRef(false);
+
+  const [currentDept, setCurrentDept]   = useState(null);
+  const [vendorRows, setVendorRows]     = useState([]);
   const [vendorLoading, setVendorLoading] = useState(false);
-  const [vendorError, setVendorError] = useState(null);
+  const [vendorError, setVendorError]   = useState(null);
 
   const [currentVendor, setCurrentVendor] = useState(null);
-  const [productRows, setProductRows] = useState([]);
+  const [productRows, setProductRows]   = useState([]);
   const [productLoading, setProductLoading] = useState(false);
   const [productError, setProductError] = useState(null);
 
-  // ── load summary ──────────────────────────────────────────────────────────
-
-  const loadSummary = useCallback(async () => {
-    setLoading(true);
-    setLoadingStep("Preparing…");
-    setError(null);
-    setSummaryRows([]);
-    setAllConsigItems([]);
-    setAllSaleLineItems([]);
-    setSeasonPids(new Set());
-
-    if (demo) { setSummaryRows(DEMO_SUMMARY); setLoading(false); return; }
-
-    // Remove stale scan-hint entries left over from the removed hint system
-    try { localStorage.removeItem("flow-scan-hints"); } catch (e) {}
-
-    // Restore from localStorage cache if fresh — skips the entire scan
-    var cached = readCache(season);
-    if (cached) {
-      setSummaryRows(cached.summaryRows || []);
-      setAllConsigItems(cached.allConsigItems || []);
-      setAllSaleLineItems(cached.allSaleLineItems || []);
-      setSeasonPids(new Set(cached.seasonPids || []));
-      setPidToType(cached.pidToType || {});
-      setPidToSupplier(cached.pidToSupplier || {});
-      setPidToPrice(cached.pidToPrice || {});
-      setPidToCost(cached.pidToCost || {});
-      setLoading(false);
-      return;
-    }
-
-    try {
-      // Determine which SKU suffix codes identify this season.
-      // The LS API tag filter (?tag_ids[]=UUID) is silently ignored, so we
-      // identify season products by their SKU suffix instead.
-      var skuCodes = seasonSkuCodes(season);
-      if (skuCodes.length === 0) throw new Error("Unrecognized season format: " + season);
-
-      // 1. Load departments + consignment headers in parallel
-      setLoadingStep("Loading departments & purchase orders…");
-      var parallelResult = await Promise.all([
-        apiFetchAll("2.0/product_types", "data"),
-        apiFetchAll("2.0/consignments?type=SUPPLIER", "data"),
-      ]);
-      var cats         = parallelResult[0];
-      var consignments = parallelResult[1];
-      console.log("[FlowReport] Departments:", cats.length, "Consignments:", consignments.length, "SKU codes:", skuCodes);
-
-      // 2. Find season products by SKU suffix.
-      //    Fast path: ?search=CODE returns results in 1-2 calls if LS full-text search
-      //    matches SKU/name. We post-filter by exact suffix to eliminate false positives.
-      //    Slow path: full page scan when search returns nothing (older LS versions or
-      //    seasons whose code doesn't surface well in search).
-      var newPidToType     = {};
-      var newPidToSupplier = {};
-      var newPidToPrice    = {};
-      var newPidToCost     = {};
-      var seasonPidSet     = new Set();
-      var seasonParentIds  = []; // parent IDs confirmed as season products
-      var parentStore      = {}; // pid → {typeId,suppId,suppName,price,cost} for variant inheritance
-      var totalScanned     = 0;
-      var variantsSeenInScan = false; // true when 2.0/products returns variants in results
-
-      function registerProduct(p) {
-        var typeId   = p.product_type_id || "__none__";
-        var suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
-        var suppName = (p.supplier && p.supplier.name) || "Unknown";
-        var price    = parseFloat(p.price_excluding_tax || 0);
-        var cost     = parseFloat(p.supply_price        || 0);
-        // LS variants often omit product_type_id and supplier — inherit from the parent
-        if (p.variant_parent_id) {
-          var par = parentStore[p.variant_parent_id];
-          if (par) {
-            if (typeId   === "__none__") typeId   = par.typeId;
-            if (suppId   === "__none__") { suppId = par.suppId; suppName = par.suppName; }
-            if (price    === 0)          price    = par.price;
-            if (cost     === 0)          cost     = par.cost;
-          }
-          variantsSeenInScan = true;
-        } else {
-          parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
-          seasonParentIds.push(p.id);
-        }
-        seasonPidSet.add(p.id);
-        newPidToType[p.id]     = typeId;
-        newPidToSupplier[p.id] = { id: suppId, name: suppName };
-        newPidToPrice[p.id]    = price;
-        newPidToCost[p.id]     = cost;
-      }
-
-      // ── Fast path ────────────────────────────────────────────────────────────
-      setLoadingStep("Searching for " + seasonLabel + " products…");
-      var fastPathFound = false;
-      for (var sci = 0; sci < skuCodes.length; sci++) {
-        var searchCode = skuCodes[sci].replace("/", ""); // "/pf26" → "pf26"
-        var searchAfter = null;
-        for (var sp = 0; sp < 20; sp++) {
-          var sData = await apiFetch("2.0/products?active=1&page_size=200&search=" + encodeURIComponent(searchCode) + (searchAfter ? "&after=" + searchAfter : ""));
-          var sItems = sData.data || [];
-          for (var si2 = 0; si2 < sItems.length; si2++) {
-            var sItem = sItems[si2];
-            var sSku  = (sItem.sku || "").toLowerCase();
-            if (skuCodes.some(function(c) { return sSku.includes(c); })) {
-              registerProduct(sItem);
-              fastPathFound = true;
-            }
-          }
-          if (sItems.length < 200) break;
-          var sVfr = (sData.version && typeof sData.version === "object") ? sData.version.max : null;
-          var sVfi = sItems.reduce(function(mx, i) { return Math.max(mx, i.version || 0); }, 0);
-          var sCursor = (sVfr !== null ? sVfr : sVfi) || null;
-          if (!sCursor) break;
-          searchAfter = sCursor;
-        }
-      }
-      totalScanned = seasonPidSet.size;
-      console.log("[FlowReport] Fast-path search found:", seasonParentIds.length, "parents");
-
-      var anchorVersion = null; // reused as sales scan start cursor
-
-      // ── Slow path (full scan) ─────────────────────────────────────────────────
-      if (!fastPathFound) {
-        // Use a hardcoded lower-bound cursor based on when pf26 was first cataloged.
-        // Fetching a known product by ID and subtracting a buffer fails when that
-        // product has been recently modified — its current version is then near the
-        // end of the catalog (~52.6B), leaving only ~511 products in scope.
-        // The original creation version of pf26 products was ~50,024,355,046.
-        // Starting at 50,022,000,000 provides a ~61k-product buffer and catches
-        // ALL pf26 products regardless of subsequent modifications.
-        // For seasons not in the table, fall back to null (full scan from start).
-        var seasonStartCursors = { pf26: 50022000000 };
-        var skuBase = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
-        var startCursor = (skuBase && seasonStartCursors[skuBase] != null) ? seasonStartCursors[skuBase] : null;
-        anchorVersion = startCursor; // sales cursor: no pf26 sale can predate product creation
-        console.log("[FlowReport] Product scan start cursor:", startCursor, "(season:", skuBase, ")");
-
-        var prodAfter = startCursor;
-        var prodPages = 0;
-        while (prodPages < 2000) {
-          prodPages++;
-          var prodPath = "2.0/products?active=1&page_size=500" + (prodAfter ? "&after=" + prodAfter : "");
-          setLoadingStep("Scanning products… (" + totalScanned.toLocaleString() + " scanned)");
-          var prodData = await apiFetch(prodPath);
-          var prods    = prodData.data || [];
-          totalScanned += prods.length;
-
-          for (var pi = 0; pi < prods.length; pi++) {
-            var p   = prods[pi];
-            var sku = (p.sku || "").toLowerCase();
-            var isSeason = skuCodes.some(function(c) { return sku.includes(c); });
-            if (!p.variant_parent_id) {
-              var typeId   = p.product_type_id || "__none__";
-              var suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
-              var suppName = (p.supplier && p.supplier.name) || "Unknown";
-              var price    = parseFloat(p.price_excluding_tax || 0);
-              var cost     = parseFloat(p.supply_price        || 0);
-              parentStore[p.id] = { typeId: typeId, suppId: suppId, suppName: suppName, price: price, cost: cost };
-            }
-            if (isSeason) registerProduct(p);
-          }
-
-          if (prods.length === 0) break;
-          var vfrP = (prodData.version && typeof prodData.version === "object") ? prodData.version.max : null;
-          var vfiP = prods.reduce(function(mx, pp) { return Math.max(mx, pp.version || 0); }, 0);
-          var cursorP = (vfrP !== null ? vfrP : vfiP) || null;
-          if (!cursorP) break;
-          prodAfter = cursorP;
-        }
-      }
-
-      console.log("[FlowReport] Season parents found:", seasonParentIds.length, "/ total scanned:", totalScanned);
-
-      // Diagnostic: if 0 parents found, the SKU pattern probably doesn't match.
-      if (seasonParentIds.length === 0) {
-        throw new Error(
-          "No products found matching season code(s) " + skuCodes.join(", ") +
-          " (checked " + totalScanned.toLocaleString() + " products). " +
-          "Verify the SKU suffix format in Lightspeed, e.g. open a known Pre-Fall 2026 product and check its SKU."
-        );
-      }
-
-      // 2b. Fetch variants for each season parent — only needed when the main product
-      //     scan returns parents only (variantsSeenInScan=false).  When the scan
-      //     already returned variants (the common case for LS v2), all variant IDs are
-      //     already in seasonPidSet and this entire step can be skipped, saving
-      //     ~1 API call per parent (potentially thousands of calls).
-      if (!variantsSeenInScan && seasonParentIds.length > 0) {
-      setLoadingStep("Fetching variants for " + seasonParentIds.length + " season product(s)…");
-      await withConcurrency(
-        seasonParentIds.map(function(pid) {
-          return async function() {
-            var variants = await apiFetchAll("2.0/products?variant_parent_id=" + pid, "data");
-            var par      = parentStore[pid];
-            for (var vvi = 0; vvi < variants.length; vvi++) {
-              var vp = variants[vvi];
-              if (seasonPidSet.has(vp.id)) continue; // already added
-              seasonPidSet.add(vp.id);
-              // Prefer variant's own values; fall back to parent
-              newPidToType[vp.id]     = vp.product_type_id || (par && par.typeId) || "__none__";
-              newPidToSupplier[vp.id] = {
-                id:   (vp.supplier && vp.supplier.id)   || vp.supplier_id   || (par && par.suppId)   || "__none__",
-                name: (vp.supplier && vp.supplier.name) || (par && par.suppName) || "Unknown",
-              };
-              newPidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || 0) || (par ? par.price : 0);
-              newPidToCost[vp.id]  = parseFloat(vp.supply_price        || 0) || (par ? par.cost  : 0);
-            }
-          };
-        }),
-        15  // high concurrency — these are lightweight variant lookups
-      );
-      } // end if (!variantsSeenInScan)
-
-      console.log("[FlowReport] Season PID set size (parents + variants):", seasonPidSet.size);
-      setPidToType(newPidToType);
-      setPidToSupplier(newPidToSupplier);
-      setPidToPrice(newPidToPrice);
-      setPidToCost(newPidToCost);
-      setSeasonPids(new Set(seasonPidSet));
-
-      // 3. Fetch consignment line items with bounded concurrency (3 at a time).
-      var newConsigItems = [];
-      var posDone = 0;
-      await withConcurrency(
-        consignments.map(function(c) {
-          return async function() {
-            var items = await apiFetchAll("2.0/consignments/" + c.id + "/products", "data");
-            posDone++;
-            setLoadingStep("Checking POs… (" + posDone + " of " + consignments.length + ")");
-            for (var ii = 0; ii < items.length; ii++) {
-              if (seasonPidSet.has(items[ii].product_id)) newConsigItems.push(items[ii]);
-            }
-          };
-        }),
-        3
-      );
-      console.log("[FlowReport] Season consig line items:", newConsigItems.length);
-      setAllConsigItems(newConsigItems);
-
-      // 4. Build department summary from consignment line items
-      var map = {};
-      for (var ki = 0; ki < cats.length; ki++) {
-        var cat = cats[ki];
-        map[cat.id] = { id: cat.id, name: cat.name, ordered: 0, received: 0, sold: 0 };
-      }
-      for (var ni = 0; ni < newConsigItems.length; ni++) {
-        var item    = newConsigItems[ni];
-        var cid     = newPidToType[item.product_id] || "__none__";
-        if (!map[cid]) map[cid] = { id: cid, name: "Other", ordered: 0, received: 0, sold: 0 };
-        var iPrice  = newPidToPrice[item.product_id] || 0;
-        map[cid].ordered  += iPrice * (item.count    || 0);
-        map[cid].received += iPrice * (item.received || 0);
-      }
-
-      // 5. Fetch sales starting from near the season's creation date.
-      //    LS uses a global monotonic version counter shared by all entities, so the
-      //    anchor product version is a reliable proxy for "when this season was added".
-      //    Any sale of a pf26 product happened AFTER pf26 existed, so starting just
-      //    before anchorVersion captures 100% of season sales while skipping years of
-      //    unrelated history.
-      var newSaleLineItems = [];
-      var salesError       = null;
-      try {
-        var salesResults = [];
-        // Use anchor version as sales cursor — same reliable fixed-offset approach as products.
-        // No saved-hint system: same drift feedback-loop risk, and anchor-based is fast enough.
-        var saleAfter = anchorVersion ? Math.max(0, anchorVersion - 1000000) : null;
-        console.log("[FlowReport] Sales scan start cursor:", saleAfter, "(anchor:", anchorVersion, ")");
-        var salePages    = 0;
-        while (salePages < 2000) {
-          salePages++;
-          var salePath = "2.0/sales?page_size=500" + (saleAfter ? "&after=" + saleAfter : "");
-          setLoadingStep("Loading sales… (page " + salePages + ", " + salesResults.length + " loaded)");
-          var saleData  = await apiFetch(salePath);
-          var saleItems = saleData.data || [];
-          for (var sii = 0; sii < saleItems.length; sii++) salesResults.push(saleItems[sii]);
-          if (saleItems.length === 0) break;
-          if (saleItems.length < 500) break;
-          var svp = (saleData.version && typeof saleData.version === "object") ? saleData.version.max : null;
-          var svi = saleItems.reduce(function(mx, i) { return Math.max(mx, i.version || 0); }, 0);
-          var saleCursor = (svp !== null ? svp : svi) || null;
-          if (!saleCursor) break;
-          saleAfter = saleCursor;
-        }
-        // Tally status distribution for diagnostics
-        var statusCounts = {};
-        for (var si = 0; si < salesResults.length; si++) {
-          var sale = salesResults[si];
-          statusCounts[sale.status] = (statusCounts[sale.status] || 0) + 1;
-          // LS uses "CLOSED" for completed sales. ONACCOUNT and SAVED are not
-          // rung-through sales; LS's sales report excludes them.
-          if (sale.status !== "CLOSED") continue;
-          var lis = sale.line_items || [];
-          for (var li = 0; li < lis.length; li++) {
-            if (lis[li].product_id && lis[li].status !== "VOIDED") newSaleLineItems.push(lis[li]);
-          }
-        }
-        console.log("[FlowReport] Sale status breakdown:", JSON.stringify(statusCounts));
-        setAllSaleLineItems(newSaleLineItems);
-        console.log("[FlowReport] Total sale line items:", newSaleLineItems.length);
-      } catch (e) {
-        salesError = e.message;
-      }
-
-      // Tally sold amounts (returns subtracted)
-      for (var sli = 0; sli < newSaleLineItems.length; sli++) {
-        var lineItem = newSaleLineItems[sli];
-        if (!seasonPidSet.has(lineItem.product_id)) continue;
-        var lcid = newPidToType[lineItem.product_id] || "__none__";
-        if (!map[lcid]) continue;
-        var amount = parseFloat(lineItem.total_price || lineItem.price || 0);
-        if (lineItem.is_return) { map[lcid].sold -= amount; } else { map[lcid].sold += amount; }
-      }
-
-      var finalRows = Object.values(map).sort(function(a, b) { return b.ordered - a.ordered; });
-      writeCache(season, {
-        summaryRows:      finalRows,
-        allConsigItems:   newConsigItems,
-        allSaleLineItems: newSaleLineItems,
-        seasonPids:       Array.from(seasonPidSet),
-        pidToType:        newPidToType,
-        pidToSupplier:    newPidToSupplier,
-        pidToPrice:       newPidToPrice,
-        pidToCost:        newPidToCost,
-      });
-      setSummaryRows(finalRows);
-      if (salesError) setError("Sales data may be incomplete: " + salesError);
-    } catch (e) {
-      if (e.message.includes("401") || e.message.toLowerCase().includes("not authenticated")) {
-        setAuthed(false);
-      } else {
-        setError(e.message);
-      }
-    }
-    setLoading(false);
-  }, [demo, season]);
-
-  // ── auth check ────────────────────────────────────────────────────────────
+  // ── auth check ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
     fetch("/api/auth/session")
-      .then(function(r) { return r.json(); })
-      .then(function(d) { setAuthed(d.authenticated === true); })
-      .catch(function() { setAuthed(false); });
+      .then(r => r.json())
+      .then(d => setAuthed(d.authenticated === true))
+      .catch(() => setAuthed(false));
   }, []);
 
-  useEffect(function() { if (authed === true) loadSummary(); }, [authed, loadSummary]);
+  async function handleLogin(e) {
+    e.preventDefault();
+    setLoginLoading(true);
+    setLoginError(null);
+    try {
+      const r = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (r.ok) {
+        setAuthed(true);
+      } else {
+        const d = await r.json().catch(() => ({}));
+        setLoginError(d.error || "Incorrect password");
+      }
+    } catch {
+      setLoginError("Network error — please try again.");
+    }
+    setLoginLoading(false);
+  }
 
-  // ── department drilldown ──────────────────────────────────────────────────
+  // ── load data from KV ──────────────────────────────────────────────────────
+
+  const loadData = useCallback(async (seasonId) => {
+    if (demo) { setSummaryRows(DEMO_SUMMARY); return; }
+    setDataLoading(true);
+    setDataError(null);
+    try {
+      const r = await fetch(`/api/scan/data?season=${encodeURIComponent(seasonId)}`);
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 401) { setAuthed(false); return; }
+        throw new Error(d.error || "HTTP " + r.status);
+      }
+      const { data } = await r.json();
+      if (data) {
+        setScanData(data);
+        setSummaryRows(data.summaryRows || []);
+        setDataTs(data.ts);
+      } else {
+        setScanData(null);
+        setSummaryRows([]);
+        setDataTs(null);
+      }
+    } catch (e) {
+      setDataError(e.message);
+    }
+    setDataLoading(false);
+  }, [demo]);
+
+  useEffect(() => {
+    if (authed === true) loadData(season);
+  }, [authed, loadData, season]);
+
+  // Reload after a completed scan
+  const reloadAfterScan = useCallback(() => loadData(season), [loadData, season]);
+
+  // ── server-side refresh scan ───────────────────────────────────────────────
+
+  const runScan = useCallback(async (restart) => {
+    setScanError(null);
+    setScanning(true);
+    setScanProgress("Starting scan…");
+    scanAbort.current = false;
+
+    try {
+      let phase = "init";
+      while (phase !== "done" && phase !== "error" && !scanAbort.current) {
+        const url = `/api/scan/step?season=${encodeURIComponent(season)}` +
+                    (restart ? "&restart=1" : "");
+        restart = false; // only first call gets restart flag
+        const r = await fetch(url, { method: "POST" });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          if (r.status === 401) { setAuthed(false); break; }
+          throw new Error(d.error || "HTTP " + r.status);
+        }
+        const state = await r.json();
+        phase = state.phase;
+        setScanProgress(state.progress || "…");
+        if (phase === "error") {
+          setScanError(state.error || "Scan failed");
+          break;
+        }
+        if (phase === "done") {
+          await reloadAfterScan();
+          break;
+        }
+        // Small pause between chunks so we don't instantly re-hammer the server
+        await new Promise(res => setTimeout(res, 200));
+      }
+    } catch (e) {
+      setScanError(e.message);
+    }
+    setScanning(false);
+  }, [season, reloadAfterScan]);
+
+  // ── department drilldown ───────────────────────────────────────────────────
 
   const openDept = useCallback(function(dept) {
     setCurrentDept(dept);
@@ -662,37 +355,22 @@ export default function FlowReport() {
     setVendorLoading(true);
     setScreen("vendors");
 
-    if (demo) { setVendorRows(DEMO_VENDORS[dept.id] || []); setVendorLoading(false); return; }
+    if (demo) {
+      setVendorRows(DEMO_VENDORS[dept.id] || []);
+      setVendorLoading(false);
+      return;
+    }
 
     try {
-      var vm = {};
-      for (var i = 0; i < allConsigItems.length; i++) {
-        var item = allConsigItems[i];
-        if (!seasonPids.has(item.product_id)) continue;
-        if (pidToType[item.product_id] !== dept.id) continue;
-        var supplier = pidToSupplier[item.product_id];
-        if (!supplier || supplier.id === "__none__") continue;
-        if (!vm[supplier.id]) vm[supplier.id] = { id: supplier.id, name: supplier.name, ordered: 0, received: 0, sold: 0, cost: 0 };
-        var retailPrice = pidToPrice[item.product_id] || 0;
-        vm[supplier.id].ordered  += retailPrice * (item.count    || 0);
-        vm[supplier.id].received += retailPrice * (item.received || 0);
-        vm[supplier.id].cost     += parseFloat(item.cost || 0) * (item.received || 0);
-      }
-      for (var j = 0; j < allSaleLineItems.length; j++) {
-        var li = allSaleLineItems[j];
-        if (!seasonPids.has(li.product_id)) continue;
-        if (pidToType[li.product_id] !== dept.id) continue;
-        var sup = pidToSupplier[li.product_id];
-        if (!sup || !vm[sup.id]) continue;
-        var saleAmt = parseFloat(li.total_price || li.price || 0);
-        if (li.is_return) { vm[sup.id].sold -= saleAmt; } else { vm[sup.id].sold += saleAmt; }
-      }
-      setVendorRows(Object.values(vm).sort(function(a, b) { return b.ordered - a.ordered; }));
-    } catch (e) { setVendorError(e.message); }
+      const vendors = (scanData && scanData.deptVendors && scanData.deptVendors[dept.id]) || [];
+      setVendorRows(vendors.slice().sort((a, b) => b.ordered - a.ordered));
+    } catch (e) {
+      setVendorError(e.message);
+    }
     setVendorLoading(false);
-  }, [demo, allConsigItems, allSaleLineItems, pidToType, pidToSupplier, pidToPrice, seasonPids]);
+  }, [demo, scanData]);
 
-  // ── vendor drilldown ──────────────────────────────────────────────────────
+  // ── vendor drilldown ───────────────────────────────────────────────────────
 
   const openVendor = useCallback(async function(vendor) {
     setCurrentVendor(vendor);
@@ -701,20 +379,27 @@ export default function FlowReport() {
     setProductError(null);
     setScreen("products");
 
-    if (demo) { setProductRows(DEMO_PRODUCTS[vendor.id] || []); setProductLoading(false); return; }
+    if (demo) {
+      setProductRows(DEMO_PRODUCTS[vendor.id] || []);
+      setProductLoading(false);
+      return;
+    }
 
     try {
-      // Find this vendor's pf26 product IDs directly from our already-scanned data.
-      // The LS ?supplier_id= param is unreliable in v2 (returns oldest catalog products
-      // instead of filtering), so we use seasonPids + pidToSupplier instead.
-      var targetIds = Array.from(seasonPids).filter(function(id) {
-        var sup = pidToSupplier[id];
-        var typ = pidToType[id];
+      // Find this vendor's product IDs in this dept from the pre-scanned data
+      const seasonPids    = (scanData && scanData.seasonPids)    || [];
+      const pidToType     = (scanData && scanData.pidToType)     || {};
+      const pidToSupplier = (scanData && scanData.pidToSupplier) || {};
+      const productStats  = (scanData && scanData.productStats)  || {};
+
+      const targetIds = seasonPids.filter(function(id) {
+        const sup = pidToSupplier[id];
+        const typ = pidToType[id];
         return sup && sup.id === vendor.id &&
                (typ === currentDept.id || typ === "__none__");
       });
 
-      // Fetch full product details concurrently (name, SKU, inventory, etc.)
+      // Fetch full product details (name, SKU, inventory) from LS
       var products = [];
       if (targetIds.length > 0) {
         var fetched = await withConcurrency(
@@ -729,32 +414,8 @@ export default function FlowReport() {
         products = fetched.filter(Boolean);
       }
 
-      var pidSet    = new Set(products.map(function(p) { return p.id; }));
-      var priceMap  = {};
-      products.forEach(function(p) { priceMap[p.id] = parseFloat(p.price_excluding_tax || 0); });
-      var soldMap   = {};
-      var returnMap = {};
-      var saleMap   = {};
-      for (var i = 0; i < allSaleLineItems.length; i++) {
-        var li = allSaleLineItems[i];
-        if (!pidSet.has(li.product_id)) continue;
-        var qty = parseInt(li.quantity || 1);
-        if (li.is_return) {
-          returnMap[li.product_id] = (returnMap[li.product_id] || 0) + qty;
-        } else {
-          soldMap[li.product_id] = (soldMap[li.product_id] || 0) + qty;
-          // Mark as on-sale if LS recorded a discount, or if the unit price is
-          // meaningfully below retail (>1% difference handles floating-point noise).
-          var unitPrice   = parseFloat(li.price || 0) || (qty > 0 ? parseFloat(li.total_price || 0) / qty : 0);
-          var retailPrice = priceMap[li.product_id] || 0;
-          var discounted  = parseFloat(li.discount || li.line_discount || 0) > 0;
-          if (discounted || (retailPrice > 0 && unitPrice > 0 && unitPrice < retailPrice * 0.99)) {
-            saleMap[li.product_id] = (saleMap[li.product_id] || 0) + qty;
-          }
-        }
-      }
-
       setProductRows(products.map(function(p) {
+        const stats = productStats[p.id] || {};
         return {
           name:     p.name,
           sku:      p.sku || "",
@@ -762,31 +423,36 @@ export default function FlowReport() {
           cost:     parseFloat(p.supply_price        || 0),
           price:    parseFloat(p.price_excluding_tax || 0),
           onHand:   (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
-          sold:     soldMap[p.id]   || 0,
-          onSale:   saleMap[p.id]   || 0,
-          returned: returnMap[p.id] || 0,
+          sold:     stats.sold     || 0,
+          onSale:   stats.onSale   || 0,
+          returned: stats.returned || 0,
         };
       }));
-    } catch (e) { setProductError(e.message); }
+    } catch (e) {
+      setProductError(e.message);
+    }
     setProductLoading(false);
-  }, [demo, currentDept, seasonPids, pidToType, allSaleLineItems]);
+  }, [demo, currentDept, scanData]);
 
-  // ── computed totals ───────────────────────────────────────────────────────
+  // ── computed totals ────────────────────────────────────────────────────────
 
-  const totalOrdered  = summaryRows.reduce(function(a, r) { return a + r.ordered;  }, 0);
-  const totalReceived = summaryRows.reduce(function(a, r) { return a + r.received; }, 0);
-  const totalSold     = summaryRows.reduce(function(a, r) { return a + r.sold;     }, 0);
-  const totalRecPct   = totalOrdered  > 0 ? (totalReceived / totalOrdered)  * 100 : 0;
-  const totalSoldPct  = totalReceived > 0 ? (totalSold     / totalReceived) * 100 : 0;
-  const vTotalOrdered  = vendorRows.reduce(function(a, r) { return a + r.ordered;  }, 0);
-  const vTotalReceived = vendorRows.reduce(function(a, r) { return a + r.received; }, 0);
-  const vTotalSold     = vendorRows.reduce(function(a, r) { return a + r.sold;     }, 0);
-  const vTotalCost     = vendorRows.reduce(function(a, r) { return a + (r.cost || 0); }, 0);
+  const totalOrdered   = summaryRows.reduce((a, r) => a + r.ordered,  0);
+  const totalReceived  = summaryRows.reduce((a, r) => a + r.received, 0);
+  const totalSold      = summaryRows.reduce((a, r) => a + r.sold,     0);
+  const totalRecPct    = totalOrdered  > 0 ? (totalReceived / totalOrdered)  * 100 : 0;
+  const totalSoldPct   = totalReceived > 0 ? (totalSold     / totalReceived) * 100 : 0;
+  const vTotalOrdered  = vendorRows.reduce((a, r) => a + r.ordered,  0);
+  const vTotalReceived = vendorRows.reduce((a, r) => a + r.received, 0);
+  const vTotalSold     = vendorRows.reduce((a, r) => a + r.sold,     0);
+  const vTotalCost     = vendorRows.reduce((a, r) => a + (r.cost || 0), 0);
+
   var seasonLabel = "";
-  for (var sIdx = 0; sIdx < SEASONS.length; sIdx++) { if (SEASONS[sIdx].id === season) { seasonLabel = SEASONS[sIdx].name; break; } }
+  for (var sIdx = 0; sIdx < SEASONS.length; sIdx++) {
+    if (SEASONS[sIdx].id === season) { seasonLabel = SEASONS[sIdx].name; break; }
+  }
   if (!seasonLabel) seasonLabel = season;
 
-  // ── styles ────────────────────────────────────────────────────────────────
+  // ── styles ─────────────────────────────────────────────────────────────────
 
   const s = {
     app:        { fontFamily: "'DM Sans',sans-serif", background: "#f7f5f0", minHeight: "100vh", fontSize: 14 },
@@ -807,12 +473,14 @@ export default function FlowReport() {
 
   const fontLink = "@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap'); @keyframes spin{to{transform:rotate(360deg)}} tbody tr:hover{background:#f0f5fb!important}";
 
-  // ── login screens ─────────────────────────────────────────────────────────
+  // ── login screen ────────────────────────────────────────────────────────────
 
   if (authed === null) return (
     <div style={s.app}><style>{fontLink}</style>
       <header style={s.header}><div style={s.logo}>abersons</div></header>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)" }}><Spinner label="Checking login…" /></div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)" }}>
+        <Spinner label="Checking login…" />
+      </div>
     </div>
   );
 
@@ -821,13 +489,45 @@ export default function FlowReport() {
       <header style={s.header}><div style={s.logo}>abersons</div></header>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "calc(100vh - 56px)", gap: 16 }}>
         <div style={{ fontFamily: "'DM Serif Display',serif", fontSize: 26, color: "#1a1816" }}>Flow Report</div>
-        <div style={{ fontSize: 13, color: "#6b6560", marginBottom: 8 }}>Connect your Lightspeed account to continue.</div>
-        <a href="/api/auth/lightspeed" style={{ background: "#3a5a8c", color: "#fff", padding: "10px 24px", borderRadius: 8, textDecoration: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 14, fontWeight: 500 }}>Connect to Lightspeed</a>
+        <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 10, width: 280 }}>
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            autoFocus
+            style={{ padding: "10px 14px", borderRadius: 8, border: "1px solid #e2ddd5", fontSize: 14, fontFamily: "'DM Sans',sans-serif", outline: "none" }}
+          />
+          {loginError && <div style={{ color: "#8b2020", fontSize: 13 }}>{loginError}</div>}
+          <button type="submit" disabled={loginLoading}
+            style={{ background: "#3a5a8c", color: "#fff", padding: "10px 0", borderRadius: 8, border: "none", fontSize: 14, fontWeight: 500, cursor: loginLoading ? "default" : "pointer", opacity: loginLoading ? 0.7 : 1, fontFamily: "'DM Sans',sans-serif" }}>
+            {loginLoading ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
       </div>
     </div>
   );
 
-  // ── render ────────────────────────────────────────────────────────────────
+  // ── scan-in-progress banner ────────────────────────────────────────────────
+
+  const ScanBanner = scanning ? (
+    <div style={{ background: "#e8eef7", border: "1px solid #b8cce4", borderRadius: 8, padding: "10px 16px", marginBottom: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ width: 16, height: 16, border: "2px solid #b8cce4", borderTopColor: "#3a5a8c", borderRadius: "50%", animation: "spin 0.7s linear infinite", flexShrink: 0 }} />
+        <span style={{ fontSize: 13, color: "#3a5a8c" }}>{scanProgress}</span>
+      </div>
+      <button onClick={() => { scanAbort.current = true; setScanning(false); }}
+        style={{ background: "none", border: "none", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
+        cancel
+      </button>
+    </div>
+  ) : scanError ? (
+    <div style={{ background: "#fdeaea", border: "1px solid #f0b8b8", borderRadius: 8, padding: "10px 16px", marginBottom: "1rem", fontSize: 13, color: "#8b2020" }}>
+      Scan failed: {scanError}
+    </div>
+  ) : null;
+
+  // ── render ─────────────────────────────────────────────────────────────────
 
   return (
     <div style={s.app}>
@@ -865,45 +565,66 @@ export default function FlowReport() {
         {/* ── SUMMARY ── */}
         {screen === "summary" && (
           <>
-            {loading && <Spinner label={loadingStep || ("Loading " + seasonLabel + " data…")} />}
-            {error && <ErrBox msg={error} />}
-            {!loading && (
+            {ScanBanner}
+            {dataLoading && <Spinner label={"Loading " + seasonLabel + " data…"} />}
+            {dataError && <ErrBox msg={dataError} />}
+            {!dataLoading && (
               <>
                 <KpiRow items={[
                   { label: "Total Ordered",  value: fmt(totalOrdered) },
                   { label: "Total Received", value: fmt(totalReceived), sub: totalRecPct.toFixed(1) + "% of ordered" },
                   { label: "Total Sold",     value: fmt(totalSold),     sub: totalSoldPct.toFixed(1) + "% of received" },
-                  { label: "Departments",    value: summaryRows.filter(function(r) { return r.ordered > 0 || r.sold > 0; }).length },
+                  { label: "Departments",    value: summaryRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={"Store Summary — " + seasonLabel}
-                  right={<button onClick={function() { clearCache(season); loadSummary(); }} style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#6b6560", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>↺ Refresh</button>}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <TH>Sold %</TH><TH>Department</TH><TH right>Ordered</TH>
-                        <TH right>Received</TH><TH right>Sold</TH>
-                        <TH right>Received %</TH><TH right>Sold %</TH>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {summaryRows.filter(function(r) { return r.ordered > 0 || r.received > 0 || r.sold > 0; }).map(function(r) {
-                        var recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
-                        var soldPct = r.received > 0 ? (r.sold     / r.received) * 100 : 0;
-                        var zero    = r.ordered === 0 && r.sold === 0;
-                        return (
-                          <tr key={r.id} style={s.tableRow(!zero, zero)} onClick={function() { if (!zero) openDept(r); }}>
-                            <TD><Bar pct={soldPct} /></TD>
-                            <TD><span style={{ fontWeight: 500 }}>{r.name}</span></TD>
-                            <TD right>{fmt(r.ordered)}</TD>
-                            <TD right>{fmt(r.received)}</TD>
-                            <TD right>{fmt(r.sold)}</TD>
-                            <TD right><PctBadge pct={recPct}  zero={zero} /></TD>
-                            <TD right><PctBadge pct={soldPct} zero={zero} /></TD>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  right={
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {dataTs && !scanning && (
+                        <span style={{ fontSize: 11, color: "#9e9892" }}>
+                          updated {new Date(dataTs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => { if (!scanning) runScan(true); }}
+                        disabled={scanning}
+                        style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: scanning ? "#b0aba5" : "#6b6560", cursor: scanning ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+                        {scanning ? "↺ Scanning…" : "↺ Refresh"}
+                      </button>
+                    </div>
+                  }>
+                  {summaryRows.length === 0 && !scanning ? (
+                    <div style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892", fontSize: 13 }}>
+                      No scan data yet for {seasonLabel}. Click <strong>↺ Refresh</strong> to run the first scan.
+                    </div>
+                  ) : (
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <TH>Sold %</TH><TH>Department</TH><TH right>Ordered</TH>
+                          <TH right>Received</TH><TH right>Sold</TH>
+                          <TH right>Received %</TH><TH right>Sold %</TH>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {summaryRows.filter(r => r.ordered > 0 || r.received > 0 || r.sold > 0).map(function(r) {
+                          var recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
+                          var soldPct = r.received > 0 ? (r.sold     / r.received) * 100 : 0;
+                          var zero    = r.ordered === 0 && r.sold === 0;
+                          return (
+                            <tr key={r.id} style={s.tableRow(!zero, zero)} onClick={function() { if (!zero) openDept(r); }}>
+                              <TD><Bar pct={soldPct} /></TD>
+                              <TD><span style={{ fontWeight: 500 }}>{r.name}</span></TD>
+                              <TD right>{fmt(r.ordered)}</TD>
+                              <TD right>{fmt(r.received)}</TD>
+                              <TD right>{fmt(r.sold)}</TD>
+                              <TD right><PctBadge pct={recPct}  zero={zero} /></TD>
+                              <TD right><PctBadge pct={soldPct} zero={zero} /></TD>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
                 </TableWrap>
               </>
             )}
@@ -927,7 +648,7 @@ export default function FlowReport() {
                   { label: "Cost (wholesale)", value: fmt(vTotalCost) },
                   { label: "Received", value: fmt(vTotalReceived), sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "%" : "—" },
                   { label: "Sold",     value: fmt(vTotalSold),     sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "%" : "—" },
-                  { label: "Vendors",  value: vendorRows.filter(function(r) { return r.ordered > 0 || r.sold > 0; }).length },
+                  { label: "Vendors",  value: vendorRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={(currentDept ? currentDept.name : "") + " — by Vendor"}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
