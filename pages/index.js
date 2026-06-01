@@ -62,7 +62,7 @@ const TableWrap = ({ title, right, children }) => (
 );
 
 const TH = ({ children, right }) => (
-  <th style={{ padding: "8px 12px", textAlign: right ? "right" : "left", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "#6b6560", whiteSpace: "nowrap", background: "#f0ede6", borderBottom: "1px solid #e2ddd5" }}>
+  <th style={{ padding: "8px 12px", textAlign: right ? "right" : "left", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "#6b6560", whiteSpace: "nowrap", background: "#f0ede6", borderBottom: "1px solid #e2ddd5", position: "sticky", top: 0, zIndex: 2 }}>
     {children}
   </th>
 );
@@ -710,7 +710,7 @@ export default function FlowReport() {
                 { label: "Ordered (cost)",   value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
                 { label: "Received (retail)",value: fmt(currentVendor ? currentVendor.received    : 0) },
                 { label: "Received (cost)",  value: fmt(currentVendor ? currentVendor.cost        : 0) },
-                { label: "Sold",             value: fmt(currentVendor ? currentVendor.sold        : 0) },
+                { label: "Sold (retail)",    value: fmt(currentVendor ? currentVendor.sold        : 0) },
                 { label: "SKUs",             value: productRows.length },
               ].map(function(kv) {
                 return (
@@ -724,39 +724,8 @@ export default function FlowReport() {
             {productLoading && <Spinner label="Loading products…" />}
             {productError && <ErrBox msg={productError} />}
             {!productLoading && (
-              <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      <TH>Status</TH><TH>Description</TH><TH>SKU</TH><TH>Variant</TH>
-                      <TH right>Cost</TH><TH right>Price</TH>
-                      <TH right>Ordered</TH><TH right>On Hand</TH><TH right>Sold</TH><TH right>On Sale</TH><TH right>Returned</TH>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {productRows.length === 0 ? (
-                      <tr><td colSpan={11} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
-                    ) : productRows.map(function(p, i) {
-                      var status = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
-                      return (
-                        <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
-                          <TD><span style={s.statusDot(status)} /></TD>
-                          <TD>{p.name}</TD>
-                          <TD mono>{p.sku}</TD>
-                          <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
-                          <TD right>{p.cost       > 0 ? fmt(p.cost)  : "—"}</TD>
-                          <TD right>{p.price      > 0 ? fmt(p.price) : "—"}</TD>
-                          <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
-                          <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
-                          <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
-                          <TD right style={{ color: p.onSale    > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale    || "—"}</TD>
-                          <TD right style={{ color: p.returned  > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned  || "—"}</TD>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", padding: "9px 12px", background: "#f0ede6", borderTop: "1px solid #e2ddd5", fontSize: 12 }}>
+              <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")} right={
+                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
                   {[["sold","sold","#4a7ab5"],["sale","on sale","#e07b39"],["stock","in stock","#e05a36"],["ordered","ordered","#aaa"],["returned","returned","#9b59b6"]].map(function(e) {
                     return (
                       <div key={e[0]} style={{ display: "flex", alignItems: "center", gap: 5, color: "#6b6560" }}>
@@ -765,6 +734,40 @@ export default function FlowReport() {
                       </div>
                     );
                   })}
+                </div>
+              }>
+                <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <TH>Status</TH><TH>Description</TH><TH>SKU</TH><TH>Variant</TH>
+                        <TH right>Cost</TH><TH right>Price</TH>
+                        <TH right>Ordered</TH><TH right>On Hand</TH><TH right>Sold</TH><TH right>On Sale</TH><TH right>Returned</TH>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {productRows.length === 0 ? (
+                        <tr><td colSpan={11} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
+                      ) : productRows.map(function(p, i) {
+                        var status = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
+                        return (
+                          <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
+                            <TD><span style={s.statusDot(status)} /></TD>
+                            <TD>{p.name}</TD>
+                            <TD mono>{p.sku}</TD>
+                            <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
+                            <TD right>{p.cost       > 0 ? fmt(p.cost)  : "—"}</TD>
+                            <TD right>{p.price      > 0 ? fmt(p.price) : "—"}</TD>
+                            <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
+                            <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
+                            <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
+                            <TD right style={{ color: p.onSale   > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale    || "—"}</TD>
+                            <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned  || "—"}</TD>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </TableWrap>
             )}
