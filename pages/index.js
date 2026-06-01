@@ -417,8 +417,16 @@ export default function FlowReport() {
         var fetched = await withConcurrency(
           targetIds.map(function(id) {
             return async function() {
-              var d = await apiFetch("2.0/products/" + id + "?include=inventory");
-              return d.data || d;
+              var [pd, inv] = await Promise.all([
+                apiFetch("2.0/products/" + id),
+                apiFetch("2.0/products/" + id + "/inventory").catch(() => null),
+              ]);
+              var p = pd.data || pd;
+              if (p && inv) {
+                var invData = inv.data || inv;
+                p._onHand = invData.current_amount ?? invData.count ?? invData.quantity ?? null;
+              }
+              return p;
             };
           }),
           8
@@ -435,7 +443,7 @@ export default function FlowReport() {
           cost:     parseFloat(p.supply_price        || 0),
           price:    parseFloat(p.price_excluding_tax || 0),
           qtyOrdered: pidToQtyOrdered[p.id] || 0,
-          onHand:     (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
+          onHand:     p._onHand != null ? p._onHand : (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
           sold:       stats.sold     || 0,
           onSale:     stats.onSale   || 0,
           returned:   stats.returned || 0,

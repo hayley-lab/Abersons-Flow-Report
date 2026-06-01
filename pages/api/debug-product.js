@@ -20,15 +20,13 @@ export default async function handler(req, res) {
     catch { return { status: r.status, body: { raw: text.slice(0, 1000) } }; }
   }
 
-  const [plain, withInv, withLevels] = await Promise.all([
+  const [plain, inv] = await Promise.all([
     get(`2.0/products/${id}`),
-    get(`2.0/products/${id}?include=inventory`),
-    get(`2.0/products/${id}?include=inventory_levels`),
+    get(`2.0/products/${id}/inventory`),
   ]);
 
   return res.json({
-    plain:             plain.body.data       || plain.body,
-    with_inventory:    withInv.body.data     || withInv.body,
-    with_inv_levels:   withLevels.body.data  || withLevels.body,
+    product:   plain.body.data || plain.body,
+    inventory: inv.body.data   || inv.body,
   });
 }
