@@ -782,8 +782,8 @@ export default function FlowReport() {
                   {["ordered","stock","sold","sale","returned"].map(function(st) {
                     const b = productBuckets[st];
                     return (
-                      <span key={st} style={{ display: "flex", alignItems: "center", gap: 4, color: b.n === 0 ? "#bbb" : "#1a1816" }}>
-                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: b.n === 0 ? "#ccc" : BUCKET_COLORS[st], display: "inline-block", flexShrink: 0 }} />
+                      <span key={st} style={{ display: "flex", alignItems: "center", gap: 4, color: "#6b6560" }}>
+                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: BUCKET_COLORS[st], display: "inline-block", flexShrink: 0 }} />
                         {BUCKET_LABELS[st]}
                         {b.n > 0 && <span style={{ fontWeight: 600 }}>&nbsp;{b.n} — {fmt(b.v)}</span>}
                       </span>
