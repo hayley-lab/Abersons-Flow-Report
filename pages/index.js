@@ -486,7 +486,7 @@ export default function FlowReport() {
     backBtn:    { background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, textDecoration: "underline", textUnderlineOffset: 2, padding: 0, marginBottom: "0.9rem" },
     demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
     statusDot:  function(status) {
-      var colors = { sold: "#4a7ab5", sale: "#e07b39", stock: "#e05a36", ordered: "#aaa", returned: "#9b59b6" };
+      var colors = { sold: "#4a7ab5", sale: "#9b59b6", stock: "#e05a36", ordered: "#aaa", returned: "#1a1816" };
       return { width: 10, height: 10, borderRadius: "50%", background: colors[status] || "#aaa", display: "inline-block" };
     },
   };
@@ -737,7 +737,7 @@ export default function FlowReport() {
             {!productLoading && (
               <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")} right={
                 <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
-                  {[["sold","sold","#4a7ab5"],["sale","on sale","#e07b39"],["stock","in stock","#e05a36"],["ordered","ordered","#aaa"],["returned","returned","#9b59b6"]].map(function(e) {
+                  {[["sold","sold","#4a7ab5"],["sale","on sale","#9b59b6"],["stock","in stock","#e05a36"],["ordered","ordered","#aaa"],["returned","returned","#1a1816"]].map(function(e) {
                     return (
                       <div key={e[0]} style={{ display: "flex", alignItems: "center", gap: 5, color: "#6b6560" }}>
                         <span style={{ width: 9, height: 9, borderRadius: "50%", background: e[2], display: "inline-block" }} />
@@ -773,7 +773,34 @@ export default function FlowReport() {
                       })
                     : productRows;
                   const sh = { col: productSort.col, dir: productSort.dir };
+
+                  // Totals by status bucket
+                  const buckets = { ordered: {n:0,v:0}, stock: {n:0,v:0}, sold: {n:0,v:0}, sale: {n:0,v:0}, returned: {n:0,v:0} };
+                  const totalCost = productRows.reduce((a, p) => a + (p.cost || 0), 0);
+                  const totalRetail = productRows.reduce((a, p) => a + (p.price || 0), 0);
+                  productRows.forEach(function(p) {
+                    var st = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
+                    buckets[st].n++;
+                    buckets[st].v += p.price || 0;
+                  });
+                  const bucketColors = { sold: "#4a7ab5", sale: "#9b59b6", stock: "#e05a36", ordered: "#aaa", returned: "#1a1816" };
+                  const bucketLabels = { ordered: "ordered", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
+
                   return (
+                    <>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid #e2ddd5", background: "#fafaf8", fontSize: 12 }}>
+                      {["ordered","stock","sold","sale","returned"].map(function(st) {
+                        const b = buckets[st];
+                        return (
+                          <span key={st} style={{ background: bucketColors[st], color: "#fff", borderRadius: 4, padding: "3px 8px", fontWeight: 600, opacity: b.n === 0 ? 0.35 : 1 }}>
+                            {b.n} {bucketLabels[st]} — {fmt(b.v)}
+                          </span>
+                        );
+                      })}
+                      <span style={{ marginLeft: "auto", color: "#6b6560" }}>
+                        cost {fmt(totalCost)} &nbsp;|&nbsp; retail {fmt(totalRetail)}
+                      </span>
+                    </div>
                     <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse" }}>
                         <thead>
@@ -807,14 +834,15 @@ export default function FlowReport() {
                                 <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
                                 <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
                                 <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
-                                <TD right style={{ color: p.onSale   > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale   || "—"}</TD>
-                                <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned || "—"}</TD>
+                                <TD right style={{ color: p.onSale   > 0 ? "#9b59b6" : "#9e9892" }}>{p.onSale   || "—"}</TD>
+                                <TD right style={{ color: p.returned > 0 ? "#1a1816" : "#9e9892" }}>{p.returned || "—"}</TD>
                               </tr>
                             );
                           })}
                         </tbody>
                       </table>
                     </div>
+                    </>
                   );
                 })()}
               </TableWrap>
