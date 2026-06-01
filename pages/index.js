@@ -702,6 +702,9 @@ export default function FlowReport() {
               <button onClick={function() { setScreen("vendors"); }} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>{currentDept ? currentDept.name : ""}</button>
               {" › "}<span style={{ color: "#1a1816", fontWeight: 500 }}>{currentVendor ? currentVendor.name : ""}</span>
             </div>
+            <pre style={{ fontSize: 11, background: "#f5f5f5", padding: 8, marginBottom: 8, overflowX: "auto" }}>
+              {"deptId=" + (currentDept && currentDept.id) + " | vendorId=" + (currentVendor && currentVendor.id) + " | scanTs=" + (scanData && scanData.ts) + " | pids=" + (scanData && scanData.seasonPids && scanData.seasonPids.length)}
+            </pre>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
                 { label: "Ordered (retail)", value: fmt(currentVendor ? currentVendor.ordered  : 0) },
