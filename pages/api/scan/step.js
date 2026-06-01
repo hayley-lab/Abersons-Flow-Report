@@ -194,9 +194,9 @@ export default async function handler(req, res) {
 
       if (state.productSearchIdx >= skuCodes.length) {
         if (state.seasonPids.length === 0) {
-          // Fallback: full catalog scan from anchor version
+          // Fallback: full catalog scan — always start from beginning
           state.phase      = "products_slow";
-          state.slowAfter  = state.anchorVersion;
+          state.slowAfter  = null;
           state.slowScanned = 0;
           state.progress   = "Fast-path found nothing — scanning full catalog…";
         } else if (!state.variantsSeenInScan) {
