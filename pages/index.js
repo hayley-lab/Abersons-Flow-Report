@@ -609,12 +609,20 @@ export default function FlowReport() {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {demo && <span style={s.demoBadge}>demo mode</span>}
           <div style={s.seasonPill}>
-            <span style={{ color: "#9e9892", fontSize: 12 }}>▸</span>
-            <select value={season} onChange={function(e) { setSeason(e.target.value); setScreen("summary"); }}
-              style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}>
-              {SEASONS.map(function(s2) { return <option key={s2.id} value={s2.id}>{s2.name}</option>; })}
-            </select>
-            <span style={{ color: "#9e9892", fontSize: 12 }}>◂</span>
+            {(function() {
+              var idx = SEASONS.findIndex(function(s2) { return s2.id === season; });
+              var prev = SEASONS[idx - 1];
+              var next = SEASONS[idx + 1];
+              var btnStyle = function(enabled) { return { background: "none", border: "none", padding: "0 2px", fontSize: 13, color: enabled ? "#3a5a8c" : "#ccc", cursor: enabled ? "pointer" : "default", fontFamily: "'DM Sans',sans-serif", lineHeight: 1 }; };
+              return (<>
+                <button style={btnStyle(!!prev)} disabled={!prev} onClick={function() { if (prev) { setSeason(prev.id); setScreen("summary"); } }}>‹</button>
+                <select value={season} onChange={function(e) { setSeason(e.target.value); setScreen("summary"); }}
+                  style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}>
+                  {SEASONS.map(function(s2) { return <option key={s2.id} value={s2.id}>{s2.name}</option>; })}
+                </select>
+                <button style={btnStyle(!!next)} disabled={!next} onClick={function() { if (next) { setSeason(next.id); setScreen("summary"); } }}>›</button>
+              </>);
+            })()}
           </div>
           <button onClick={function() { setDemo(!demo); setScreen("summary"); }}
             style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
