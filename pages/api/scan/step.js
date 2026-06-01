@@ -352,7 +352,6 @@ export default async function handler(req, res) {
         // Free memory not needed in sales phase
         delete state.consignments;
         delete state.parentStore;
-        delete state.pidToPrice;
 
         state.phase      = "sales";
         state.salesPages = 0;
@@ -415,6 +414,7 @@ export default async function handler(req, res) {
 
     // ── FINALIZING: compute summary rows + write to KV ───────────────────────
     if (state.phase === "finalizing") {
+      delete state.pidToPrice;
       // Build summary (dept-level) from deptVendorData
       const catMap = {};
       for (const cat of state.cats) {
