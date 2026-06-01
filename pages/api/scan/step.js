@@ -15,7 +15,7 @@ import { getLsToken, lsBase } from "../../../lib/ls-auth";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 
-const CHUNK_MS = 8000;
+const CHUNK_MS = 6000;
 
 function seasonSkuCodes(seasonId) {
   const m = seasonId.match(/^(prefall|fall|spring|prespring)(\d+)$/);

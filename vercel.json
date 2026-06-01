@@ -1,5 +1,10 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "functions": {
+    "pages/api/scan/step.js": {
+      "maxDuration": 60
+    }
+  }
 }
