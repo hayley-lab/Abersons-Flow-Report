@@ -703,7 +703,21 @@ export default function FlowReport() {
               {" › "}<span style={{ color: "#1a1816", fontWeight: 500 }}>{currentVendor ? currentVendor.name : ""}</span>
             </div>
             <pre style={{ fontSize: 11, background: "#f5f5f5", padding: 8, marginBottom: 8, overflowX: "auto" }}>
-              {"deptId=" + (currentDept && currentDept.id) + " | vendorId=" + (currentVendor && currentVendor.id) + " | scanTs=" + (scanData && scanData.ts) + " | pids=" + (scanData && scanData.seasonPids && scanData.seasonPids.length)}
+              {(function() {
+                const deptId = currentDept && currentDept.id;
+                const vendorId = currentVendor && currentVendor.id;
+                const pids = scanData && scanData.seasonPids;
+                const pidToSupplier = (scanData && scanData.pidToSupplier) || {};
+                const pidToType = (scanData && scanData.pidToType) || {};
+                const sampleKeys = Object.keys(pidToSupplier).slice(0, 2);
+                const sampleSup = sampleKeys.map(k => k.slice(0,8) + "→" + JSON.stringify(pidToSupplier[k])).join(", ");
+                const matchCount = pids ? pids.filter(id => {
+                  const sup = pidToSupplier[id];
+                  const typ = pidToType[id];
+                  return sup && (sup.i || sup.id) === vendorId && (typ === deptId || typ === "__none__");
+                }).length : "n/a";
+                return "deptId=" + deptId + "\nvendorId=" + vendorId + "\nscanTs=" + (scanData && scanData.ts) + " | pids=" + (pids && pids.length) + " | matchCount=" + matchCount + "\nsample pidToSupplier: " + sampleSup;
+              })()}
             </pre>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
