@@ -51,21 +51,21 @@ function registerProduct(state, p) {
   if (p.variant_parent_id) {
     const par = state.parentStore[p.variant_parent_id];
     if (par) {
-      if (resolvedType   === "__none__") resolvedType     = par.typeId;
-      if (resolvedSuppId === "__none__") { resolvedSuppId = par.suppId; resolvedSuppName = par.suppName; }
-      if (resolvedPrice  === 0)          resolvedPrice    = par.price;
-      if (resolvedCost   === 0)          resolvedCost     = par.cost;
+      if (resolvedType   === "__none__") resolvedType     = par.t;
+      if (resolvedSuppId === "__none__") { resolvedSuppId = par.si; resolvedSuppName = par.sn; }
+      if (resolvedPrice  === 0)          resolvedPrice    = par.p;
+      if (resolvedCost   === 0)          resolvedCost     = par.c;
     }
     state.variantsSeenInScan = true;
   } else {
-    state.parentStore[p.id] = { typeId, suppId, suppName, price, cost };
+    state.parentStore[p.id] = { t: typeId, si: suppId, sn: suppName, p: price, c: cost };
     if (!state.seasonParentIds.includes(p.id)) state.seasonParentIds.push(p.id);
   }
 
   if (!state.seasonPids.includes(p.id)) {
     state.seasonPids.push(p.id);
     state.pidToType[p.id]     = resolvedType;
-    state.pidToSupplier[p.id] = { id: resolvedSuppId, name: resolvedSuppName };
+    state.pidToSupplier[p.id] = { i: resolvedSuppId, n: resolvedSuppName };
     state.pidToPrice[p.id]    = resolvedPrice;
   }
 }
@@ -226,11 +226,11 @@ export default async function handler(req, res) {
           // Always store parent data for variant inheritance
           if (!prod.variant_parent_id) {
             state.parentStore[prod.id] = {
-              typeId:   prod.product_type_id || "__none__",
-              suppId:   (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__",
-              suppName: (prod.supplier && prod.supplier.name) || "Unknown",
-              price:    parseFloat(prod.price_excluding_tax || 0),
-              cost:     parseFloat(prod.supply_price || 0),
+              t:  prod.product_type_id || "__none__",
+              si: (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__",
+              sn: (prod.supplier && prod.supplier.name) || "Unknown",
+              p:  parseFloat(prod.price_excluding_tax || 0),
+              c:  parseFloat(prod.supply_price || 0),
             };
           }
           const sku = (prod.sku || "").toLowerCase();
@@ -270,18 +270,20 @@ export default async function handler(req, res) {
           if (pidSet.has(vp.id)) continue;
           pidSet.add(vp.id);
           state.seasonPids.push(vp.id);
-          state.pidToType[vp.id]     = vp.product_type_id || par?.typeId || "__none__";
+          state.pidToType[vp.id]     = vp.product_type_id || par?.t || "__none__";
           state.pidToSupplier[vp.id] = {
-            id:   (vp.supplier && vp.supplier.id)   || vp.supplier_id   || par?.suppId   || "__none__",
-            name: (vp.supplier && vp.supplier.name) || par?.suppName || "Unknown",
+            i: (vp.supplier && vp.supplier.id)   || vp.supplier_id   || par?.si || "__none__",
+            n: (vp.supplier && vp.supplier.name) || par?.sn || "Unknown",
           };
-          state.pidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || 0) || par?.price || 0;
+          state.pidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || 0) || par?.p || 0;
         }
         state.variantIdx++;
         state.progress = `Fetching variants (${state.variantIdx}/${state.seasonParentIds.length})…`;
       }
 
       if (state.variantIdx >= state.seasonParentIds.length) {
+        delete state.parentStore;
+        delete state.seasonParentIds;
         state.phase    = "consignments";
         state.consigIdx = 0;
         state.progress  = `Found ${state.seasonPids.length} SKUs — scanning POs (0/${state.consignments.length})…`;
@@ -301,14 +303,14 @@ export default async function handler(req, res) {
           const pid    = item.product_id;
           const cid    = state.pidToType[pid]     || "__none__";
           const sup    = state.pidToSupplier[pid];
-          if (!sup || sup.id === "__none__") continue;
+          if (!sup || sup.i === "__none__") continue;
           const price  = state.pidToPrice[pid] || 0;
 
           if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
-          if (!state.deptVendorData[cid][sup.id]) {
-            state.deptVendorData[cid][sup.id] = { id: sup.id, name: sup.name, ordered: 0, received: 0, sold: 0, cost: 0 };
+          if (!state.deptVendorData[cid][sup.i]) {
+            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, received: 0, sold: 0, cost: 0 };
           }
-          const v = state.deptVendorData[cid][sup.id];
+          const v = state.deptVendorData[cid][sup.i];
           v.ordered  += price * (item.count    || 0);
           v.received += price * (item.received || 0);
           v.cost     += parseFloat(item.cost || 0) * (item.received || 0);
@@ -368,8 +370,8 @@ export default async function handler(req, res) {
             // Per-vendor sold $ (for vendor drilldown table)
             const cid = state.pidToType[pid] || "__none__";
             const sup = state.pidToSupplier[pid];
-            if (sup && sup.id !== "__none__" && state.deptVendorData[cid] && state.deptVendorData[cid][sup.id]) {
-              const v = state.deptVendorData[cid][sup.id];
+            if (sup && sup.i !== "__none__" && state.deptVendorData[cid] && state.deptVendorData[cid][sup.i]) {
+              const v = state.deptVendorData[cid][sup.i];
               if (li.is_return) { v.sold -= amount; } else { v.sold += amount; }
             }
           }
