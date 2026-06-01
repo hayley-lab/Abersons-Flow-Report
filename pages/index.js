@@ -67,6 +67,16 @@ const TH = ({ children, right }) => (
   </th>
 );
 
+const SortTH = ({ children, col, sort, onSort, right }) => {
+  const active = sort.col === col;
+  const arrow  = active ? (sort.dir === 1 ? " ↑" : " ↓") : "";
+  return (
+    <th onClick={() => onSort(col)} style={{ padding: "8px 12px", textAlign: right ? "right" : "left", fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: active ? "#3a5a8c" : "#6b6560", whiteSpace: "nowrap", background: "#f0ede6", borderBottom: "1px solid #e2ddd5", position: "sticky", top: 0, zIndex: 2, cursor: "pointer", userSelect: "none" }}>
+      {children}{arrow}
+    </th>
+  );
+};
+
 const TD = ({ children, right, mono, style: extraStyle }) => (
   <td style={{ padding: "9px 12px", textAlign: right ? "right" : "left", fontVariantNumeric: right ? "tabular-nums" : "normal", fontFamily: mono ? "monospace" : "inherit", fontSize: mono ? 12 : 13, color: mono ? "#6b6560" : "#1a1816", verticalAlign: "middle", ...extraStyle }}>
     {children}
@@ -238,6 +248,7 @@ export default function FlowReport() {
   const [productRows, setProductRows]   = useState([]);
   const [productLoading, setProductLoading] = useState(false);
   const [productError, setProductError] = useState(null);
+  const [productSort, setProductSort]   = useState({ col: null, dir: 1 });
 
   // ── auth check ─────────────────────────────────────────────────────────────
 
@@ -736,39 +747,76 @@ export default function FlowReport() {
                   })}
                 </div>
               }>
-                <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <TH>Status</TH><TH>Description</TH><TH>SKU</TH><TH>Variant</TH>
-                        <TH right>Cost</TH><TH right>Price</TH>
-                        <TH right>Ordered</TH><TH right>On Hand</TH><TH right>Sold</TH><TH right>On Sale</TH><TH right>Returned</TH>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {productRows.length === 0 ? (
-                        <tr><td colSpan={11} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
-                      ) : productRows.map(function(p, i) {
-                        var status = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
-                        return (
-                          <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
-                            <TD><span style={s.statusDot(status)} /></TD>
-                            <TD>{p.name}</TD>
-                            <TD mono>{p.sku}</TD>
-                            <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
-                            <TD right>{p.cost       > 0 ? fmt(p.cost)  : "—"}</TD>
-                            <TD right>{p.price      > 0 ? fmt(p.price) : "—"}</TD>
-                            <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
-                            <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
-                            <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
-                            <TD right style={{ color: p.onSale   > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale    || "—"}</TD>
-                            <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned  || "—"}</TD>
+                {(function() {
+                  const handleSort = function(col) {
+                    setProductSort(function(prev) {
+                      return prev.col === col ? { col, dir: prev.dir * -1 } : { col, dir: -1 };
+                    });
+                  };
+                  const sortVal = function(p, col) {
+                    if (col === "name")       return (p.name || "").toLowerCase();
+                    if (col === "sku")        return (p.sku  || "").toLowerCase();
+                    if (col === "variant")    return (p.variant || "").toLowerCase();
+                    if (col === "cost")       return p.cost       || 0;
+                    if (col === "price")      return p.price      || 0;
+                    if (col === "qtyOrdered") return p.qtyOrdered || 0;
+                    if (col === "onHand")     return p.onHand     || 0;
+                    if (col === "sold")       return p.sold       || 0;
+                    if (col === "onSale")     return p.onSale     || 0;
+                    if (col === "returned")   return p.returned   || 0;
+                    return 0;
+                  };
+                  const sorted = productSort.col
+                    ? productRows.slice().sort(function(a, b) {
+                        const av = sortVal(a, productSort.col), bv = sortVal(b, productSort.col);
+                        return av < bv ? -productSort.dir : av > bv ? productSort.dir : 0;
+                      })
+                    : productRows;
+                  const sh = { col: productSort.col, dir: productSort.dir };
+                  return (
+                    <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr>
+                            <TH>Status</TH>
+                            <SortTH col="name"       sort={sh} onSort={handleSort}>Description</SortTH>
+                            <SortTH col="sku"        sort={sh} onSort={handleSort}>SKU</SortTH>
+                            <SortTH col="variant"    sort={sh} onSort={handleSort}>Variant</SortTH>
+                            <SortTH col="cost"       sort={sh} onSort={handleSort} right>Cost</SortTH>
+                            <SortTH col="price"      sort={sh} onSort={handleSort} right>Price</SortTH>
+                            <SortTH col="qtyOrdered" sort={sh} onSort={handleSort} right>Ordered</SortTH>
+                            <SortTH col="onHand"     sort={sh} onSort={handleSort} right>On Hand</SortTH>
+                            <SortTH col="sold"       sort={sh} onSort={handleSort} right>Sold</SortTH>
+                            <SortTH col="onSale"     sort={sh} onSort={handleSort} right>On Sale</SortTH>
+                            <SortTH col="returned"   sort={sh} onSort={handleSort} right>Returned</SortTH>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                        </thead>
+                        <tbody>
+                          {sorted.length === 0 ? (
+                            <tr><td colSpan={11} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
+                          ) : sorted.map(function(p, i) {
+                            var status = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
+                            return (
+                              <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
+                                <TD><span style={s.statusDot(status)} /></TD>
+                                <TD>{p.name}</TD>
+                                <TD mono>{p.sku}</TD>
+                                <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
+                                <TD right>{p.cost       > 0 ? fmt(p.cost)  : "—"}</TD>
+                                <TD right>{p.price      > 0 ? fmt(p.price) : "—"}</TD>
+                                <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
+                                <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
+                                <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
+                                <TD right style={{ color: p.onSale   > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale   || "—"}</TD>
+                                <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned || "—"}</TD>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
               </TableWrap>
             )}
           </>
