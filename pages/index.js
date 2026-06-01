@@ -101,71 +101,6 @@ const SEASONS = [
   { id: "spring23",    name: "Spring 2023" },
 ];
 
-const DEMO_SUMMARY = [
-  { id: "acc",   name: "Accessories",       ordered: 101823,  received: 98413,  sold: 55410  },
-  { id: "alley", name: "Alley",             ordered: 922276,  received: 904549, sold: 604999 },
-  { id: "alt",   name: "Alterations",       ordered: 0,       received: 0,      sold: 0      },
-  { id: "denim", name: "Denim",             ordered: 69531,   received: 68231,  sold: 45600  },
-  { id: "des",   name: "Designer",          ordered: 306105,  received: 282960, sold: 149860 },
-  { id: "gc",    name: "Gift Certificates", ordered: 0,       received: 0,      sold: 0      },
-  { id: "hg",    name: "Home Gifts",        ordered: 0,       received: 0,      sold: 0      },
-  { id: "mens",  name: "Mens",              ordered: 472591,  received: 428733, sold: 240091 },
-  { id: "next",  name: "Next",              ordered: 617680,  received: 588475, sold: 452816 },
-  { id: "shoes", name: "Shoes",             ordered: 329474,  received: 293793, sold: 164143 },
-];
-
-const DEMO_VENDORS = {
-  acc: [
-    { id: "dk",   name: "Dana Kellin",  ordered: 31048, received: 31048, sold: 17854, cost: 12419 },
-    { id: "jp",   name: "Judi Powers",  ordered: 30280, received: 30280, sold: 15100, cost: 12112 },
-    { id: "re",   name: "Rene Escobar", ordered: 40305, received: 36895, sold: 19866, cost: 14758 },
-    { id: "vale", name: "Vale",         ordered: 1830,  received: 1830,  sold: 1830,  cost: 732   },
-  ],
-  alley: [
-    { id: "rag",   name: "Rag & Bone",    ordered: 210500, received: 207800, sold: 145000, cost: 83200  },
-    { id: "vince", name: "Vince",         ordered: 189600, received: 185000, sold: 122300, cost: 74000  },
-    { id: "tb",    name: "Theory",        ordered: 145000, received: 142000, sold: 99800,  cost: 56800  },
-    { id: "eis",   name: "Eileen Fisher", ordered: 377176, received: 369749, sold: 237899, cost: 147900 },
-  ],
-  denim: [
-    { id: "ag",  name: "AG Jeans",  ordered: 35000, received: 34500, sold: 23400, cost: 13800 },
-    { id: "dl",  name: "DL1961",    ordered: 20531, received: 20231, sold: 14200, cost: 8090  },
-    { id: "mih", name: "MiH Jeans", ordered: 14000, received: 13500, sold: 8000,  cost: 5400  },
-  ],
-  des: [
-    { id: "akris", name: "Akris",      ordered: 89000,  received: 82000,  sold: 41000, cost: 32800 },
-    { id: "staud", name: "Staud",      ordered: 72105,  received: 67960,  sold: 38860, cost: 27184 },
-    { id: "nili",  name: "Nili Lotan", ordered: 145000, received: 133000, sold: 70000, cost: 53200 },
-  ],
-  mens: [
-    { id: "polo", name: "Ralph Lauren",  ordered: 155000, received: 140000, sold: 78000, cost: 56000 },
-    { id: "boss", name: "Hugo Boss",     ordered: 120000, received: 110000, sold: 62000, cost: 44000 },
-    { id: "pt01", name: "PT01 Trousers", ordered: 95000,  received: 86000,  sold: 48000, cost: 34400 },
-    { id: "sco",  name: "Scott Barber",  ordered: 102591, received: 92733,  sold: 52091, cost: 37093 },
-  ],
-  next: [
-    { id: "vero", name: "Veronica Beard", ordered: 198000, received: 189000, sold: 152000, cost: 75600 },
-    { id: "mm",   name: "M.M. LaFleur",   ordered: 165000, received: 159000, sold: 124000, cost: 63600 },
-    { id: "wit",  name: "Witchery",       ordered: 254680, received: 240475, sold: 176816, cost: 96190 },
-  ],
-  shoes: [
-    { id: "cl",  name: "Christian Louboutin",   ordered: 98000, received: 87000, sold: 48000, cost: 34800 },
-    { id: "hw",  name: "Hogl",                  ordered: 82000, received: 73000, sold: 42000, cost: 29200 },
-    { id: "laz", name: "Lavorazione Artigiana", ordered: 72000, received: 65000, sold: 37000, cost: 26000 },
-    { id: "sas", name: "SAS Shoes",             ordered: 77474, received: 68793, sold: 37143, cost: 27517 },
-  ],
-};
-
-const DEMO_PRODUCTS = {
-  dk: [
-    { name: "dia 14k dia/14k",        sku: "adc2726/pf2501",  variant: "dia/14k",      cost: 825,  price: 2063, onHand: 0, sold: 1, onSale: 0, returned: 0 },
-    { name: "dia sil 14k",            sku: "adc2806s/pf2501", variant: "dia/sil/14k",  cost: 350,  price: 875,  onHand: 1, sold: 0, onSale: 0, returned: 0 },
-    { name: "ear kyanite 14k",        sku: "ade2939/f2501",   variant: "14k/kyanite",  cost: 1075, price: 2688, onHand: 1, sold: 0, onSale: 0, returned: 0 },
-    { name: "ear tahitian pearl 14k", sku: "ade2058/f2501",   variant: "14k",          cost: 526,  price: 1315, onHand: 1, sold: 0, onSale: 0, returned: 0 },
-    { name: "neck 14k",               sku: "adc266/f2501",    variant: "14k",          cost: 476,  price: 1190, onHand: 1, sold: 0, onSale: 0, returned: 0 },
-    { name: "neck sunstone 14k",      sku: "adc2953/f2501",   variant: "14k/sunstone", cost: 1475, price: 3688, onHand: 1, sold: 0, onSale: 0, returned: 0 },
-  ],
-};
 
 // ── LS API proxy helper (still used for per-product fetches in vendor drilldown)
 
@@ -224,7 +159,6 @@ export default function FlowReport() {
   const [loginError, setLoginError] = useState(null);
   const [loginLoading, setLoginLoading] = useState(false);
 
-  const [demo, setDemo]           = useState(false);
   const [screen, setScreen]       = useState("summary");
   const [season, setSeason]       = useState("prefall26");
 
@@ -286,7 +220,6 @@ export default function FlowReport() {
   // ── load data from KV ──────────────────────────────────────────────────────
 
   const loadData = useCallback(async (seasonId) => {
-    if (demo) { setSummaryRows(DEMO_SUMMARY); return; }
     setDataLoading(true);
     setDataError(null);
     try {
@@ -310,7 +243,7 @@ export default function FlowReport() {
       setDataError(e.message);
     }
     setDataLoading(false);
-  }, [demo]);
+  }, []);
 
   useEffect(() => {
     if (authed === true) loadData(season);
@@ -368,12 +301,6 @@ export default function FlowReport() {
     setVendorLoading(true);
     setScreen("vendors");
 
-    if (demo) {
-      setVendorRows(DEMO_VENDORS[dept.id] || []);
-      setVendorLoading(false);
-      return;
-    }
-
     try {
       const vendors = (scanData && scanData.deptVendors && scanData.deptVendors[dept.id]) || [];
       setVendorRows(vendors.slice().sort((a, b) => b.ordered - a.ordered));
@@ -381,7 +308,7 @@ export default function FlowReport() {
       setVendorError(e.message);
     }
     setVendorLoading(false);
-  }, [demo, scanData]);
+  }, [scanData]);
 
   // ── vendor drilldown ───────────────────────────────────────────────────────
 
@@ -391,12 +318,6 @@ export default function FlowReport() {
     setProductLoading(true);
     setProductError(null);
     setScreen("products");
-
-    if (demo) {
-      setProductRows(DEMO_PRODUCTS[vendor.id] || []);
-      setProductLoading(false);
-      return;
-    }
 
     try {
       // Find this vendor's product IDs in this dept from the pre-scanned data
@@ -457,7 +378,7 @@ export default function FlowReport() {
       setProductError(e.message);
     }
     setProductLoading(false);
-  }, [demo, currentDept, scanData]);
+  }, [currentDept, scanData]);
 
   // Re-run openVendor if scanData refreshes while we're already on the products screen
   const prevScanDataRef = useRef(null);
@@ -607,7 +528,6 @@ export default function FlowReport() {
           <button style={s.navBtn(screen === "detail")} onClick={function() { setScreen("detail"); }}>flow detail</button>
         </nav>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {demo && <span style={s.demoBadge}>demo mode</span>}
           <div style={s.seasonPill}>
             {(function() {
               var idx = SEASONS.findIndex(function(s2) { return s2.id === season; });
@@ -624,10 +544,6 @@ export default function FlowReport() {
               </>);
             })()}
           </div>
-          <button onClick={function() { setDemo(!demo); setScreen("summary"); }}
-            style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, color: "#6b6560", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
-            {demo ? "Live data" : "Demo mode"}
-          </button>
           <button onClick={function() { fetch("/api/auth/logout").then(function() { setAuthed(false); }); }}
             style={{ background: "none", border: "none", padding: "5px 8px", fontSize: 12, color: "#9e9892", cursor: "pointer", fontFamily: "'DM Sans',sans-serif" }}>
             logout
