@@ -256,7 +256,7 @@ export default async function handler(req, res) {
       while (state.fixIdx < parents.length && Date.now() < deadline) {
         const parentId = parents[state.fixIdx];
         let prod;
-        try { prod = await lsFetch("2.0/products/" + parentId); } catch (e) { prod = null; }
+        try { prod = (await lsFetch("2.0/products/" + parentId)).data || null; } catch (e) { prod = null; }
         if (prod) {
           const pt = prod.product_type_id || "__none__";
           const si = (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__";
