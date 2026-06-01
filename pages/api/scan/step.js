@@ -43,10 +43,9 @@ function registerProduct(state, p) {
   const suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
   const suppName = (p.supplier && p.supplier.name) || "Unknown";
   const price    = parseFloat(p.price_excluding_tax || 0);
-  const cost     = parseFloat(p.supply_price        || 0);
 
   let resolvedType = typeId, resolvedSuppId = suppId, resolvedSuppName = suppName;
-  let resolvedPrice = price, resolvedCost = cost;
+  let resolvedPrice = price;
 
   if (p.variant_parent_id) {
     const par = state.parentStore[p.variant_parent_id];
@@ -54,11 +53,10 @@ function registerProduct(state, p) {
       if (resolvedType   === "__none__") resolvedType     = par.t;
       if (resolvedSuppId === "__none__") { resolvedSuppId = par.si; resolvedSuppName = par.sn; }
       if (resolvedPrice  === 0)          resolvedPrice    = par.p;
-      if (resolvedCost   === 0)          resolvedCost     = par.c;
     }
     state.variantsSeenInScan = true;
   } else {
-    state.parentStore[p.id] = { t: typeId, si: suppId, sn: suppName, p: price, c: cost };
+    state.parentStore[p.id] = { t: typeId, si: suppId, sn: suppName, p: price };
     if (!state.seasonParentIds.includes(p.id)) state.seasonParentIds.push(p.id);
   }
 
@@ -230,7 +228,6 @@ export default async function handler(req, res) {
               si: (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__",
               sn: (prod.supplier && prod.supplier.name) || "Unknown",
               p:  parseFloat(prod.price_excluding_tax || 0),
-              c:  parseFloat(prod.supply_price || 0),
             };
           }
           const sku = (prod.sku || "").toLowerCase();
