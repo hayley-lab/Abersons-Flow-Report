@@ -735,18 +735,7 @@ export default function FlowReport() {
             {productLoading && <Spinner label="Loading products…" />}
             {productError && <ErrBox msg={productError} />}
             {!productLoading && (
-              <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")} right={
-                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
-                  {[["sold","sold","#4a7ab5"],["sale","on sale","#9b59b6"],["stock","in stock","#e05a36"],["ordered","ordered","#aaa"],["returned","returned","#1a1816"]].map(function(e) {
-                    return (
-                      <div key={e[0]} style={{ display: "flex", alignItems: "center", gap: 5, color: "#6b6560" }}>
-                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: e[2], display: "inline-block" }} />
-                        {e[1]}
-                      </div>
-                    );
-                  })}
-                </div>
-              }>
+              <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")}>
                 {(function() {
                   const handleSort = function(col) {
                     setProductSort(function(prev) {
@@ -788,12 +777,14 @@ export default function FlowReport() {
 
                   return (
                     <>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid #e2ddd5", background: "#fafaf8", fontSize: 12 }}>
+                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #e2ddd5", background: "#fafaf8", fontSize: 12 }}>
                       {["ordered","stock","sold","sale","returned"].map(function(st) {
                         const b = buckets[st];
                         return (
-                          <span key={st} style={{ background: bucketColors[st], color: "#fff", borderRadius: 4, padding: "3px 8px", fontWeight: 600, opacity: b.n === 0 ? 0.35 : 1 }}>
-                            {b.n} {bucketLabels[st]} — {fmt(b.v)}
+                          <span key={st} style={{ display: "flex", alignItems: "center", gap: 5, color: b.n === 0 ? "#bbb" : "#1a1816" }}>
+                            <span style={{ width: 9, height: 9, borderRadius: "50%", background: bucketColors[st], display: "inline-block", opacity: b.n === 0 ? 0.35 : 1 }} />
+                            {bucketLabels[st]}
+                            {b.n > 0 && <span style={{ fontWeight: 600 }}>{b.n} — {fmt(b.v)}</span>}
                           </span>
                         );
                       })}
