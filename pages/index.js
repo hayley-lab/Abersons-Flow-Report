@@ -434,7 +434,14 @@ export default function FlowReport() {
     setProductLoading(false);
   }, [demo, currentDept, scanData]);
 
-  // ── computed totals ────────────────────────────────────────────────────────
+  // Re-run openVendor if scanData refreshes while we're already on the products screen
+  const prevScanDataRef = useRef(null);
+  useEffect(() => {
+    if (screen === "products" && currentVendor && scanData && scanData !== prevScanDataRef.current) {
+      prevScanDataRef.current = scanData;
+      openVendor(currentVendor);
+    }
+  }, [screen, currentVendor, scanData, openVendor]);
 
   const totalOrdered   = summaryRows.reduce((a, r) => a + r.ordered,  0);
   const totalReceived  = summaryRows.reduce((a, r) => a + r.received, 0);
