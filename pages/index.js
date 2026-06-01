@@ -783,7 +783,7 @@ export default function FlowReport() {
                     const b = productBuckets[st];
                     return (
                       <span key={st} style={{ display: "flex", alignItems: "center", gap: 4, color: b.n === 0 ? "#bbb" : "#1a1816" }}>
-                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: BUCKET_COLORS[st], display: "inline-block", opacity: b.n === 0 ? 0.35 : 1, flexShrink: 0 }} />
+                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: b.n === 0 ? "#ccc" : BUCKET_COLORS[st], display: "inline-block", flexShrink: 0 }} />
                         {BUCKET_LABELS[st]}
                         {b.n > 0 && <span style={{ fontWeight: 600 }}>&nbsp;{b.n} — {fmt(b.v)}</span>}
                       </span>
