@@ -417,7 +417,7 @@ export default function FlowReport() {
         var fetched = await withConcurrency(
           targetIds.map(function(id) {
             return async function() {
-              var d = await apiFetch("2.0/products/" + id);
+              var d = await apiFetch("2.0/products/" + id + "?include=inventory");
               return d.data || d;
             };
           }),
@@ -466,7 +466,7 @@ export default function FlowReport() {
   const vTotalSold     = vendorRows.reduce((a, r) => a + r.sold,     0);
   const vTotalCost     = vendorRows.reduce((a, r) => a + (r.cost || 0), 0);
 
-  const BUCKET_COLORS = { sold: "#4a7ab5", sale: "#9b59b6", stock: "#e05a36", ordered: "#aaa", returned: "#1a1816" };
+  const BUCKET_COLORS = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
   const BUCKET_LABELS = { ordered: "ordered", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
   const productBuckets = (function() {
     const b = { ordered: {n:0,v:0}, stock: {n:0,v:0}, sold: {n:0,v:0}, sale: {n:0,v:0}, returned: {n:0,v:0} };
@@ -498,7 +498,7 @@ export default function FlowReport() {
     backBtn:    { background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, textDecoration: "underline", textUnderlineOffset: 2, padding: 0, marginBottom: "0.9rem" },
     demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
     statusDot:  function(status) {
-      var colors = { sold: "#4a7ab5", sale: "#9b59b6", stock: "#e05a36", ordered: "#aaa", returned: "#1a1816" };
+      var colors = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
       return { width: 10, height: 10, borderRadius: "50%", background: colors[status] || "#aaa", display: "inline-block" };
     },
   };
@@ -821,8 +821,8 @@ export default function FlowReport() {
                                 <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
                                 <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
                                 <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
-                                <TD right style={{ color: p.onSale   > 0 ? "#9b59b6" : "#9e9892" }}>{p.onSale   || "—"}</TD>
-                                <TD right style={{ color: p.returned > 0 ? "#1a1816" : "#9e9892" }}>{p.returned || "—"}</TD>
+                                <TD right style={{ color: p.onSale   > 0 ? "#6c3483" : "#9e9892" }}>{p.onSale   || "—"}</TD>
+                                <TD right style={{ color: p.returned > 0 ? "#000000" : "#9e9892" }}>{p.returned || "—"}</TD>
                               </tr>
                             );
                           })}
