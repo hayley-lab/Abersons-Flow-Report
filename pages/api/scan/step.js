@@ -79,14 +79,19 @@ export default async function handler(req, res) {
   const { season } = req.query;
   if (!season) return res.status(400).json({ error: "season required" });
 
-  const jobKey  = `scan:job:${season}`;
-  const bigKey  = `scan:job:big:${season}`;
-  const dataKey = `scan:data:${season}`;
+  const jobKey     = `scan:job:${season}`;
+  const bigKey     = `scan:job:big:${season}`;
+  const parentsKey = `scan:job:parents:${season}`;
+  const dataKey    = `scan:data:${season}`;
 
-  // Load small + big state and merge
+  // Load all three state slices and merge
   const restart = req.query.restart === "1";
-  let [smallState, bigData] = restart ? [null, null] : await Promise.all([kv.get(jobKey), kv.get(bigKey)]);
-  let state = smallState ? { ...smallState, ...(bigData || {}) } : null;
+  let [smallState, bigData, parentsData] = restart
+    ? [null, null, null]
+    : await Promise.all([kv.get(jobKey), kv.get(bigKey), kv.get(parentsKey)]);
+  let state = smallState
+    ? { ...smallState, ...(bigData || {}), parentStore: parentsData || undefined }
+    : null;
 
   if (!state || state.phase === "done" || state.phase === "error") {
     state = {
@@ -144,8 +149,9 @@ export default async function handler(req, res) {
       const skuCodes = seasonSkuCodes(season);
       const skuBase  = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
 
-      state.cats             = cats;
-      state.consignments     = consignments;
+      // Trim to only needed fields to keep KV payloads small
+      state.cats             = cats.map(c => ({ id: c.id, name: c.name }));
+      state.consignments     = consignments.map(c => ({ id: c.id }));
       state.parentStore      = {};
       state.seasonPids       = [];
       state.seasonParentIds  = [];
@@ -412,7 +418,7 @@ export default async function handler(req, res) {
       };
 
       await kv.set(dataKey, result, { ex: 48 * 3600 });
-      await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
+      await Promise.all([kv.del(jobKey), kv.del(bigKey), kv.del(parentsKey)]);
 
       return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "Scan complete!" });
     }
@@ -423,15 +429,20 @@ export default async function handler(req, res) {
       return res.json({ phase: "error", error: state.error });
     }
 
-    // Save job state split across two keys to stay under KV 10MB limit
-    const BIG_FIELDS = ["parentStore","seasonPids","seasonParentIds","pidToType","pidToSupplier","pidToPrice","deptVendorData","productStats","cats","consignments"];
-    const small = {}, big = {};
+    // Save job state split across three keys to stay under KV 10MB limit:
+    //   jobKey     — small operational state (phase, cursors, indexes)
+    //   bigKey     — medium data (pidMaps, deptVendorData, productStats, cats, consignments)
+    //   parentsKey — parentStore alone (can be very large during full catalog scan)
+    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion"]);
+    const small = {}, big = {}, parents = state.parentStore || {};
     for (const [k, v] of Object.entries(state)) {
-      if (BIG_FIELDS.includes(k)) big[k] = v; else small[k] = v;
+      if (k === "parentStore") continue;
+      if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;
     }
     await Promise.all([
-      kv.set(jobKey, small, { ex: 3600 }),
-      kv.set(bigKey,  big,  { ex: 3600 }),
+      kv.set(jobKey,     small,   { ex: 3600 }),
+      kv.set(bigKey,     big,     { ex: 3600 }),
+      kv.set(parentsKey, parents, { ex: 3600 }),
     ]);
     return res.json({ phase: state.phase, progress: state.progress || "…" });
 
