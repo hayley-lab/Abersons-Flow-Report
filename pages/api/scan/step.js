@@ -87,8 +87,18 @@ export default async function handler(req, res) {
   let [smallState, bigData, parentsData] = restart
     ? [null, null, null]
     : await Promise.all([kv.get(jobKey), kv.get(bigKey), kv.get(parentsKey)]);
+  // parentsData is stored as a flat array [id,t,si,sn,p, id,t,si,sn,p, ...] for compactness
+  let parentStore;
+  if (Array.isArray(parentsData)) {
+    parentStore = {};
+    for (let i = 0; i < parentsData.length; i += 5) {
+      parentStore[parentsData[i]] = { t: parentsData[i+1], si: parentsData[i+2], sn: parentsData[i+3], p: parentsData[i+4] };
+    }
+  } else if (parentsData) {
+    parentStore = parentsData; // backwards compat
+  }
   let state = smallState
-    ? { ...smallState, ...(bigData || {}), parentStore: parentsData || undefined }
+    ? { ...smallState, ...(bigData || {}), ...(parentStore ? { parentStore } : {}) }
     : null;
 
   if (!state || state.phase === "done" || state.phase === "error") {
@@ -433,15 +443,20 @@ export default async function handler(req, res) {
     //   bigKey     — medium data (pidMaps, deptVendorData, productStats, cats, consignments)
     //   parentsKey — parentStore alone (can be very large during full catalog scan)
     const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion"]);
-    const small = {}, big = {}, parents = state.parentStore || {};
+    const small = {}, big = {};
     for (const [k, v] of Object.entries(state)) {
       if (k === "parentStore") continue;
       if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;
     }
+    // Serialize parentStore as flat array [id,t,si,sn,p,...] — ~50% smaller than object form
+    const parentsArr = [];
+    for (const [id, v] of Object.entries(state.parentStore || {})) {
+      parentsArr.push(id, v.t, v.si, v.sn, v.p);
+    }
     await Promise.all([
-      kv.set(jobKey,     small,   { ex: 3600 }),
-      kv.set(bigKey,     big,     { ex: 3600 }),
-      kv.set(parentsKey, parents, { ex: 3600 }),
+      kv.set(jobKey,     small,      { ex: 3600 }),
+      kv.set(bigKey,     big,        { ex: 3600 }),
+      kv.set(parentsKey, parentsArr, { ex: 3600 }),
     ]);
     return res.json({ phase: state.phase, progress: state.progress || "…" });
 
