@@ -826,13 +826,13 @@ export default function FlowReport() {
                                 <TD>{p.name}</TD>
                                 <TD mono>{p.sku}</TD>
                                 <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
-                                <TD right>{p.cost       > 0 ? fmt(p.cost)  : "—"}</TD>
-                                <TD right>{p.price      > 0 ? fmt(p.price) : "—"}</TD>
-                                <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
-                                <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
-                                <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
-                                <TD right style={{ color: p.onSale   > 0 ? "#6c3483" : "#9e9892" }}>{p.onSale   || "—"}</TD>
-                                <TD right style={{ color: p.returned > 0 ? "#000000" : "#9e9892" }}>{p.returned || "—"}</TD>
+                                <TD right>{p.cost       > 0 ? fmt(p.cost)  : ""}</TD>
+                                <TD right>{p.price      > 0 ? fmt(p.price) : ""}</TD>
+                                <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : ""}</TD>
+                                <TD right>{p.onHand     > 0 ? p.onHand     : ""}</TD>
+                                <TD right>{p.sold       > 0 ? p.sold       : ""}</TD>
+                                <TD right style={{ color: "#6c3483" }}>{p.onSale    > 0 ? p.onSale    : ""}</TD>
+                                <TD right style={{ color: "#000000" }}>{p.returned  > 0 ? p.returned  : ""}</TD>
                               </tr>
                             );
                           })}
