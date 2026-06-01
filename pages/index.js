@@ -424,7 +424,9 @@ export default function FlowReport() {
               var p = pd.data || pd;
               if (p && inv) {
                 var invData = inv.data || inv;
-                p._onHand = invData.current_amount ?? invData.count ?? invData.quantity ?? null;
+                p._onHand = Array.isArray(invData)
+                  ? invData.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
+                  : (invData.current_amount ?? invData.count ?? null);
               }
               return p;
             };
