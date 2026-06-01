@@ -481,9 +481,14 @@ export default function FlowReport() {
   const productBuckets = (function() {
     const b = { ordered: {n:0,v:0}, stock: {n:0,v:0}, sold: {n:0,v:0}, sale: {n:0,v:0}, returned: {n:0,v:0} };
     productRows.forEach(function(p) {
-      var st = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
-      b[st].n++;
-      b[st].v += p.price || 0;
+      var price = p.price || 0;
+      var soldFull = Math.max(0, (p.sold || 0) - (p.onSale || 0));
+      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.returned || 0));
+      if (soldFull   > 0) { b.sold.n++;     b.sold.v     += price; }
+      if (p.onSale   > 0) { b.sale.n++;     b.sale.v     += price; }
+      if (p.onHand   > 0) { b.stock.n++;    b.stock.v    += price; }
+      if (p.returned > 0) { b.returned.n++; b.returned.v += price; }
+      if (notReceived> 0) { b.ordered.n++;  b.ordered.v  += price; }
     });
     return b;
   })();
@@ -507,9 +512,24 @@ export default function FlowReport() {
     tableRow:   function(clickable, zero) { return { borderBottom: "1px solid #e2ddd5", cursor: clickable && !zero ? "pointer" : "default", opacity: zero ? 0.45 : 1, transition: "background 0.1s" }; },
     backBtn:    { background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, textDecoration: "underline", textUnderlineOffset: 2, padding: 0, marginBottom: "0.9rem" },
     demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
-    statusDot:  function(status) {
-      var colors = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
-      return { width: 10, height: 10, borderRadius: "50%", background: colors[status] || "#aaa", display: "inline-block" };
+    statusDots: function(p) {
+      var C = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
+      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.returned || 0));
+      var soldFull = Math.max(0, (p.sold || 0) - (p.onSale || 0));
+      var marks = [
+        { color: C.sold,     n: soldFull },
+        { color: C.sale,     n: p.onSale    || 0 },
+        { color: C.stock,    n: p.onHand    || 0 },
+        { color: C.returned, n: p.returned  || 0 },
+        { color: C.ordered,  n: notReceived },
+      ];
+      var dots = [];
+      marks.forEach(function(m) {
+        for (var i = 0; i < m.n; i++) {
+          dots.push(m.color);
+        }
+      });
+      return dots;
     },
   };
 
@@ -819,10 +839,9 @@ export default function FlowReport() {
                           {sorted.length === 0 ? (
                             <tr><td colSpan={11} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
                           ) : sorted.map(function(p, i) {
-                            var status = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
                             return (
                               <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
-                                <TD><span style={s.statusDot(status)} /></TD>
+                                <TD><span style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 36 }}>{s.statusDots(p).map(function(c, di) { return <span key={di} style={{ width: 6, height: 14, borderRadius: 2, background: c, display: "inline-block", flexShrink: 0 }} />; })}</span></TD>
                                 <TD>{p.name}</TD>
                                 <TD mono>{p.sku}</TD>
                                 <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
