@@ -395,7 +395,7 @@ export default function FlowReport() {
       const targetIds = seasonPids.filter(function(id) {
         const sup = pidToSupplier[id];
         const typ = pidToType[id];
-        return sup && sup.id === vendor.id &&
+        return sup && (sup.i || sup.id) === vendor.id &&
                (typ === currentDept.id || typ === "__none__");
       });
 
