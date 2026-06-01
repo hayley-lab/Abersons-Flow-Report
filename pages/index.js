@@ -466,6 +466,18 @@ export default function FlowReport() {
   const vTotalSold     = vendorRows.reduce((a, r) => a + r.sold,     0);
   const vTotalCost     = vendorRows.reduce((a, r) => a + (r.cost || 0), 0);
 
+  const BUCKET_COLORS = { sold: "#4a7ab5", sale: "#9b59b6", stock: "#e05a36", ordered: "#aaa", returned: "#1a1816" };
+  const BUCKET_LABELS = { ordered: "ordered", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
+  const productBuckets = (function() {
+    const b = { ordered: {n:0,v:0}, stock: {n:0,v:0}, sold: {n:0,v:0}, sale: {n:0,v:0}, returned: {n:0,v:0} };
+    productRows.forEach(function(p) {
+      var st = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
+      b[st].n++;
+      b[st].v += p.price || 0;
+    });
+    return b;
+  })();
+
   var seasonLabel = "";
   for (var sIdx = 0; sIdx < SEASONS.length; sIdx++) {
     if (SEASONS[sIdx].id === season) { seasonLabel = SEASONS[sIdx].name; break; }
@@ -735,7 +747,20 @@ export default function FlowReport() {
             {productLoading && <Spinner label="Loading products…" />}
             {productError && <ErrBox msg={productError} />}
             {!productLoading && (
-              <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")}>
+              <TableWrap title={(currentDept ? currentDept.name : "") + " — " + (currentVendor ? currentVendor.name : "")} right={
+                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
+                  {["ordered","stock","sold","sale","returned"].map(function(st) {
+                    const b = productBuckets[st];
+                    return (
+                      <span key={st} style={{ display: "flex", alignItems: "center", gap: 4, color: b.n === 0 ? "#bbb" : "#1a1816" }}>
+                        <span style={{ width: 9, height: 9, borderRadius: "50%", background: BUCKET_COLORS[st], display: "inline-block", opacity: b.n === 0 ? 0.35 : 1, flexShrink: 0 }} />
+                        {BUCKET_LABELS[st]}
+                        {b.n > 0 && <span style={{ fontWeight: 600 }}>&nbsp;{b.n} — {fmt(b.v)}</span>}
+                      </span>
+                    );
+                  })}
+                </div>
+              }>
                 {(function() {
                   const handleSort = function(col) {
                     setProductSort(function(prev) {
@@ -762,36 +787,7 @@ export default function FlowReport() {
                       })
                     : productRows;
                   const sh = { col: productSort.col, dir: productSort.dir };
-
-                  // Totals by status bucket
-                  const buckets = { ordered: {n:0,v:0}, stock: {n:0,v:0}, sold: {n:0,v:0}, sale: {n:0,v:0}, returned: {n:0,v:0} };
-                  const totalCost = productRows.reduce((a, p) => a + (p.cost || 0), 0);
-                  const totalRetail = productRows.reduce((a, p) => a + (p.price || 0), 0);
-                  productRows.forEach(function(p) {
-                    var st = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
-                    buckets[st].n++;
-                    buckets[st].v += p.price || 0;
-                  });
-                  const bucketColors = { sold: "#4a7ab5", sale: "#9b59b6", stock: "#e05a36", ordered: "#aaa", returned: "#1a1816" };
-                  const bucketLabels = { ordered: "ordered", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
-
                   return (
-                    <>
-                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #e2ddd5", background: "#fafaf8", fontSize: 12 }}>
-                      {["ordered","stock","sold","sale","returned"].map(function(st) {
-                        const b = buckets[st];
-                        return (
-                          <span key={st} style={{ display: "flex", alignItems: "center", gap: 5, color: b.n === 0 ? "#bbb" : "#1a1816" }}>
-                            <span style={{ width: 9, height: 9, borderRadius: "50%", background: bucketColors[st], display: "inline-block", opacity: b.n === 0 ? 0.35 : 1 }} />
-                            {bucketLabels[st]}
-                            {b.n > 0 && <span style={{ fontWeight: 600 }}>{b.n} — {fmt(b.v)}</span>}
-                          </span>
-                        );
-                      })}
-                      <span style={{ marginLeft: "auto", color: "#6b6560" }}>
-                        cost {fmt(totalCost)} &nbsp;|&nbsp; retail {fmt(totalRetail)}
-                      </span>
-                    </div>
                     <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "65vh" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse" }}>
                         <thead>
@@ -833,7 +829,6 @@ export default function FlowReport() {
                         </tbody>
                       </table>
                     </div>
-                    </>
                   );
                 })()}
               </TableWrap>
