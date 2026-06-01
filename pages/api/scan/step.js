@@ -53,6 +53,10 @@ function registerProduct(state, p) {
       if (resolvedType   === "__none__") resolvedType     = par.t;
       if (resolvedSuppId === "__none__") { resolvedSuppId = par.si; resolvedSuppName = par.sn; }
       if (resolvedPrice  === 0)          resolvedPrice    = par.p;
+    } else if (resolvedType === "__none__" || resolvedSuppId === "__none__" || resolvedPrice === 0) {
+      // Parent not in store (slow-path scan) — queue for fixup after scan
+      if (!state.variantNeedsFixup) state.variantNeedsFixup = {};
+      state.variantNeedsFixup[p.id] = p.variant_parent_id;
     }
     state.variantsSeenInScan = true;
   } else {
@@ -77,29 +81,14 @@ export default async function handler(req, res) {
   const { season } = req.query;
   if (!season) return res.status(400).json({ error: "season required" });
 
-  const jobKey     = `scan:job:${season}`;
-  const bigKey     = `scan:job:big:${season}`;
-  const parentsKey = `scan:job:parents:${season}`;
-  const dataKey    = `scan:data:${season}`;
+  const jobKey  = `scan:job:${season}`;
+  const bigKey  = `scan:job:big:${season}`;
+  const dataKey = `scan:data:${season}`;
 
-  // Load all three state slices and merge
+  // Load small + big state and merge
   const restart = req.query.restart === "1";
-  let [smallState, bigData, parentsData] = restart
-    ? [null, null, null]
-    : await Promise.all([kv.get(jobKey), kv.get(bigKey), kv.get(parentsKey)]);
-  // parentsData is stored as a flat array [id,t,si,sn,p, id,t,si,sn,p, ...] for compactness
-  let parentStore;
-  if (Array.isArray(parentsData)) {
-    parentStore = {};
-    for (let i = 0; i < parentsData.length; i += 5) {
-      parentStore[parentsData[i]] = { t: parentsData[i+1], si: parentsData[i+2], sn: parentsData[i+3], p: parentsData[i+4] };
-    }
-  } else if (parentsData) {
-    parentStore = parentsData; // backwards compat
-  }
-  let state = smallState
-    ? { ...smallState, ...(bigData || {}), ...(parentStore ? { parentStore } : {}) }
-    : null;
+  let [smallState, bigData] = restart ? [null, null] : await Promise.all([kv.get(jobKey), kv.get(bigKey)]);
+  let state = smallState ? { ...smallState, ...(bigData || {}) } : null;
 
   if (!state || state.phase === "done" || state.phase === "error") {
     state = {
@@ -167,6 +156,7 @@ export default async function handler(req, res) {
       state.pidToSupplier    = {};
       state.pidToPrice       = {};
       state.variantsSeenInScan = false;
+      state.variantNeedsFixup  = {};
       state.deptVendorData   = {};  // { deptId: { vendorId: {id,name,ordered,received,sold,cost} } }
       state.productStats     = {};  // { pid: {sold, onSale, returned} }
       state.anchorVersion    = (skuBase && SEASON_START_CURSORS[skuBase] != null)
@@ -231,15 +221,6 @@ export default async function handler(req, res) {
         state.slowScanned += prods.length;
 
         for (const prod of prods) {
-          // Always store parent data for variant inheritance
-          if (!prod.variant_parent_id) {
-            state.parentStore[prod.id] = {
-              t:  prod.product_type_id || "__none__",
-              si: (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__",
-              sn: (prod.supplier && prod.supplier.name) || "Unknown",
-              p:  parseFloat(prod.price_excluding_tax || 0),
-            };
-          }
           const sku = (prod.sku || "").toLowerCase();
           if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
         }
@@ -257,12 +238,48 @@ export default async function handler(req, res) {
         const skuCodes = seasonSkuCodes(season);
         state.phase = "error";
         state.error = `No products found matching ${skuCodes.join(", ")} after scanning ${(state.slowScanned || 0).toLocaleString()} catalog entries.`;
-      } else if (!state.variantsSeenInScan) {
-        state.phase      = "products_variants";
-        state.variantIdx = 0;
+      } else if (state.variantNeedsFixup && Object.keys(state.variantNeedsFixup).length > 0) {
+        // Fetch parent data for variants whose parent wasn't in-memory during slow scan
+        state.phase      = "products_fix";
+        state.fixParents = [...new Set(Object.values(state.variantNeedsFixup))];
+        state.fixIdx     = 0;
+        state.progress   = `Resolving variant data (0/${state.fixParents.length})…`;
       } else {
         state.phase    = "consignments";
         state.consigIdx = 0;
+      }
+    }
+
+    // ── PRODUCTS_FIX: resolve parent data for slow-path variants ────────────
+    if (state.phase === "products_fix" && Date.now() < deadline) {
+      const parents = state.fixParents || [];
+      while (state.fixIdx < parents.length && Date.now() < deadline) {
+        const parentId = parents[state.fixIdx];
+        let prod;
+        try { prod = await lsFetch("2.0/products/" + parentId); } catch (e) { prod = null; }
+        if (prod) {
+          const pt = prod.product_type_id || "__none__";
+          const si = (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__";
+          const sn = (prod.supplier && prod.supplier.name) || "Unknown";
+          const pp = parseFloat(prod.price_excluding_tax || 0);
+          for (const [variantId, pId] of Object.entries(state.variantNeedsFixup || {})) {
+            if (pId !== parentId) continue;
+            if ((state.pidToType[variantId] || "__none__") === "__none__" && pt !== "__none__") state.pidToType[variantId] = pt;
+            if ((state.pidToSupplier[variantId]?.i || "__none__") === "__none__" && si !== "__none__") {
+              state.pidToSupplier[variantId] = { i: si, n: sn };
+            }
+            if (!state.pidToPrice[variantId] && pp) state.pidToPrice[variantId] = pp;
+          }
+        }
+        state.fixIdx++;
+        state.progress = `Resolving variant data (${state.fixIdx}/${parents.length})…`;
+      }
+      if (state.fixIdx >= parents.length) {
+        delete state.variantNeedsFixup;
+        delete state.fixParents;
+        state.phase    = "consignments";
+        state.consigIdx = 0;
+        state.progress  = `Found ${state.seasonPids.length} SKUs — scanning POs (0/${state.consignments.length})…`;
       }
     }
 
@@ -427,7 +444,7 @@ export default async function handler(req, res) {
       };
 
       await kv.set(dataKey, result, { ex: 48 * 3600 });
-      await Promise.all([kv.del(jobKey), kv.del(bigKey), kv.del(parentsKey)]);
+      await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
 
       return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "Scan complete!" });
     }
@@ -438,25 +455,15 @@ export default async function handler(req, res) {
       return res.json({ phase: "error", error: state.error });
     }
 
-    // Save job state split across three keys to stay under KV 10MB limit:
-    //   jobKey     — small operational state (phase, cursors, indexes)
-    //   bigKey     — medium data (pidMaps, deptVendorData, productStats, cats, consignments)
-    //   parentsKey — parentStore alone (can be very large during full catalog scan)
-    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion"]);
+    // Split state across two keys: small operational fields + big data blobs
+    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion","fixIdx"]);
     const small = {}, big = {};
     for (const [k, v] of Object.entries(state)) {
-      if (k === "parentStore") continue;
       if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;
     }
-    // Serialize parentStore as flat array [id,t,si,sn,p,...] — ~50% smaller than object form
-    const parentsArr = [];
-    for (const [id, v] of Object.entries(state.parentStore || {})) {
-      parentsArr.push(id, v.t, v.si, v.sn, v.p);
-    }
     await Promise.all([
-      kv.set(jobKey,     small,      { ex: 3600 }),
-      kv.set(bigKey,     big,        { ex: 3600 }),
-      kv.set(parentsKey, parentsArr, { ex: 3600 }),
+      kv.set(jobKey, small, { ex: 3600 }),
+      kv.set(bigKey, big,   { ex: 3600 }),
     ]);
     return res.json({ phase: state.phase, progress: state.progress || "…" });
 
