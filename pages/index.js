@@ -387,10 +387,11 @@ export default function FlowReport() {
 
     try {
       // Find this vendor's product IDs in this dept from the pre-scanned data
-      const seasonPids    = (scanData && scanData.seasonPids)    || [];
-      const pidToType     = (scanData && scanData.pidToType)     || {};
-      const pidToSupplier = (scanData && scanData.pidToSupplier) || {};
-      const productStats  = (scanData && scanData.productStats)  || {};
+      const seasonPids      = (scanData && scanData.seasonPids)      || [];
+      const pidToType       = (scanData && scanData.pidToType)       || {};
+      const pidToSupplier   = (scanData && scanData.pidToSupplier)   || {};
+      const productStats    = (scanData && scanData.productStats)    || {};
+      const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
 
       const targetIds = seasonPids.filter(function(id) {
         const sup = pidToSupplier[id];
@@ -422,10 +423,11 @@ export default function FlowReport() {
           variant:  p.variant_option_one_value || p.variant_name || "",
           cost:     parseFloat(p.supply_price        || 0),
           price:    parseFloat(p.price_excluding_tax || 0),
-          onHand:   (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
-          sold:     stats.sold     || 0,
-          onSale:   stats.onSale   || 0,
-          returned: stats.returned || 0,
+          qtyOrdered: pidToQtyOrdered[p.id] || 0,
+          onHand:     (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
+          sold:       stats.sold     || 0,
+          onSale:     stats.onSale   || 0,
+          returned:   stats.returned || 0,
         };
       }));
     } catch (e) {
@@ -704,10 +706,11 @@ export default function FlowReport() {
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
-                { label: "Ordered (retail)", value: fmt(currentVendor ? currentVendor.ordered  : 0) },
-                { label: "Cost (wholesale)", value: fmt(currentVendor ? currentVendor.cost     : 0) },
-                { label: "Received",         value: fmt(currentVendor ? currentVendor.received : 0) },
-                { label: "Sold",             value: fmt(currentVendor ? currentVendor.sold     : 0) },
+                { label: "Ordered (retail)", value: fmt(currentVendor ? currentVendor.ordered      : 0) },
+                { label: "Ordered (cost)",   value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
+                { label: "Received (retail)",value: fmt(currentVendor ? currentVendor.received    : 0) },
+                { label: "Received (cost)",  value: fmt(currentVendor ? currentVendor.cost        : 0) },
+                { label: "Sold",             value: fmt(currentVendor ? currentVendor.sold        : 0) },
                 { label: "SKUs",             value: productRows.length },
               ].map(function(kv) {
                 return (
@@ -727,12 +730,12 @@ export default function FlowReport() {
                     <tr>
                       <TH>Status</TH><TH>Description</TH><TH>SKU</TH><TH>Variant</TH>
                       <TH right>Cost</TH><TH right>Price</TH>
-                      <TH right>On Hand</TH><TH right>Sold</TH><TH right>On Sale</TH><TH right>Returned</TH>
+                      <TH right>Ordered</TH><TH right>On Hand</TH><TH right>Sold</TH><TH right>On Sale</TH><TH right>Returned</TH>
                     </tr>
                   </thead>
                   <tbody>
                     {productRows.length === 0 ? (
-                      <tr><td colSpan={10} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
+                      <tr><td colSpan={11} style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892" }}>No products found for this vendor in the selected season.</td></tr>
                     ) : productRows.map(function(p, i) {
                       var status = p.returned > 0 && p.sold === 0 ? "returned" : p.onSale > 0 && p.onSale === p.sold ? "sale" : p.sold > 0 ? "sold" : p.onHand > 0 ? "stock" : "ordered";
                       return (
@@ -741,12 +744,13 @@ export default function FlowReport() {
                           <TD>{p.name}</TD>
                           <TD mono>{p.sku}</TD>
                           <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
-                          <TD right>{p.cost  > 0 ? fmt(p.cost)  : "—"}</TD>
-                          <TD right>{p.price > 0 ? fmt(p.price) : "—"}</TD>
-                          <TD right>{p.onHand}</TD>
-                          <TD right>{p.sold}</TD>
-                          <TD right style={{ color: p.onSale > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale || "—"}</TD>
-                          <TD right style={{ color: p.returned > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned || 0}</TD>
+                          <TD right>{p.cost       > 0 ? fmt(p.cost)  : "—"}</TD>
+                          <TD right>{p.price      > 0 ? fmt(p.price) : "—"}</TD>
+                          <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : "—"}</TD>
+                          <TD right>{p.onHand     > 0 ? p.onHand     : "—"}</TD>
+                          <TD right>{p.sold       > 0 ? p.sold       : "—"}</TD>
+                          <TD right style={{ color: p.onSale    > 0 ? "#e07b39" : "#9e9892" }}>{p.onSale    || "—"}</TD>
+                          <TD right style={{ color: p.returned  > 0 ? "#9b59b6" : "#9e9892" }}>{p.returned  || "—"}</TD>
                         </tr>
                       );
                     })}

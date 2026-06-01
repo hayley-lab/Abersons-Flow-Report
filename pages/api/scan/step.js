@@ -155,6 +155,7 @@ export default async function handler(req, res) {
       state.pidToType        = {};
       state.pidToSupplier    = {};
       state.pidToPrice       = {};
+      state.pidToQtyOrdered  = {};
       state.variantsSeenInScan = false;
       state.variantNeedsFixup  = {};
       state.deptVendorData   = {};  // { deptId: { vendorId: {id,name,ordered,received,sold,cost} } }
@@ -332,12 +333,15 @@ export default async function handler(req, res) {
 
           if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
           if (!state.deptVendorData[cid][sup.i]) {
-            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, received: 0, sold: 0, cost: 0 };
+            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, sold: 0, cost: 0 };
           }
           const v = state.deptVendorData[cid][sup.i];
-          v.ordered  += price * (item.count    || 0);
-          v.received += price * (item.received || 0);
-          v.cost     += parseFloat(item.cost || 0) * (item.received || 0);
+          const itemCost = parseFloat(item.cost || 0);
+          v.ordered      += price    * (item.count    || 0);
+          v.orderedCost  += itemCost * (item.count    || 0);
+          v.received     += price    * (item.received || 0);
+          v.cost         += itemCost * (item.received || 0);
+          state.pidToQtyOrdered[pid] = (state.pidToQtyOrdered[pid] || 0) + (item.count || 0);
         }
 
         state.consigIdx++;
@@ -433,14 +437,15 @@ export default async function handler(req, res) {
       }
 
       const result = {
-        ts:           Date.now(),
-        season:       state.season,
+        ts:              Date.now(),
+        season:          state.season,
         summaryRows,
         deptVendors,
-        productStats: state.productStats,
-        seasonPids:   state.seasonPids,
-        pidToType:    state.pidToType,
-        pidToSupplier: state.pidToSupplier,
+        productStats:    state.productStats,
+        seasonPids:      state.seasonPids,
+        pidToType:       state.pidToType,
+        pidToSupplier:   state.pidToSupplier,
+        pidToQtyOrdered: state.pidToQtyOrdered,
       };
 
       await kv.set(dataKey, result, { ex: 48 * 3600 });
