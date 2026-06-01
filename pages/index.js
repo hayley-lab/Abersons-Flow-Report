@@ -418,7 +418,7 @@ export default function FlowReport() {
       setProductRows(products.map(function(p) {
         const stats = productStats[p.id] || {};
         return {
-          name:     p.name,
+          name:     (p.description ? p.description.replace(/<[^>]*>/g, "").trim() : "") || p.name,
           sku:      p.sku || "",
           variant:  p.variant_option_one_value || p.variant_name || "",
           cost:     parseFloat(p.supply_price        || 0),
