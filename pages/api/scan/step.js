@@ -418,14 +418,16 @@ export default async function handler(req, res) {
       // Build summary (dept-level) from deptVendorData
       const catMap = {};
       for (const cat of state.cats) {
-        catMap[cat.id] = { id: cat.id, name: cat.name, ordered: 0, received: 0, sold: 0 };
+        catMap[cat.id] = { id: cat.id, name: cat.name, ordered: 0, orderedCost: 0, received: 0, cost: 0, sold: 0 };
       }
       for (const [deptId, vendors] of Object.entries(state.deptVendorData)) {
-        if (!catMap[deptId]) catMap[deptId] = { id: deptId, name: "Other", ordered: 0, received: 0, sold: 0 };
+        if (!catMap[deptId]) catMap[deptId] = { id: deptId, name: "Other", ordered: 0, orderedCost: 0, received: 0, cost: 0, sold: 0 };
         for (const v of Object.values(vendors)) {
-          catMap[deptId].ordered  += v.ordered;
-          catMap[deptId].received += v.received;
-          catMap[deptId].sold     += v.sold;
+          catMap[deptId].ordered      += v.ordered;
+          catMap[deptId].orderedCost  += v.orderedCost || 0;
+          catMap[deptId].received     += v.received;
+          catMap[deptId].cost         += v.cost || 0;
+          catMap[deptId].sold         += v.sold;
         }
       }
       const summaryRows = Object.values(catMap).sort((a, b) => b.ordered - a.ordered);

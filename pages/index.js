@@ -250,6 +250,7 @@ export default function FlowReport() {
   const [productError, setProductError] = useState(null);
   const [productSort, setProductSort]   = useState({ col: null, dir: 1 });
   const [vendorSort,  setVendorSort]    = useState({ col: "ordered", dir: -1 });
+  const [summarySort, setSummarySort]  = useState({ col: "ordered", dir: -1 });
 
   // ── auth check ─────────────────────────────────────────────────────────────
 
@@ -467,9 +468,11 @@ export default function FlowReport() {
     }
   }, [screen, currentVendor, scanData, openVendor]);
 
-  const totalOrdered   = summaryRows.reduce((a, r) => a + r.ordered,  0);
-  const totalReceived  = summaryRows.reduce((a, r) => a + r.received, 0);
-  const totalSold      = summaryRows.reduce((a, r) => a + r.sold,     0);
+  const totalOrdered      = summaryRows.reduce((a, r) => a + r.ordered,             0);
+  const totalOrderedCost  = summaryRows.reduce((a, r) => a + (r.orderedCost || 0), 0);
+  const totalReceived     = summaryRows.reduce((a, r) => a + r.received,            0);
+  const totalReceivedCost = summaryRows.reduce((a, r) => a + (r.cost || 0),        0);
+  const totalSold         = summaryRows.reduce((a, r) => a + r.sold,               0);
   const totalRecPct    = totalOrdered  > 0 ? (totalReceived / totalOrdered)  * 100 : 0;
   const totalSoldPct   = totalReceived > 0 ? (totalSold     / totalReceived) * 100 : 0;
   const vTotalOrdered      = vendorRows.reduce((a, r) => a + r.ordered,              0);
@@ -635,10 +638,12 @@ export default function FlowReport() {
             {!dataLoading && (
               <>
                 <KpiRow items={[
-                  { label: "Total Ordered",  value: fmt(totalOrdered) },
-                  { label: "Total Received", value: fmt(totalReceived), sub: totalRecPct.toFixed(1) + "% of ordered" },
-                  { label: "Total Sold",     value: fmt(totalSold),     sub: totalSoldPct.toFixed(1) + "% of received" },
-                  { label: "Departments",    value: summaryRows.filter(r => r.ordered > 0 || r.sold > 0).length },
+                  { label: "Ordered (retail)",  value: fmt(totalOrdered) },
+                  { label: "Ordered (cost)",    value: fmt(totalOrderedCost) },
+                  { label: "Received (retail)", value: fmt(totalReceived),     sub: totalRecPct.toFixed(1)  + "% of ordered" },
+                  { label: "Received (cost)",   value: fmt(totalReceivedCost) },
+                  { label: "Sold (retail)",     value: fmt(totalSold),         sub: totalSoldPct.toFixed(1) + "% of received" },
+                  { label: "Departments",       value: summaryRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={"Store Summary — " + seasonLabel}
                   right={
@@ -661,33 +666,50 @@ export default function FlowReport() {
                       No scan data yet for {seasonLabel}. Click <strong>↺ Refresh</strong> to run the first scan.
                     </div>
                   ) : (
+                    <div style={{ overflowX: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse" }}>
                       <thead>
                         <tr>
-                          <TH>Sold %</TH><TH>Department</TH><TH right>Ordered</TH>
-                          <TH right>Received</TH><TH right>Sold</TH>
-                          <TH right>Received %</TH><TH right>Sold %</TH>
+                          <TH>Sold %</TH>
+                          <SortTH col="name"        sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}}>Department</SortTH>
+                          <SortTH col="ordered"     sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}} right>Ordered (retail)</SortTH>
+                          <SortTH col="orderedCost" sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}} right>Ordered (cost)</SortTH>
+                          <SortTH col="received"    sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}} right>Received (retail)</SortTH>
+                          <SortTH col="cost"        sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}} right>Received (cost)</SortTH>
+                          <SortTH col="sold"        sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}} right>Sold (retail)</SortTH>
+                          <SortTH col="recPct"      sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}} right>Received %</SortTH>
+                          <SortTH col="soldPct"     sort={summarySort} onSort={function(c){setSummarySort(function(p){return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1};});}} right>Sold %</SortTH>
                         </tr>
                       </thead>
                       <tbody>
                         {summaryRows.filter(r => r.ordered > 0 || r.received > 0 || r.sold > 0).map(function(r) {
                           var recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
                           var soldPct = r.received > 0 ? (r.sold     / r.received) * 100 : 0;
-                          var zero    = r.ordered === 0 && r.sold === 0;
+                          return { ...r, recPct, soldPct };
+                        }).sort(function(a, b) {
+                          var col = summarySort.col;
+                          var av = col === "name" ? (a.name||"").toLowerCase() : (a[col] || 0);
+                          var bv = col === "name" ? (b.name||"").toLowerCase() : (b[col] || 0);
+                          return av < bv ? -summarySort.dir : av > bv ? summarySort.dir : 0;
+                        }).map(function(r) {
+                          var zero = r.ordered === 0 && r.sold === 0;
                           return (
                             <tr key={r.id} style={s.tableRow(!zero, zero)} onClick={function() { if (!zero) openDept(r); }}>
-                              <TD><Bar pct={soldPct} /></TD>
+                              <TD><Bar pct={r.soldPct} /></TD>
                               <TD><span style={{ fontWeight: 500 }}>{r.name}</span></TD>
-                              <TD right>{fmt(r.ordered)}</TD>
-                              <TD right>{fmt(r.received)}</TD>
-                              <TD right>{fmt(r.sold)}</TD>
-                              <TD right><PctBadge pct={recPct}  zero={zero} /></TD>
-                              <TD right><PctBadge pct={soldPct} zero={zero} /></TD>
+                              <TD right>{r.ordered     > 0 ? fmt(r.ordered)     : ""}</TD>
+                              <TD right>{r.orderedCost > 0 ? fmt(r.orderedCost) : ""}</TD>
+                              <TD right>{r.received    > 0 ? fmt(r.received)    : ""}</TD>
+                              <TD right>{r.cost        > 0 ? fmt(r.cost)        : ""}</TD>
+                              <TD right>{r.sold        > 0 ? fmt(r.sold)        : ""}</TD>
+                              <TD right><PctBadge pct={r.recPct}  zero={zero} /></TD>
+                              <TD right><PctBadge pct={r.soldPct} zero={zero} /></TD>
                             </tr>
                           );
                         })}
                       </tbody>
                     </table>
+                    </div>
                   )}
                 </TableWrap>
               </>
