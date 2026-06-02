@@ -84,21 +84,12 @@ const TD = ({ children, right, mono, style: extraStyle }) => (
 );
 
 const SEASONS = [
-  { id: "prespring27", name: "Pre-Spring 2027" },
   { id: "fall26",      name: "Fall 2026" },
   { id: "prefall26",   name: "Pre-Fall 2026" },
   { id: "spring26",    name: "Spring 2026" },
   { id: "prespring26", name: "Pre-Spring 2026" },
   { id: "fall25",      name: "Fall 2025" },
-  { id: "prefall25",   name: "Pre-Fall 2025" },
   { id: "spring25",    name: "Spring 2025" },
-  { id: "prespring25", name: "Pre-Spring 2025" },
-  { id: "fall24",      name: "Fall 2024" },
-  { id: "prefall24",   name: "Pre-Fall 2024" },
-  { id: "spring24",    name: "Spring 2024" },
-  { id: "prespring24", name: "Pre-Spring 2024" },
-  { id: "fall23",      name: "Fall 2023" },
-  { id: "spring23",    name: "Spring 2023" },
 ];
 
 
