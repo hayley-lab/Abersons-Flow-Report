@@ -5,6 +5,12 @@ import { kv } from "@vercel/kv";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 
+function parseKv(val) {
+  if (!val) return null;
+  if (typeof val === "string") { try { return JSON.parse(val); } catch { return null; } }
+  return val;
+}
+
 async function loadOverride(season) {
   const [storesRaw, indexRaw] = await Promise.all([
     kv.get(`scan:override:${season}:stores`),
@@ -12,17 +18,17 @@ async function loadOverride(season) {
   ]);
   if (!indexRaw) return null;
 
-  const vendorIndex = typeof indexRaw === "string" ? JSON.parse(indexRaw) : indexRaw;
-  const stores      = typeof storesRaw === "string" ? JSON.parse(storesRaw) : (storesRaw || {});
+  const vendorIndex = parseKv(indexRaw);
+  const stores      = parseKv(storesRaw) || {};
+  if (!Array.isArray(vendorIndex)) return null;
 
   // Load all vendor entries in parallel
-  const vendorKeys = await Promise.all(
+  const vendorRaws = await Promise.all(
     vendorIndex.map(key => kv.get(`scan:override:${season}:v:${key}`))
   );
   const vendors = {};
   vendorIndex.forEach((key, i) => {
-    const v = vendorKeys[i];
-    vendors[key] = typeof v === "string" ? JSON.parse(v) : v;
+    vendors[key] = parseKv(vendorRaws[i]);
   });
 
   return { stores, vendors };
@@ -126,7 +132,8 @@ export default async function handler(req, res) {
     loadOverride(season),
   ]);
 
-  const data = override ? mergeOverride(rawData, override) : (rawData || null);
+  let data = rawData || null;
+  if (override) { try { data = mergeOverride(rawData, override); } catch (e) { console.error("merge error", e); } }
 
   return res.json({
     data: data || null,
