@@ -1,6 +1,7 @@
 // pages/api/import/datatail.js
 import { getIronSession } from "iron-session";
 import fetch from "node-fetch";
+import { kv } from "@vercel/kv";
 
 const SESSION_OPTIONS = {
   cookieName: "flow_session",
@@ -243,10 +244,46 @@ export default async function handler(req, res) {
     }
 
     if (action === "fetchVendorDetail") {
-      const { vendorId, deptId } = req.body;
+      const { vendorId, deptId, season, vendorName, deptName, storeOrdered, storeReceived, storeSold } = req.body;
       const html = await dtFetch(`/vendor/${vendorId}/department/${deptId}`, cookies);
       const data = parseVendorDetail(html);
-      return res.json({ ok: true, ...data });
+
+      // If season provided, save directly to KV to avoid large batch POST bodies
+      if (season) {
+        const TTL = 60 * 60 * 24 * 30;
+        const key = `${deptId}__${vendorId}`;
+        const vendorRecord = {
+          vendorId, vendorName: vendorName || "",
+          deptId, deptName: deptName || "",
+          ordered:  data.ordered  || storeOrdered  || 0,
+          received: data.received || storeReceived || 0,
+          sold:     data.sold     || storeSold     || 0,
+          products: data.products,
+        };
+        await kv.set(`scan:override:${season}:v:${key}`, JSON.stringify(vendorRecord), { ex: TTL });
+      }
+
+      return res.json({ ok: true, ordered: data.ordered, received: data.received, sold: data.sold, productCount: data.products.length });
+    }
+
+    if (action === "finalizeImport") {
+      const { season, stores, vendorKeys } = req.body;
+      if (!season) return res.status(400).json({ error: "season required" });
+      const TTL = 60 * 60 * 24 * 30;
+      const TTL_OPTS = { ex: TTL };
+
+      if (stores && Object.keys(stores).length > 0) {
+        await kv.set(`scan:override:${season}:stores`, JSON.stringify(stores), TTL_OPTS);
+      }
+
+      if (vendorKeys && vendorKeys.length > 0) {
+        const existingRaw = await kv.get(`scan:override:${season}:vendorIndex`);
+        const existing = existingRaw ? (typeof existingRaw === "string" ? JSON.parse(existingRaw) : existingRaw) : [];
+        const merged = Array.from(new Set([...existing, ...vendorKeys]));
+        await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(merged), TTL_OPTS);
+      }
+
+      return res.json({ ok: true, season, vendorCount: vendorKeys ? vendorKeys.length : 0 });
     }
 
     if (action === "debugHtml") {

@@ -37,12 +37,13 @@ export default async function handler(req, res) {
   await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(mergedIndex), TTL_OPTS);
 
   // Save each vendor individually
+  const keys = Object.keys(data.vendors || {});
   const pipeline = kv.pipeline();
-  for (const key of vendorKeys) {
+  for (const key of keys) {
     const vendorJson = JSON.stringify(data.vendors[key]);
     pipeline.set(`scan:override:${season}:v:${key}`, vendorJson, TTL_OPTS);
   }
   await pipeline.exec();
 
-  return res.json({ ok: true, season, vendorCount: vendorKeys.length });
+  return res.json({ ok: true, season, vendorCount: keys.length });
 }

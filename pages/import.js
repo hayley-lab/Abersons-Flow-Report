@@ -80,31 +80,32 @@ export default function ImportPage() {
   async function doImport() {
     addLog(`Importing ${vendors.length} vendor/dept pages for ${targetSeason}…`);
 
-    const allData = { stores: {}, vendors: {} };
-
-    // Store store-level summary
+    const storesMap = {};
     stores.forEach(s => {
-      allData.stores[s.id] = { id: s.id, name: s.name, ordered: s.ordered, received: s.received, sold: s.sold };
+      storesMap[s.id] = { id: s.id, name: s.name, ordered: s.ordered, received: s.received, sold: s.sold };
     });
+
+    const savedKeys = [];
 
     for (let i = 0; i < vendors.length; i++) {
       const v = vendors[i];
       addLog(`[${i + 1}/${vendors.length}] ${v.storeName} › ${v.vendorName}…`);
       try {
-        const result = await post({ action: "fetchVendorDetail", phpsessid, rememberme, vendorId: v.vendorId, deptId: v.deptId });
+        const result = await post({
+          action: "fetchVendorDetail",
+          phpsessid, rememberme,
+          vendorId: v.vendorId,
+          deptId: v.deptId,
+          season: targetSeason,
+          vendorName: v.vendorName,
+          deptName: v.storeName,
+          storeOrdered:  v.ordered  || 0,
+          storeReceived: v.received || 0,
+          storeSold:     v.sold     || 0,
+        });
         if (result.ok) {
-          const key = `${v.deptId}__${v.vendorId}`;
-          allData.vendors[key] = {
-            vendorId:   v.vendorId,
-            vendorName: v.vendorName,
-            deptId:     v.deptId,
-            deptName:   v.storeName,
-            ordered:    result.ordered  || v.ordered  || 0,
-            received:   result.received || v.received || 0,
-            sold:       result.sold     || v.sold     || 0,
-            products:   result.products,
-          };
-          addLog(`  ✓ ${result.products.length} products, ordered=$${result.ordered}`);
+          savedKeys.push(`${v.deptId}__${v.vendorId}`);
+          addLog(`  ✓ ${result.productCount} products, ordered=$${result.ordered}`);
         } else {
           addLog(`  ✗ ${result.error}`);
         }
@@ -114,30 +115,20 @@ export default function ImportPage() {
       await new Promise(r => setTimeout(r, 300));
     }
 
-    addLog("Saving to KV…");
-    // Send in batches of 20 vendors to stay under request size limits
-    const BATCH = 20;
-    const vendorEntries = Object.entries(allData.vendors);
-    let saved = 0;
-    for (let b = 0; b < vendorEntries.length; b += BATCH) {
-      const batchVendors = {};
-      vendorEntries.slice(b, b + BATCH).forEach(([k, v]) => { batchVendors[k] = v; });
-      const saveRes = await fetch("/api/import/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ season: targetSeason, data: { stores: b === 0 ? allData.stores : {}, vendors: batchVendors } }),
-      });
-      const saveJson = await saveRes.json();
-      if (!saveJson.ok) {
-        addLog(`✗ Save batch failed: ${saveJson.error}`);
-        setStatus("Import failed at save step.");
-        setRunning(false);
-        return;
-      }
-      saved += Object.keys(batchVendors).length;
-      addLog(`  Saved ${saved}/${vendorEntries.length} vendors…`);
+    addLog("Finalizing index…");
+    const finalRes = await post({
+      action: "finalizeImport",
+      phpsessid, rememberme,
+      season: targetSeason,
+      stores: storesMap,
+      vendorKeys: savedKeys,
+    });
+    if (!finalRes.ok) {
+      addLog(`✗ Finalize failed: ${finalRes.error}`);
+      setStatus("Import failed at finalize step.");
+      return;
     }
-    addLog(`✓ Saved override data for ${targetSeason}. ${vendorEntries.length} vendors stored.`);
+    addLog(`✓ Saved override data for ${targetSeason}. ${savedKeys.length} vendors stored.`);
     setStatus(`Import complete for ${targetSeason}!`);
   }
 
