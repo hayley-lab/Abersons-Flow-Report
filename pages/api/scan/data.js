@@ -41,82 +41,78 @@ function normName(s) {
 function mergeOverride(data, override) {
   if (!data || !override) return data;
 
-  // Build lookup maps keyed by normalized name
-  const storeByName = {};
-  Object.values(override.stores).forEach(s => {
-    storeByName[normName(s.name)] = s;
+  // Build LS lookup maps by normalized name
+  const lsDeptByName = {};
+  (data.summaryRows || []).forEach(r => { lsDeptByName[normName(r.name)] = r; });
+
+  const lsVendorByDeptAndName = {};
+  Object.entries(data.deptVendors || {}).forEach(([deptId, vendors]) => {
+    const deptRow = (data.summaryRows || []).find(r => String(r.id) === String(deptId));
+    const dk = deptRow ? normName(deptRow.name) : deptId;
+    lsVendorByDeptAndName[dk] = {};
+    (vendors || []).forEach(v => { lsVendorByDeptAndName[dk][normName(v.name)] = v; });
   });
 
-  // Build vendor lookup: deptNormName → vendorNormName → vendor entry
-  const vendorByDeptAndName = {};
-  Object.values(override.vendors).forEach(v => {
-    if (!v) return;
-    const dk = normName(v.deptName);
-    if (!vendorByDeptAndName[dk]) vendorByDeptAndName[dk] = {};
-    vendorByDeptAndName[dk][normName(v.vendorName)] = v;
-  });
-
-  // Merge summaryRows
-  const summaryRows = (data.summaryRows || []).map(row => {
-    const ov = storeByName[normName(row.name)];
-    if (!ov) return row;
+  // Build summaryRows from override as primary, supplement with LS sold amounts
+  const summaryRows = Object.values(override.stores).map(ov => {
+    const ls = lsDeptByName[normName(ov.name)];
     return {
-      ...row,
-      ordered:      ov.ordered  || row.ordered  || 0,
-      received:     ov.received || row.received || 0,
-      // Keep cost fields from scan (old system didn't track cost separately)
-      orderedCost:  row.orderedCost || 0,
-      cost:         row.cost        || 0,
+      id:          ls ? ls.id : ov.id,
+      name:        ov.name,
+      ordered:     ov.ordered  || 0,
+      orderedCost: ls ? (ls.orderedCost || 0) : 0,
+      received:    ov.received || 0,
+      cost:        ls ? (ls.cost || 0) : 0,
+      sold:        ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
     };
   });
 
-  // If summaryRows is empty (no scan yet), build from override stores
-  const effectiveSummaryRows = summaryRows.length > 0 ? summaryRows :
-    Object.values(override.stores).map(s => ({
-      id: s.id, name: s.name,
-      ordered: s.ordered, received: s.received, sold: s.sold,
-      orderedCost: 0, cost: 0,
-    }));
-
-  // Merge deptVendors
-  const deptVendors = { ...(data.deptVendors || {}) };
-
-  // For each dept in override, find the matching LS dept id
+  // Build deptVendors from override as primary, supplement with LS sold amounts
+  // Need dept name → id mapping from summaryRows
   const deptIdByName = {};
-  effectiveSummaryRows.forEach(r => { deptIdByName[normName(r.name)] = r.id; });
+  summaryRows.forEach(r => { deptIdByName[normName(r.name)] = r.id; });
 
-  Object.entries(vendorByDeptAndName).forEach(([deptNorm, vendorMap]) => {
+  const deptVendors = {};
+  // Group override vendors by dept
+  const overrideByDept = {};
+  Object.values(override.vendors).forEach(v => {
+    if (!v) return;
+    const dk = normName(v.deptName);
+    if (!overrideByDept[dk]) overrideByDept[dk] = [];
+    overrideByDept[dk].push(v);
+  });
+
+  Object.entries(overrideByDept).forEach(([deptNorm, ovVendors]) => {
     const deptId = deptIdByName[deptNorm];
-    const existingVendors = deptId ? (deptVendors[deptId] || []) : [];
+    if (!deptId) return;
+    const lsVendors = lsVendorByDeptAndName[deptNorm] || {};
 
-    const merged = existingVendors.map(v => {
-      const ov = vendorMap[normName(v.name)];
-      if (!ov) return v;
+    deptVendors[deptId] = ovVendors.map(ov => {
+      const ls = lsVendors[normName(ov.vendorName)];
       return {
-        ...v,
-        ordered:     ov.ordered  || v.ordered  || 0,
-        received:    ov.received || v.received || 0,
-        orderedCost: v.orderedCost || 0,
-        cost:        v.cost       || 0,
+        id:          ls ? ls.id : ov.vendorId,
+        name:        ov.vendorName,
+        ordered:     ov.ordered  || 0,
+        orderedCost: ls ? (ls.orderedCost || 0) : 0,
+        received:    ov.received || 0,
+        cost:        ls ? (ls.cost || 0) : 0,
+        sold:        ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
       };
     });
 
-    // Add any override vendors not found in LS scan
-    const lsNormNames = new Set(existingVendors.map(v => normName(v.name)));
-    Object.entries(vendorMap).forEach(([vNorm, ov]) => {
-      if (!lsNormNames.has(vNorm) && ov) {
-        merged.push({
-          id: ov.vendorId, name: ov.vendorName,
-          ordered: ov.ordered, received: ov.received, sold: ov.sold,
-          orderedCost: 0, cost: 0,
-        });
-      }
+    // Also add any LS vendors not in override
+    Object.entries(lsVendors).forEach(([vNorm, ls]) => {
+      const already = ovVendors.some(ov => normName(ov.vendorName) === vNorm);
+      if (!already) deptVendors[deptId].push(ls);
     });
-
-    if (deptId) deptVendors[deptId] = merged;
   });
 
-  return { ...data, summaryRows: effectiveSummaryRows, deptVendors };
+  // Preserve any LS depts not in override
+  Object.entries(data.deptVendors || {}).forEach(([deptId, vendors]) => {
+    if (!deptVendors[deptId]) deptVendors[deptId] = vendors;
+  });
+
+  return { ...data, summaryRows, deptVendors };
 }
 
 export default async function handler(req, res) {
