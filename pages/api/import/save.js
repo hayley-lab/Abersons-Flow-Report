@@ -1,4 +1,5 @@
 // pages/api/import/save.js — Stores scraped datatail data in KV as override
+// Chunks data to stay under KV 256KB per-value limit
 import { getIronSession } from "iron-session";
 import { kv } from "@vercel/kv";
 
@@ -7,6 +8,8 @@ const SESSION_OPTIONS = {
   password: process.env.SESSION_SECRET,
   cookieOptions: { secure: process.env.NODE_ENV === "production" },
 };
+
+const TTL = 60 * 60 * 24 * 30; // 30 days
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
@@ -17,8 +20,23 @@ export default async function handler(req, res) {
   const { season, data } = req.body || {};
   if (!season || !data) return res.status(400).json({ error: "season and data required" });
 
-  // Store as override — 30 day TTL (old seasons don't change)
-  await kv.set(`scan:override:${season}`, JSON.stringify(data), { ex: 60 * 60 * 24 * 30 });
+  const TTL_OPTS = { ex: TTL };
 
-  return res.json({ ok: true, season, keys: Object.keys(data).length });
+  // Store store-level summary (small — fits in one key)
+  await kv.set(`scan:override:${season}:stores`, JSON.stringify(data.stores || {}), TTL_OPTS);
+
+  // Store vendors chunked — each vendor entry can have hundreds of products
+  // Store index of vendor keys, then each vendor separately
+  const vendorKeys = Object.keys(data.vendors || {});
+  await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(vendorKeys), TTL_OPTS);
+
+  // Save each vendor individually
+  const pipeline = kv.pipeline();
+  for (const key of vendorKeys) {
+    const vendorJson = JSON.stringify(data.vendors[key]);
+    pipeline.set(`scan:override:${season}:v:${key}`, vendorJson, TTL_OPTS);
+  }
+  await pipeline.exec();
+
+  return res.json({ ok: true, season, vendorCount: vendorKeys.length });
 }

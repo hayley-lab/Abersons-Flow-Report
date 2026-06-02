@@ -110,19 +110,30 @@ export default function ImportPage() {
     }
 
     addLog("Saving to KV…");
-    const saveRes = await fetch("/api/import/save", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ season: targetSeason, data: allData }),
-    });
-    const saved = await saveRes.json();
-    if (saved.ok) {
-      addLog(`✓ Saved override data for ${targetSeason}. ${Object.keys(allData.vendors).length} vendors stored.`);
-      setStatus(`Import complete for ${targetSeason}!`);
-    } else {
-      addLog("Save failed: " + saved.error);
-      setStatus("Import failed at save step.");
+    // Send in batches of 20 vendors to stay under request size limits
+    const BATCH = 20;
+    const vendorEntries = Object.entries(allData.vendors);
+    let saved = 0;
+    for (let b = 0; b < vendorEntries.length; b += BATCH) {
+      const batchVendors = {};
+      vendorEntries.slice(b, b + BATCH).forEach(([k, v]) => { batchVendors[k] = v; });
+      const saveRes = await fetch("/api/import/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ season: targetSeason, data: { stores: b === 0 ? allData.stores : {}, vendors: batchVendors } }),
+      });
+      const saveJson = await saveRes.json();
+      if (!saveJson.ok) {
+        addLog(`✗ Save batch failed: ${saveJson.error}`);
+        setStatus("Import failed at save step.");
+        setRunning(false);
+        return;
+      }
+      saved += Object.keys(batchVendors).length;
+      addLog(`  Saved ${saved}/${vendorEntries.length} vendors…`);
     }
+    addLog(`✓ Saved override data for ${targetSeason}. ${vendorEntries.length} vendors stored.`);
+    setStatus(`Import complete for ${targetSeason}!`);
     setRunning(false);
   }
 
