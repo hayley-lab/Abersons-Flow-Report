@@ -183,7 +183,7 @@ export default async function handler(req, res) {
           );
           const items = data.data || [];
           for (const prod of items) {
-            const sku = (prod.sku || "").toLowerCase();
+            const sku = ((prod.sku || "") + " " + (prod.custom_sku || "")).toLowerCase();
             if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
           }
           if (items.length < 200) break;
@@ -222,7 +222,7 @@ export default async function handler(req, res) {
         state.slowScanned += prods.length;
 
         for (const prod of prods) {
-          const sku = (prod.sku || "").toLowerCase();
+          const sku = ((prod.sku || "") + " " + (prod.custom_sku || "")).toLowerCase();
           if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
         }
 
