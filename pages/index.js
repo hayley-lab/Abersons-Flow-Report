@@ -86,8 +86,8 @@ const TD = ({ children, right, mono, style: extraStyle }) => (
 const SEASONS = [
   { id: "fall26",      name: "Fall 2026" },
   { id: "prefall26",   name: "Pre-Fall 2026" },
-  { id: "spring26",    name: "Spring 2026" },
   { id: "prespring26", name: "Pre-Spring 2026" },
+  { id: "spring26",    name: "Spring 2026" },
   { id: "fall25",      name: "Fall 2025" },
   { id: "spring25",    name: "Spring 2025" },
 ];
@@ -627,6 +627,69 @@ export default function FlowReport() {
                     </div>
                   )}
                 </TableWrap>
+
+                {/* ── Vendor Index ── */}
+                {(function() {
+                  if (!scanData || !scanData.deptVendors) return null;
+                  // Build map: vendorId → {name, bestDept (highest ordered)}
+                  var vendorMap = {};
+                  var deptVendors = scanData.deptVendors;
+                  Object.keys(deptVendors).forEach(function(deptId) {
+                    var dept = summaryRows.find(function(r) { return String(r.id) === String(deptId); });
+                    deptVendors[deptId].forEach(function(v) {
+                      if (!v.name) return;
+                      if (!vendorMap[v.id]) {
+                        vendorMap[v.id] = { id: v.id, name: v.name, bestDept: dept, bestOrdered: v.ordered || 0 };
+                      } else if ((v.ordered || 0) > vendorMap[v.id].bestOrdered) {
+                        vendorMap[v.id].bestDept = dept;
+                        vendorMap[v.id].bestOrdered = v.ordered || 0;
+                      }
+                    });
+                  });
+                  var allVendors = Object.values(vendorMap).sort(function(a, b) {
+                    return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
+                  });
+                  if (allVendors.length === 0) return null;
+                  // Group by first letter
+                  var groups = {};
+                  allVendors.forEach(function(v) {
+                    var letter = v.name[0].toUpperCase();
+                    if (!/[A-Z]/.test(letter)) letter = "#";
+                    if (!groups[letter]) groups[letter] = [];
+                    groups[letter].push(v);
+                  });
+                  var letters = Object.keys(groups).sort(function(a, b) {
+                    if (a === "#") return -1;
+                    if (b === "#") return 1;
+                    return a < b ? -1 : 1;
+                  });
+                  return (
+                    <div style={{ marginTop: "1.5rem", background: "#fff", border: "1px solid #e2ddd5", borderRadius: 10, boxShadow: "0 1px 3px rgba(0,0,0,0.06)", padding: "1rem 1.25rem" }}>
+                      <div style={{ fontFamily: "'DM Serif Display',serif", fontSize: 17, marginBottom: "1rem" }}>Vendor List</div>
+                      {letters.map(function(letter) {
+                        return (
+                          <div key={letter} style={{ marginBottom: "0.75rem", display: "flex", gap: 8, alignItems: "baseline" }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#9e9892", width: 18, flexShrink: 0 }}>{letter}</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 0" }}>
+                              {groups[letter].map(function(v, i) {
+                                return (
+                                  <span key={v.id}>
+                                    <button
+                                      onClick={function() { if (v.bestDept) { openDept(v.bestDept); } }}
+                                      style={{ background: "none", border: "none", padding: "0 4px", fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: v.bestDept ? "#3a5a8c" : "#9e9892", cursor: v.bestDept ? "pointer" : "default", textDecoration: v.bestDept ? "underline" : "none", textUnderlineOffset: 2 }}>
+                                      {v.name}
+                                    </button>
+                                    {i < groups[letter].length - 1 && <span style={{ color: "#d0ccc5", fontSize: 11 }}>|</span>}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </>
             )}
           </>
