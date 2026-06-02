@@ -22,13 +22,19 @@ export default async function handler(req, res) {
 
   const TTL_OPTS = { ex: TTL };
 
-  // Store store-level summary (small — fits in one key)
-  await kv.set(`scan:override:${season}:stores`, JSON.stringify(data.stores || {}), TTL_OPTS);
+  // Store store-level summary only when provided (non-empty)
+  if (data.stores && Object.keys(data.stores).length > 0) {
+    await kv.set(`scan:override:${season}:stores`, JSON.stringify(data.stores), TTL_OPTS);
+  }
 
-  // Store vendors chunked — each vendor entry can have hundreds of products
-  // Store index of vendor keys, then each vendor separately
-  const vendorKeys = Object.keys(data.vendors || {});
-  await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(vendorKeys), TTL_OPTS);
+  // Append to vendor index rather than overwrite
+  const existingIndexRaw = await kv.get(`scan:override:${season}:vendorIndex`);
+  const existingIndex = existingIndexRaw
+    ? (typeof existingIndexRaw === "string" ? JSON.parse(existingIndexRaw) : existingIndexRaw)
+    : [];
+  const newKeys = Object.keys(data.vendors || {});
+  const mergedIndex = Array.from(new Set([...existingIndex, ...newKeys]));
+  await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(mergedIndex), TTL_OPTS);
 
   // Save each vendor individually
   const pipeline = kv.pipeline();
