@@ -8,6 +8,9 @@
     },
     "pages/api/import/datatail.js": {
       "maxDuration": 60
+    },
+    "pages/api/import/save.js": {
+      "maxDuration": 60
     }
   }
 }
