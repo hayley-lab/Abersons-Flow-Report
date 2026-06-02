@@ -228,7 +228,7 @@ export default async function handler(req, res) {
     }
 
     if (action === "fetchVendorIndex") {
-      const html = await dtFetch("/vendor/index", cookies);
+      const html = await dtFetch("/", cookies);
       const vendors = parseVendorIndex(html);
       return res.json({ ok: true, count: vendors.length, vendors });
     }
