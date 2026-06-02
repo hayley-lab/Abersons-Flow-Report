@@ -45,6 +45,7 @@ export default function ImportPage() {
     setLog([]);
     setStores([]);
     setVendors([]);
+    setRunning(false); // reset any stuck state from prior run
 
     const storesResult = await post({ action: "fetchStores", phpsessid, rememberme });
     if (!storesResult.ok) { setStatus("Error: " + storesResult.error); return; }
@@ -73,6 +74,10 @@ export default function ImportPage() {
     if (vendors.length === 0) { setStatus("Fetch vendor list first."); return; }
     setRunning(true);
     setLog([]);
+    try { await doImport(); } finally { setRunning(false); }
+  }
+
+  async function doImport() {
     addLog(`Importing ${vendors.length} vendor/dept pages for ${targetSeason}…`);
 
     const allData = { stores: {}, vendors: {} };
@@ -134,7 +139,6 @@ export default function ImportPage() {
     }
     addLog(`✓ Saved override data for ${targetSeason}. ${vendorEntries.length} vendors stored.`);
     setStatus(`Import complete for ${targetSeason}!`);
-    setRunning(false);
   }
 
   async function handleDebugHtml() {
@@ -188,7 +192,12 @@ export default function ImportPage() {
         <button style={btn(!probeResult?.ok, "#6b6560")} disabled={!probeResult?.ok} onClick={handleDebugHtml}>Debug HTML</button>
       </div>
 
-      {status && <div style={{ background: "#f0ede6", borderRadius: 8, padding: "0.6rem 1rem", marginBottom: "1rem", fontSize: 13, color: "#3a3530" }}>{status}</div>}
+      {status && (
+        <div style={{ background: "#f0ede6", borderRadius: 8, padding: "0.6rem 1rem", marginBottom: "1rem", fontSize: 13, color: "#3a3530", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{status}</span>
+          {running && <button onClick={() => setRunning(false)} style={{ background: "none", border: "1px solid #b0a898", borderRadius: 5, padding: "2px 10px", fontSize: 12, cursor: "pointer", color: "#6b6560" }}>Unlock</button>}
+        </div>
+      )}
 
       {log.length > 0 && (
         <div style={{ background: "#1a1816", borderRadius: 8, padding: "1rem", maxHeight: 400, overflowY: "auto" }}>
