@@ -101,7 +101,7 @@ function parseStoreVendors(html, storeId, storeName) {
     if (!vendorLinkM) continue;
     const vid = vendorLinkM[1], did = vendorLinkM[2];
     const getLabel = (label) => {
-      const re = new RegExp('data-label="' + label + '"[^>]*>([^<,\\n]+)<', 'i');
+      const re = new RegExp('data-label="' + label + '"[^>]*>([^<\\n]+)<', 'i');
       const mr = re.exec(row);
       return mr ? mr[1].trim() : "";
     };
@@ -119,7 +119,7 @@ function parseStoreVendors(html, storeId, storeName) {
 function parseVendorDetail(html) {
   // Totals are in data-label cells in the totals table
   const getLabel = (label) => {
-    const re = new RegExp('data-label="' + label + '"[^>]*>\\s*\\$?([\\d,\\.]+)', 'i');
+    const re = new RegExp('data-label="' + label + '"[^>]*>([^<\\n]+)<', 'i');
     const m = re.exec(html);
     return m ? parseDollar(m[1]) : 0;
   };
