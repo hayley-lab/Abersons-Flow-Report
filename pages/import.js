@@ -142,8 +142,8 @@ export default function ImportPage() {
   }
 
   async function handleDebugHtml() {
-    setStatus("Fetching raw HTML…");
-    const result = await post({ action: "debugHtml", phpsessid, rememberme, path: "/" });
+    setStatus("Fetching raw HTML from /store/7…");
+    const result = await post({ action: "debugHtml", phpsessid, rememberme, path: "/store/7" });
     if (result.ok) {
       setStatus("Raw HTML dumped to log (" + result.length + " chars total, showing first 8000)");
       addLog("=== RAW HTML ===");
