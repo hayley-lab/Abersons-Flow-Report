@@ -214,13 +214,17 @@ export default async function handler(req, res) {
       const loggedIn = html.includes("logout") || html.includes("Store Summary");
       if (!loggedIn) return res.json({ ok: false, error: "Cookies invalid — not logged in" });
       const seasonInfo = parseSeasonInfo(html);
-      // Detect current season from the form input value or page text
-      const currentM = /value='([^']+)'/.exec(html);
-      const currentRaw = currentM ? currentM[1] : "";
-      // The prev link title is the season BEFORE current; next title is AFTER current
-      // So current is between them — read from page text
-      const textSeasonM = /(spring|fall)\s+(\d{4})/i.exec(html.replace(/change_season/g, ""));
-      const current = textSeasonM ? textSeasonM[0] : "unknown";
+      // Infer current season: it's the season after prev (or before next)
+      // e.g. prev=fall 2024, next=fall 2025 → current=spring 2025
+      function nextSeason(label) {
+        if (!label) return null;
+        const m = /(spring|fall)\s+(\d{4})/i.exec(label);
+        if (!m) return null;
+        const [, term, yearStr] = m;
+        const year = parseInt(yearStr, 10);
+        return term.toLowerCase() === "fall" ? `spring ${year + 1}` : `fall ${year}`;
+      }
+      const current = nextSeason(seasonInfo.prev) || "unknown";
       return res.json({ ok: true, current, ...seasonInfo });
     }
 
