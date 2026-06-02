@@ -5,6 +5,9 @@
   "functions": {
     "pages/api/scan/step.js": {
       "maxDuration": 60
+    },
+    "pages/api/import/datatail.js": {
+      "maxDuration": 60
     }
   }
 }

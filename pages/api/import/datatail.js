@@ -11,16 +11,23 @@ const SESSION_OPTIONS = {
 const BASE = "https://datatailor.abersonstyle.com";
 
 async function dtFetch(path, cookies) {
-  const res = await fetch(BASE + path, {
-    headers: {
-      Cookie: cookies,
-      "User-Agent": "Mozilla/5.0 (compatible; FlowImport/1.0)",
-      Accept: "text/html,application/xhtml+xml",
-    },
-    redirect: "follow",
-  });
-  if (!res.ok) throw new Error("datatail HTTP " + res.status + " for " + path);
-  return res.text();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(BASE + path, {
+      headers: {
+        Cookie: cookies,
+        "User-Agent": "Mozilla/5.0 (compatible; FlowImport/1.0)",
+        Accept: "text/html,application/xhtml+xml",
+      },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error("datatail HTTP " + res.status + " for " + path);
+    return res.text();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parseDollar(s) {
