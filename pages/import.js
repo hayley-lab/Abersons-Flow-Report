@@ -42,6 +42,22 @@ export default function ImportPage() {
     }
   }
 
+  async function handleDebugHtml() {
+    setStatus("Fetching raw HTML…");
+    const result = await post({ action: "debugHtml", phpsessid, rememberme, path: "/" });
+    if (result.ok) {
+      setStatus("Raw HTML (first 8000 chars) — check log");
+      addLog("=== RAW HTML ===");
+      // Split into chunks for readability
+      const chunk = 200;
+      for (let i = 0; i < result.html.length; i += chunk) {
+        addLog(result.html.slice(i, i + chunk));
+      }
+    } else {
+      setStatus("Error: " + result.error);
+    }
+  }
+
   async function handleFetchVendors() {
     setStatus("Fetching vendor index…");
     setLog([]);
@@ -184,6 +200,9 @@ export default function ImportPage() {
         </button>
         <button style={btn(running || vendors.length === 0)} disabled={running || vendors.length === 0} onClick={handleImportAll}>
           3. Import All ({vendors.length} vendors)
+        </button>
+        <button style={{ ...btn(!probeResult?.ok), background: probeResult?.ok ? "#6b6560" : undefined }} disabled={!probeResult?.ok} onClick={handleDebugHtml}>
+          Debug HTML
         </button>
       </div>
 

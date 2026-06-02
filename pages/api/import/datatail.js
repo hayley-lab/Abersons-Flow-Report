@@ -230,7 +230,13 @@ export default async function handler(req, res) {
     if (action === "fetchVendorIndex") {
       const html = await dtFetch("/", cookies);
       const vendors = parseVendorIndex(html);
-      return res.json({ ok: true, count: vendors.length, vendors });
+      return res.json({ ok: true, count: vendors.length, vendors, htmlSnippet: html.slice(0, 5000) });
+    }
+
+    if (action === "debugHtml") {
+      const { path: debugPath } = req.body;
+      const html = await dtFetch(debugPath || "/", cookies);
+      return res.json({ ok: true, html: html.slice(0, 8000), length: html.length });
     }
 
     if (action === "fetchVendorDetail") {
