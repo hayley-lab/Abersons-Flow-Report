@@ -313,9 +313,38 @@ export default function FlowReport() {
     setScreen("products");
 
     try {
-      // For historical import seasons, products are stored in the vendor object directly
+      // For historical import seasons, products are stored in the vendor object directly.
+      // If a sync has run, use skuToPid to pull live stats + inventory from LS.
       if (vendor.overrideProducts) {
+        const skuToPid     = (scanData && scanData.skuToPid)     || {};
+        const productStats = (scanData && scanData.productStats) || {};
+
+        // Collect unique LS PIDs for these products
+        const pidSet = new Set(
+          vendor.overrideProducts.map(p => skuToPid[(p.style || "").toLowerCase().trim()]).filter(Boolean)
+        );
+
+        // Fetch current inventory for all matched PIDs concurrently
+        const invMap = {};
+        if (pidSet.size > 0) {
+          await withConcurrency(
+            Array.from(pidSet).map(pid => async function() {
+              const inv = await apiFetch("2.0/products/" + pid + "/inventory").catch(() => null);
+              if (inv) {
+                const d = inv.data || inv;
+                invMap[pid] = Array.isArray(d)
+                  ? d.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
+                  : (d.current_amount != null ? d.current_amount : (d.count != null ? d.count : null));
+              }
+            }),
+            8
+          );
+        }
+
         setProductRows(vendor.overrideProducts.map(function(p) {
+          const pid    = skuToPid[(p.style || "").toLowerCase().trim()];
+          const stats  = pid ? (productStats[pid] || {}) : {};
+          const onHand = pid && invMap[pid] != null ? invMap[pid] : (p.qtyStock || 0);
           return {
             name:       p.description || "",
             sku:        p.style       || "",
@@ -323,10 +352,10 @@ export default function FlowReport() {
             cost:       p.cost        || 0,
             price:      p.price       || 0,
             qtyOrdered: p.qtyOrdered  || 0,
-            onHand:     p.qtyStock    || 0,
-            sold:       p.qtySold     || 0,
-            onSale:     p.qtySale     || 0,
-            returned:   p.qtyReturned || 0,
+            onHand,
+            sold:       stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
+            onSale:     stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
+            returned:   stats.returned != null ? stats.returned : (p.qtyReturned || 0),
           };
         }));
         setProductLoading(false);

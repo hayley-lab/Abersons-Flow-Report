@@ -45,6 +45,7 @@ function registerProduct(state, p) {
   const suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
   const suppName = (p.supplier && p.supplier.name) || "Unknown";
   const price    = parseFloat(p.price_excluding_tax || 0);
+  const skuKey   = ((p.custom_sku || "") || (p.sku || "")).toLowerCase().trim();
 
   let resolvedType = typeId, resolvedSuppId = suppId, resolvedSuppName = suppName;
   let resolvedPrice = price;
@@ -71,6 +72,7 @@ function registerProduct(state, p) {
     state.pidToType[p.id]     = resolvedType;
     state.pidToSupplier[p.id] = { i: resolvedSuppId, n: resolvedSuppName };
     state.pidToPrice[p.id]    = resolvedPrice;
+    if (skuKey) state.skuToPid[skuKey] = p.id;
   }
 }
 
@@ -158,6 +160,7 @@ export default async function handler(req, res) {
       state.pidToSupplier    = {};
       state.pidToPrice       = {};
       state.pidToQtyOrdered  = {};
+      state.skuToPid         = {};
       state.variantsSeenInScan = false;
       state.variantNeedsFixup  = {};
       state.deptVendorData   = {};  // { deptId: { vendorId: {id,name,ordered,received,sold,cost} } }
@@ -451,6 +454,7 @@ export default async function handler(req, res) {
         pidToType:       state.pidToType,
         pidToSupplier:   state.pidToSupplier,
         pidToQtyOrdered: state.pidToQtyOrdered,
+        skuToPid:        state.skuToPid || {},
       };
 
       await kv.set(dataKey, result, { ex: 48 * 3600 });
