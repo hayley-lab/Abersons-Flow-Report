@@ -22,8 +22,10 @@ function seasonSkuCodes(seasonId) {
   if (!m) return [];
   const year = m[2].slice(-2);
   if (m[1] === "prespring") return ["/rs" + year, "/ps" + year];
-  const abbr = { prefall: "pf", fall: "f", spring: "s" };
-  return ["/" + abbr[m[1]] + year];
+  if (m[1] === "prefall")   return ["/pf" + year];
+  if (m[1] === "fall")      return ["/f" + year, "/pf" + year];
+  if (m[1] === "spring")    return ["/s" + year, "/rs" + year, "/ps" + year];
+  return [];
 }
 
 // Hardcoded lower-bound product-version cursors so sales scan skips history

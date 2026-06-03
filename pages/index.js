@@ -590,21 +590,17 @@ export default function FlowReport() {
                           updated {new Date(dataTs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
                         </span>
                       )}
-                      {hasOverride ? (
-                        <span style={{ fontSize: 11, color: "#9e9892", fontStyle: "italic" }}>Historical import</span>
-                      ) : (
-                        <button
-                          onClick={() => { if (!scanning) runScan(true); }}
-                          disabled={scanning}
-                          style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: scanning ? "#b0aba5" : "#6b6560", cursor: scanning ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }}>
-                          {scanning ? "↺ Scanning…" : "↺ Refresh"}
-                        </button>
-                      )}
+                      <button
+                        onClick={() => { if (!scanning) runScan(true); }}
+                        disabled={scanning}
+                        style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: scanning ? "#b0aba5" : "#6b6560", cursor: scanning ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+                        {scanning ? "↺ Scanning…" : hasOverride ? "↺ Sync from LS" : "↺ Refresh"}
+                      </button>
                     </div>
                   }>
                   {summaryRows.length === 0 && !scanning ? (
                     <div style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892", fontSize: 13 }}>
-                      {hasOverride ? "Loading historical data…" : <>No scan data yet for {seasonLabel}. Click <strong>↺ Refresh</strong> to run the first scan.</>}
+                      {hasOverride ? <>Historical data imported. Click <strong>↺ Sync from LS</strong> to pull live sales &amp; stock.</> : <>No scan data yet for {seasonLabel}. Click <strong>↺ Refresh</strong> to run the first scan.</>}
                     </div>
                   ) : (
                     <div style={{ overflowX: "auto" }}>
