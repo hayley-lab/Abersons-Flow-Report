@@ -174,9 +174,9 @@ export default function FlowReport() {
   const [productRows, setProductRows]   = useState([]);
   const [productLoading, setProductLoading] = useState(false);
   const [productError, setProductError] = useState(null);
-  const [productSort, setProductSort]   = useState({ col: null, dir: 1 });
-  const [vendorSort,  setVendorSort]    = useState({ col: "ordered", dir: -1 });
-  const [summarySort, setSummarySort]  = useState({ col: "ordered", dir: -1 });
+  const [productSort, setProductSort]   = useState({ col: "name", dir: 1 });
+  const [vendorSort,  setVendorSort]    = useState({ col: "name", dir: 1 });
+  const [summarySort, setSummarySort]  = useState({ col: "name", dir: 1 });
 
   // ── auth check ─────────────────────────────────────────────────────────────
 
@@ -536,21 +536,17 @@ export default function FlowReport() {
 
       <header style={s.header}>
         <div style={s.logo}>abersons</div>
-        <nav style={s.nav}>
-          <button style={s.navBtn(screen !== "detail")} onClick={function() { setScreen("summary"); }}>flow summary</button>
-          <button style={s.navBtn(screen === "detail")} onClick={function() { setScreen("detail"); }}>flow detail</button>
-        </nav>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={s.seasonPill}>
             {(function() {
               var idx = SEASONS.findIndex(function(s2) { return s2.id === season; });
               var prev = SEASONS[idx - 1];
               var next = SEASONS[idx + 1];
-              var btnStyle = function(enabled) { return { background: "none", border: "none", padding: "0 2px", fontSize: 13, color: enabled ? "#3a5a8c" : "#ccc", cursor: enabled ? "pointer" : "default", fontFamily: "'DM Sans',sans-serif", lineHeight: 1 }; };
+              var btnStyle = function(enabled) { return { background: "none", border: "none", padding: "0 3px", fontSize: 20, lineHeight: 1, color: enabled ? "#3a5a8c" : "#ccc", cursor: enabled ? "pointer" : "default", fontFamily: "'DM Sans',sans-serif" }; };
               return (<>
                 <button style={btnStyle(!!prev)} disabled={!prev} onClick={function() { if (prev) { setSeason(prev.id); setScreen("summary"); } }}>‹</button>
                 <select value={season} onChange={function(e) { setSeason(e.target.value); setScreen("summary"); }}
-                  style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}>
+                  style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}>
                   {SEASONS.map(function(s2) { return <option key={s2.id} value={s2.id}>{s2.name}</option>; })}
                 </select>
                 <button style={btnStyle(!!next)} disabled={!next} onClick={function() { if (next) { setSeason(next.id); setScreen("summary"); } }}>›</button>
@@ -721,9 +717,21 @@ export default function FlowReport() {
         {screen === "vendors" && (
           <>
             <button style={s.backBtn} onClick={function() { setScreen("summary"); }}>← Store Summary</button>
-            <div style={{ color: "#9e9892", fontSize: 13, marginBottom: "1.25rem" }}>
+            <div style={{ color: "#9e9892", fontSize: 13, marginBottom: "1rem" }}>
               <button onClick={function() { setScreen("summary"); }} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>Store Summary</button>
               {" › "}<span style={{ color: "#1a1816", fontWeight: 500 }}>{currentDept ? currentDept.name : ""}</span>
+            </div>
+            {/* Department jump pills */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: "1.25rem" }}>
+              {summaryRows.filter(function(r) { return r.ordered > 0 || r.sold > 0; }).sort(function(a, b) { return (a.name||"").toLowerCase() < (b.name||"").toLowerCase() ? -1 : 1; }).map(function(r) {
+                var active = currentDept && String(r.id) === String(currentDept.id);
+                return (
+                  <button key={r.id} onClick={function() { if (!active) openDept(r); }}
+                    style={{ background: active ? "#3a5a8c" : "#fff", color: active ? "#fff" : "#3a5a8c", border: "1px solid " + (active ? "#3a5a8c" : "#b8cce4"), borderRadius: 20, padding: "4px 13px", fontSize: 12, fontWeight: active ? 600 : 400, fontFamily: "'DM Sans',sans-serif", cursor: active ? "default" : "pointer" }}>
+                    {r.name}
+                  </button>
+                );
+              })}
             </div>
             {vendorLoading && <Spinner label="Loading vendors…" />}
             {vendorError && <ErrBox msg={vendorError} />}
