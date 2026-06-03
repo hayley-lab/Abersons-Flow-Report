@@ -2,6 +2,12 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "framework": "nextjs",
+  "crons": [
+    {
+      "path": "/api/cron/scan",
+      "schedule": "*/5 * * * *"
+    }
+  ],
   "functions": {
     "pages/api/scan/step.js": {
       "maxDuration": 60
@@ -10,6 +16,9 @@
       "maxDuration": 60
     },
     "pages/api/import/save.js": {
+      "maxDuration": 60
+    },
+    "pages/api/cron/scan.js": {
       "maxDuration": 60
     }
   }

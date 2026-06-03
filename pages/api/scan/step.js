@@ -91,7 +91,8 @@ function registerProduct(state, p) {
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
-  const session = await getIronSession(req, res, sessionOptions);
+  const cronAuth = process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
+  const session = cronAuth ? { authed: true } : await getIronSession(req, res, sessionOptions);
   if (!session.authed) return res.status(401).json({ error: "Not authenticated" });
 
   const { season } = req.query;
