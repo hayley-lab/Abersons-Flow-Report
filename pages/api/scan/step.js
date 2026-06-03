@@ -12,6 +12,7 @@
 //   KV_REST_API_TOKEN
 import { kv } from "@vercel/kv";
 import { getLsToken, lsBase } from "../../../lib/ls-auth";
+import { SEASONS } from "../../../lib/seasons";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 
@@ -20,11 +21,19 @@ const CHUNK_MS = 6000;
 function seasonSkuCodes(seasonId) {
   const m = seasonId.match(/^(prefall|fall|spring|prespring)(\d+)$/);
   if (!m) return [];
-  const year = m[2].slice(-2);
-  if (m[1] === "prespring") return ["/rs" + year, "/ps" + year];
-  if (m[1] === "prefall")   return ["/pf" + year];
-  if (m[1] === "fall")      return ["/f" + year, "/pf" + year];
-  if (m[1] === "spring")    return ["/s" + year, "/rs" + year, "/ps" + year];
+  const yy = m[2].slice(-2);
+  if (m[1] === "prespring") return ["/rs" + yy, "/ps" + yy];
+  if (m[1] === "prefall")   return ["/pf" + yy];
+  if (m[1] === "fall") {
+    // Include /pf codes only when there's no separate prefall season in the list
+    const hasPreFall = SEASONS.some(s => s.id === `prefall${yy}`);
+    return hasPreFall ? ["/f" + yy] : ["/f" + yy, "/pf" + yy];
+  }
+  if (m[1] === "spring") {
+    // Include /rs and /ps codes only when there's no separate prespring season
+    const hasPreSpring = SEASONS.some(s => s.id === `prespring${yy}`);
+    return hasPreSpring ? ["/s" + yy] : ["/s" + yy, "/rs" + yy, "/ps" + yy];
+  }
   return [];
 }
 
