@@ -158,6 +158,7 @@ export default function FlowReport() {
   const [dataLoading, setDataLoading]   = useState(false);
   const [dataError, setDataError]       = useState(null);
   const [dataTs, setDataTs]             = useState(null);   // timestamp of last successful scan
+  const [hasOverride, setHasOverride]   = useState(false);  // season uses imported override data
 
   const [scanning, setScanning]         = useState(false);
   const [scanProgress, setScanProgress] = useState("");
@@ -220,7 +221,8 @@ export default function FlowReport() {
         if (r.status === 401) { setAuthed(false); return; }
         throw new Error(d.error || "HTTP " + r.status);
       }
-      const { data } = await r.json();
+      const { data, hasOverride: ov } = await r.json();
+      setHasOverride(!!ov);
       if (data) {
         setScanData(data);
         setSummaryRows(data.summaryRows || []);
@@ -500,7 +502,7 @@ export default function FlowReport() {
         cancel
       </button>
     </div>
-  ) : scanError ? (
+  ) : (scanError && !hasOverride) ? (
     <div style={{ background: "#fdeaea", border: "1px solid #f0b8b8", borderRadius: 8, padding: "10px 16px", marginBottom: "1rem", fontSize: 13, color: "#8b2020" }}>
       Scan failed: {scanError}
     </div>
@@ -568,12 +570,16 @@ export default function FlowReport() {
                           updated {new Date(dataTs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
                         </span>
                       )}
-                      <button
-                        onClick={() => { if (!scanning) runScan(true); }}
-                        disabled={scanning}
-                        style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: scanning ? "#b0aba5" : "#6b6560", cursor: scanning ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }}>
-                        {scanning ? "↺ Scanning…" : "↺ Refresh"}
-                      </button>
+                      {hasOverride ? (
+                        <span style={{ fontSize: 11, color: "#9e9892", fontStyle: "italic" }}>Historical import</span>
+                      ) : (
+                        <button
+                          onClick={() => { if (!scanning) runScan(true); }}
+                          disabled={scanning}
+                          style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: scanning ? "#b0aba5" : "#6b6560", cursor: scanning ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+                          {scanning ? "↺ Scanning…" : "↺ Refresh"}
+                        </button>
+                      )}
                     </div>
                   }>
                   {summaryRows.length === 0 && !scanning ? (
