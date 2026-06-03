@@ -373,7 +373,7 @@ export default async function handler(req, res) {
         state.salesPages++;
 
         for (const sale of saleItems) {
-          if (sale.status !== "CLOSED") continue;
+          if (sale.status !== "CLOSED" && sale.status !== "COMPLETED") continue;
           for (const li of (sale.line_items || [])) {
             if (!li.product_id || li.status === "VOIDED") continue;
             const pid = li.product_id;
