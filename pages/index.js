@@ -604,7 +604,7 @@ export default function FlowReport() {
                   }>
                   {summaryRows.length === 0 && !scanning ? (
                     <div style={{ padding: "2.5rem", textAlign: "center", color: "#9e9892", fontSize: 13 }}>
-                      No scan data yet for {seasonLabel}. Click <strong>↺ Refresh</strong> to run the first scan.
+                      {hasOverride ? "Loading historical data…" : <>No scan data yet for {seasonLabel}. Click <strong>↺ Refresh</strong> to run the first scan.</>}
                     </div>
                   ) : (
                     <div style={{ overflowX: "auto" }}>

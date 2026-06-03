@@ -39,7 +39,8 @@ function normName(s) {
 }
 
 function mergeOverride(data, override) {
-  if (!data || !override) return data;
+  if (!override) return data;
+  if (!data) data = { summaryRows: [], deptVendors: {} };
 
   // Build LS lookup maps by normalized name
   const lsDeptByName = {};
