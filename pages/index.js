@@ -415,6 +415,122 @@ export default function FlowReport() {
     setProductLoading(false);
   }, [currentDept, scanData]);
 
+  // ── vendor all-departments drilldown (from summary vendor list) ──────────────
+
+  const openVendorProducts = useCallback(async function(vendorInfo) {
+    setCurrentVendor({ ...vendorInfo, allDepts: true });
+    setCurrentDept(null);
+    setProductRows([]);
+    setProductLoading(true);
+    setProductError(null);
+    setScreen("products");
+
+    try {
+      const skuToPid     = (scanData && scanData.skuToPid)     || {};
+      const productStats = (scanData && scanData.productStats) || {};
+      const deptVendors  = (scanData && scanData.deptVendors)  || {};
+
+      // Collect all vendor entries across departments matching this vendor
+      const normVendorName = (vendorInfo.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const allEntries = [];
+      Object.values(deptVendors).forEach(function(vendors) {
+        vendors.forEach(function(v) {
+          const vNorm = (v.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (String(v.id) === String(vendorInfo.id) || vNorm === normVendorName) {
+            allEntries.push(v);
+          }
+        });
+      });
+
+      // Override products path (historical seasons)
+      const overrideProducts = allEntries.flatMap(function(v) { return v.overrideProducts || []; });
+      if (overrideProducts.length > 0) {
+        const pidSet = new Set(
+          overrideProducts.map(p => skuToPid[(p.style || "").toLowerCase().trim()]).filter(Boolean)
+        );
+        const invMap = {};
+        if (pidSet.size > 0) {
+          await withConcurrency(Array.from(pidSet).map(pid => async function() {
+            const inv = await apiFetch("2.0/products/" + pid + "/inventory").catch(() => null);
+            if (inv) {
+              const d = inv.data || inv;
+              invMap[pid] = Array.isArray(d)
+                ? d.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
+                : (d.current_amount != null ? d.current_amount : (d.count != null ? d.count : null));
+            }
+          }), 8);
+        }
+        setProductRows(overrideProducts.map(function(p) {
+          const pid    = skuToPid[(p.style || "").toLowerCase().trim()];
+          const stats  = pid ? (productStats[pid] || {}) : {};
+          const onHand = pid && invMap[pid] != null ? invMap[pid] : (p.qtyStock || 0);
+          return {
+            name: p.description || "", sku: p.style || "",
+            variant:    [p.color, p.fabric, p.size].filter(Boolean).join(" / "),
+            cost: p.cost || 0, price: p.price || 0,
+            qtyOrdered: p.qtyOrdered || 0, onHand,
+            sold:     stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
+            onSale:   stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
+            returned: stats.returned != null ? stats.returned : (p.qtyReturned || 0),
+          };
+        }));
+        setProductLoading(false);
+        return;
+      }
+
+      // LS scan path — filter seasonPids by vendor only (no dept filter)
+      const seasonPids      = (scanData && scanData.seasonPids)      || [];
+      const pidToType       = (scanData && scanData.pidToType)       || {};
+      const pidToSupplier   = (scanData && scanData.pidToSupplier)   || {};
+      const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
+
+      const targetIds = seasonPids.filter(function(id) {
+        const sup = pidToSupplier[id];
+        return sup && (sup.i || sup.id) === vendorInfo.id;
+      });
+
+      var products = [];
+      if (targetIds.length > 0) {
+        var fetched = await withConcurrency(targetIds.map(function(id) {
+          return async function() {
+            var [pd, inv] = await Promise.all([
+              apiFetch("2.0/products/" + id),
+              apiFetch("2.0/products/" + id + "/inventory").catch(() => null),
+            ]);
+            var p = pd.data || pd;
+            if (p && inv) {
+              var invData = inv.data || inv;
+              p._onHand = Array.isArray(invData)
+                ? invData.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
+                : (invData.current_amount ?? invData.count ?? null);
+            }
+            return p;
+          };
+        }), 8);
+        products = fetched.filter(Boolean);
+      }
+
+      setProductRows(products.map(function(p) {
+        const stats = productStats[p.id] || {};
+        return {
+          name:     (p.description ? p.description.replace(/<[^>]*>/g, "").trim() : "") || p.name,
+          sku:      p.sku || "",
+          variant:  p.variant_option_one_value || p.variant_name || "",
+          cost:     parseFloat(p.supply_price        || 0),
+          price:    parseFloat(p.price_excluding_tax || 0),
+          qtyOrdered: pidToQtyOrdered[p.id] || 0,
+          onHand:     p._onHand != null ? p._onHand : (p.inventory_count || 0),
+          sold:       stats.sold     || 0,
+          onSale:     stats.onSale   || 0,
+          returned:   stats.returned || 0,
+        };
+      }));
+    } catch (e) {
+      setProductError(e.message);
+    }
+    setProductLoading(false);
+  }, [scanData]);
+
   // Re-run openVendor if scanData refreshes while we're already on the products screen
   const prevScanDataRef = useRef(null);
   useEffect(() => {
@@ -715,7 +831,7 @@ export default function FlowReport() {
                                 return (
                                   <span key={v.id}>
                                     <button
-                                      onClick={function() { if (v.bestDept) { openDept(v.bestDept); } }}
+                                      onClick={function() { openVendorProducts(v); }}
                                       style={{ background: "none", border: "none", padding: "0 4px", fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: v.bestDept ? "#3a5a8c" : "#9e9892", cursor: v.bestDept ? "pointer" : "default", textDecoration: v.bestDept ? "underline" : "none", textUnderlineOffset: 2 }}>
                                       {v.name}
                                     </button>
@@ -821,11 +937,15 @@ export default function FlowReport() {
         {/* ── PRODUCTS ── */}
         {screen === "products" && (
           <>
-            <button style={s.backBtn} onClick={function() { setScreen("vendors"); }}>← {currentDept ? currentDept.name : ""}</button>
+            <button style={s.backBtn} onClick={function() { setScreen(currentVendor && currentVendor.allDepts ? "summary" : "vendors"); }}>
+              ← {currentVendor && currentVendor.allDepts ? "Store Summary" : (currentDept ? currentDept.name : "")}
+            </button>
             <div style={{ color: "#9e9892", fontSize: 13, marginBottom: "1.25rem" }}>
               <button onClick={function() { setScreen("summary"); }} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>Store Summary</button>
-              {" › "}
-              <button onClick={function() { setScreen("vendors"); }} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>{currentDept ? currentDept.name : ""}</button>
+              {currentVendor && !currentVendor.allDepts && (<>
+                {" › "}
+                <button onClick={function() { setScreen("vendors"); }} style={{ background: "none", border: "none", color: "#3a5a8c", cursor: "pointer", fontFamily: "'DM Sans',sans-serif", fontSize: 13, textDecoration: "underline", textUnderlineOffset: 2, padding: 0 }}>{currentDept ? currentDept.name : ""}</button>
+              </>)}
               {" › "}<span style={{ color: "#1a1816", fontWeight: 500 }}>{currentVendor ? currentVendor.name : ""}</span>
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
