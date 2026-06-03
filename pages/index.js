@@ -694,12 +694,12 @@ export default function FlowReport() {
               var next = SEASONS[idx + 1];
               var btnStyle = function(enabled) { return { background: "none", border: "none", padding: "0 3px", fontSize: 20, lineHeight: 1, color: enabled ? "#3a5a8c" : "#ccc", cursor: enabled ? "pointer" : "default", fontFamily: "'DM Sans',sans-serif" }; };
               return (<>
-                <button style={btnStyle(!!prev)} disabled={!prev} onClick={function() { if (prev) { setSeasonAndSave(prev.id); setScreen("summary"); } }}>‹</button>
+                <button style={btnStyle(!!next)} disabled={!next} onClick={function() { if (next) { setSeasonAndSave(next.id); setScreen("summary"); } }}>‹</button>
                 <select value={season} onChange={function(e) { setSeasonAndSave(e.target.value); setScreen("summary"); }}
                   style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}>
                   {SEASONS.map(function(s2) { return <option key={s2.id} value={s2.id}>{s2.name}</option>; })}
                 </select>
-                <button style={btnStyle(!!next)} disabled={!next} onClick={function() { if (next) { setSeasonAndSave(next.id); setScreen("summary"); } }}>›</button>
+                <button style={btnStyle(!!prev)} disabled={!prev} onClick={function() { if (prev) { setSeasonAndSave(prev.id); setScreen("summary"); } }}>›</button>
               </>);
             })()}
           </div>
