@@ -72,7 +72,10 @@ function registerProduct(state, p) {
     state.pidToType[p.id]     = resolvedType;
     state.pidToSupplier[p.id] = { i: resolvedSuppId, n: resolvedSuppName };
     state.pidToPrice[p.id]    = resolvedPrice;
-    if (skuKey) state.skuToPid[skuKey] = p.id;
+    if (skuKey) {
+      if (!state.skuToPid) state.skuToPid = {};
+      state.skuToPid[skuKey] = p.id;
+    }
   }
 }
 
