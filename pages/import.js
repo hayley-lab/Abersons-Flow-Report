@@ -1,5 +1,6 @@
 // pages/import.js — Admin import tool for old datatail seasons
 import { useState } from "react";
+import { SEASONS } from "../lib/seasons";
 
 export default function ImportPage() {
   const [phpsessid,    setPhpsessid]    = useState("");
@@ -170,8 +171,7 @@ export default function ImportPage() {
         <div>
           <label style={{ fontSize: 11, fontWeight: 600, color: "#6b6560", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>Save imported data as</label>
           <select value={targetSeason} onChange={e => setTargetSeason(e.target.value)} style={{ ...inp, fontFamily: "'DM Sans', sans-serif" }}>
-            <option value="spring25">Spring 2025</option>
-            <option value="fall25">Fall 2025</option>
+            {SEASONS.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </div>
       </div>
