@@ -313,6 +313,26 @@ export default function FlowReport() {
     setScreen("products");
 
     try {
+      // For historical import seasons, products are stored in the vendor object directly
+      if (vendor.overrideProducts) {
+        setProductRows(vendor.overrideProducts.map(function(p) {
+          return {
+            name:       p.description || "",
+            sku:        p.style       || "",
+            variant:    [p.color, p.fabric, p.size].filter(Boolean).join(" / "),
+            cost:       p.cost        || 0,
+            price:      p.price       || 0,
+            qtyOrdered: p.qtyOrdered  || 0,
+            onHand:     p.qtyStock    || 0,
+            sold:       p.qtySold     || 0,
+            onSale:     p.qtySale     || 0,
+            returned:   p.qtyReturned || 0,
+          };
+        }));
+        setProductLoading(false);
+        return;
+      }
+
       // Find this vendor's product IDs in this dept from the pre-scanned data
       const seasonPids      = (scanData && scanData.seasonPids)      || [];
       const pidToType       = (scanData && scanData.pidToType)       || {};

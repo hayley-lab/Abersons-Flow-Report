@@ -90,13 +90,14 @@ function mergeOverride(data, override) {
     deptVendors[deptId] = ovVendors.map(ov => {
       const ls = lsVendors[normName(ov.vendorName)];
       return {
-        id:          ls ? ls.id : ov.vendorId,
-        name:        ov.vendorName,
-        ordered:     ov.ordered  || 0,
-        orderedCost: ls ? (ls.orderedCost || 0) : 0,
-        received:    ov.received || 0,
-        cost:        ls ? (ls.cost || 0) : 0,
-        sold:        ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
+        id:               ls ? ls.id : ov.vendorId,
+        name:             ov.vendorName,
+        ordered:          ov.ordered  || 0,
+        orderedCost:      ls ? (ls.orderedCost || 0) : 0,
+        received:         ov.received || 0,
+        cost:             ls ? (ls.cost || 0) : 0,
+        sold:             ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
+        overrideProducts: ov.products || [],
       };
     });
 
