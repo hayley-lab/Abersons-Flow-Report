@@ -7,11 +7,14 @@ import { SEASONS } from "../../../lib/seasons";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 
-// Current seasons = anything 2026 and later
+// Active seasons = current year, next year, and previous year (still selling prior-year merchandise)
 function currentSeasons() {
+  const year = new Date().getFullYear();
   return SEASONS.filter(s => {
     const m = s.id.match(/\d+$/);
-    return m && parseInt("20" + m[0].slice(-2)) >= 2026;
+    if (!m) return false;
+    const y = parseInt("20" + m[0].slice(-2));
+    return y >= year - 1;
   }).map(s => s.id);
 }
 
