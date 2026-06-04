@@ -322,11 +322,24 @@ export default function FlowReport() {
     setScreen("products");
 
     try {
+      // Find this vendor's product IDs in this dept from the pre-scanned data
+      const seasonPids      = (scanData && scanData.seasonPids)      || [];
+      const pidToType       = (scanData && scanData.pidToType)       || {};
+      const pidToSupplier   = (scanData && scanData.pidToSupplier)   || {};
+      const productStats    = (scanData && scanData.productStats)    || {};
+      const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
+
+      const targetIds = seasonPids.filter(function(id) {
+        const sup = pidToSupplier[id];
+        const typ = pidToType[id];
+        return sup && (sup.i || sup.id) === vendor.id &&
+               (typ === currentDept.id || typ === "__none__");
+      });
+
       // For historical import seasons, products are stored in the vendor object directly.
-      // If a sync has run, use skuToPid to pull live stats + inventory from LS.
-      if (vendor.overrideProducts) {
-        const skuToPid     = (scanData && scanData.skuToPid)     || {};
-        const productStats = (scanData && scanData.productStats) || {};
+      // Only use override products when the LS scan has no products for this vendor+dept.
+      if (vendor.overrideProducts && targetIds.length === 0) {
+        const skuToPid = (scanData && scanData.skuToPid) || {};
 
         // Collect unique LS PIDs for these products
         const pidSet = new Set(
@@ -370,20 +383,6 @@ export default function FlowReport() {
         setProductLoading(false);
         return;
       }
-
-      // Find this vendor's product IDs in this dept from the pre-scanned data
-      const seasonPids      = (scanData && scanData.seasonPids)      || [];
-      const pidToType       = (scanData && scanData.pidToType)       || {};
-      const pidToSupplier   = (scanData && scanData.pidToSupplier)   || {};
-      const productStats    = (scanData && scanData.productStats)    || {};
-      const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
-
-      const targetIds = seasonPids.filter(function(id) {
-        const sup = pidToSupplier[id];
-        const typ = pidToType[id];
-        return sup && (sup.i || sup.id) === vendor.id &&
-               (typ === currentDept.id || typ === "__none__");
-      });
 
       // Fetch full product details (name, SKU, inventory) from LS
       var products = [];
@@ -458,9 +457,21 @@ export default function FlowReport() {
         });
       });
 
-      // Override products path (historical seasons)
+      // LS scan path — filter seasonPids by vendor only (no dept filter)
+      const seasonPids      = (scanData && scanData.seasonPids)      || [];
+      const pidToType       = (scanData && scanData.pidToType)       || {};
+      const pidToSupplier   = (scanData && scanData.pidToSupplier)   || {};
+      const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
+
+      const targetIds = seasonPids.filter(function(id) {
+        const sup = pidToSupplier[id];
+        return sup && (sup.i || sup.id) === vendorInfo.id;
+      });
+
+      // Override products path — only use when LS scan has no products for this vendor
+      // (historical seasons where products aren't in LS scan results)
       const overrideProducts = allEntries.flatMap(function(v) { return v.overrideProducts || []; });
-      if (overrideProducts.length > 0) {
+      if (overrideProducts.length > 0 && targetIds.length === 0) {
         const pidSet = new Set(
           overrideProducts.map(p => skuToPid[(p.style || "").toLowerCase().trim()]).filter(Boolean)
         );
@@ -494,17 +505,7 @@ export default function FlowReport() {
         return;
       }
 
-      // LS scan path — filter seasonPids by vendor only (no dept filter)
-      const seasonPids      = (scanData && scanData.seasonPids)      || [];
-      const pidToType       = (scanData && scanData.pidToType)       || {};
-      const pidToSupplier   = (scanData && scanData.pidToSupplier)   || {};
-      const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
-
-      const targetIds = seasonPids.filter(function(id) {
-        const sup = pidToSupplier[id];
-        return sup && (sup.i || sup.id) === vendorInfo.id;
-      });
-
+      // LS scan path — use targetIds already computed above
       var products = [];
       if (targetIds.length > 0) {
         var fetched = await withConcurrency(targetIds.map(function(id) {
