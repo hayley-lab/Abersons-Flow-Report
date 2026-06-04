@@ -118,7 +118,23 @@ function mergeOverride(data, override) {
     if (!deptVendors[deptId]) deptVendors[deptId] = vendors;
   });
 
-  return { ...data, summaryRows, deptVendors };
+  // Rebuild summaryRows by summing deptVendors so dept totals always match vendor drilldown
+  const rebuiltSummaryRows = summaryRows.map(row => {
+    const vendors = deptVendors[row.id] || [];
+    if (vendors.length === 0) return row;
+    return {
+      ...row,
+      ordered:      vendors.reduce((a, v) => a + (v.ordered      || 0), 0),
+      orderedCost:  vendors.reduce((a, v) => a + (v.orderedCost  || 0), 0),
+      received:     vendors.reduce((a, v) => a + (v.received     || 0), 0),
+      cost:         vendors.reduce((a, v) => a + (v.cost         || 0), 0),
+      returned:     vendors.reduce((a, v) => a + (v.returned     || 0), 0),
+      returnedCost: vendors.reduce((a, v) => a + (v.returnedCost || 0), 0),
+      sold:         vendors.reduce((a, v) => a + (v.sold         || 0), 0),
+    };
+  });
+
+  return { ...data, summaryRows: rebuiltSummaryRows, deptVendors };
 }
 
 export default async function handler(req, res) {
