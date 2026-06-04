@@ -156,34 +156,36 @@ export default async function handler(req, res) {
     // ── INIT: departments + PO headers ──────────────────────────────────────
     if (state.phase === "init") {
       state.progress = "Loading departments & purchase orders…";
-      const [cats, consignments] = await Promise.all([
+      const [cats, consignments, returnConsignments] = await Promise.all([
         lsFetchAll("2.0/product_types"),
         lsFetchAll("2.0/consignments?type=SUPPLIER"),
+        lsFetchAll("2.0/consignments?type=SUPPLIER_RETURN"),
       ]);
       const skuCodes = seasonSkuCodes(season);
       const skuBase  = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
 
       // Trim to only needed fields to keep KV payloads small
-      state.cats             = cats.map(c => ({ id: c.id, name: c.name }));
-      state.consignments     = consignments.map(c => ({ id: c.id }));
-      state.parentStore      = {};
-      state.seasonPids       = [];
-      state.seasonParentIds  = [];
-      state.pidToType        = {};
-      state.pidToSupplier    = {};
-      state.pidToPrice       = {};
-      state.pidToQtyOrdered  = {};
-      state.skuToPid         = {};
-      state.variantsSeenInScan = false;
-      state.variantNeedsFixup  = {};
-      state.deptVendorData   = {};  // { deptId: { vendorId: {id,name,ordered,received,sold,cost} } }
-      state.productStats     = {};  // { pid: {sold, onSale, returned} }
-      state.anchorVersion    = (skuBase && SEASON_START_CURSORS[skuBase] != null)
+      state.cats               = cats.map(c => ({ id: c.id, name: c.name }));
+      state.consignments       = consignments.map(c => ({ id: c.id }));
+      state.returnConsignments = returnConsignments.map(c => ({ id: c.id }));
+      state.parentStore        = {};
+      state.seasonPids         = [];
+      state.seasonParentIds    = [];
+      state.pidToType          = {};
+      state.pidToSupplier      = {};
+      state.pidToPrice         = {};
+      state.pidToQtyOrdered    = {};
+      state.skuToPid           = {};
+      state.variantsSeenInScan   = false;
+      state.variantNeedsFixup    = {};
+      state.deptVendorData       = {};  // { deptId: { vendorId: {id,name,ordered,received,returned,sold,...} } }
+      state.productStats         = {};  // { pid: {sold, onSale, returned} }
+      state.anchorVersion        = (skuBase && SEASON_START_CURSORS[skuBase] != null)
         ? SEASON_START_CURSORS[skuBase] : null;
 
       state.phase            = "products";
       state.productSearchIdx = 0;
-      state.progress         = `Loaded ${cats.length} depts, ${consignments.length} POs — searching products…`;
+      state.progress         = `Loaded ${cats.length} depts, ${consignments.length} POs, ${returnConsignments.length} returns — searching products…`;
     }
 
     // ── PRODUCTS: fast-path SKU search ──────────────────────────────────────
@@ -352,7 +354,7 @@ export default async function handler(req, res) {
 
           if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
           if (!state.deptVendorData[cid][sup.i]) {
-            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, cost: 0, sold: 0 };
+            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
           }
           const v = state.deptVendorData[cid][sup.i];
           const itemCost   = parseFloat(item.cost || 0);
@@ -370,10 +372,48 @@ export default async function handler(req, res) {
       }
 
       if (state.consigIdx >= state.consignments.length) {
-        // Free memory not needed in sales phase
         delete state.consignments;
         delete state.parentStore;
 
+        state.phase          = "returns";
+        state.returnConsigIdx = 0;
+        state.progress       = `Scanning vendor returns (0/${state.returnConsignments.length})…`;
+      }
+    }
+
+    // ── RETURNS: aggregate vendor return values by dept+vendor ───────────────
+    if (state.phase === "returns" && Date.now() < deadline) {
+      const seasonPidSet = new Set(state.seasonPids);
+
+      while (state.returnConsigIdx < state.returnConsignments.length && Date.now() < deadline) {
+        const c     = state.returnConsignments[state.returnConsigIdx];
+        const items = await lsFetchAll("2.0/consignments/" + c.id + "/products");
+
+        for (const item of items) {
+          if (!seasonPidSet.has(item.product_id)) continue;
+          const pid      = item.product_id;
+          const cid      = state.pidToType[pid]     || "__none__";
+          const sup      = state.pidToSupplier[pid];
+          if (!sup || sup.i === "__none__") continue;
+          const price    = state.pidToPrice[pid] || 0;
+          const itemCost = parseFloat(item.cost || 0);
+          const qty      = Math.max(0, item.count || 0);
+
+          if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
+          if (!state.deptVendorData[cid][sup.i]) {
+            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
+          }
+          const v = state.deptVendorData[cid][sup.i];
+          v.returned     += price    * qty;
+          v.returnedCost += itemCost * qty;
+        }
+
+        state.returnConsigIdx++;
+        state.progress = `Scanning vendor returns (${state.returnConsigIdx}/${state.returnConsignments.length})…`;
+      }
+
+      if (state.returnConsigIdx >= state.returnConsignments.length) {
+        delete state.returnConsignments;
         state.phase      = "sales";
         state.salesPages = 0;
         state.saleCursor = state.anchorVersion ? Math.max(0, state.anchorVersion - 1_000_000) : null;
@@ -440,15 +480,17 @@ export default async function handler(req, res) {
       // Build summary (dept-level) from deptVendorData
       const catMap = {};
       for (const cat of state.cats) {
-        catMap[cat.id] = { id: cat.id, name: cat.name, ordered: 0, orderedCost: 0, received: 0, cost: 0, sold: 0 };
+        catMap[cat.id] = { id: cat.id, name: cat.name, ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
       }
       for (const [deptId, vendors] of Object.entries(state.deptVendorData)) {
-        if (!catMap[deptId]) catMap[deptId] = { id: deptId, name: "Other", ordered: 0, orderedCost: 0, received: 0, cost: 0, sold: 0 };
+        if (!catMap[deptId]) catMap[deptId] = { id: deptId, name: "Other", ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
         for (const v of Object.values(vendors)) {
           catMap[deptId].ordered      += v.ordered;
-          catMap[deptId].orderedCost  += v.orderedCost || 0;
+          catMap[deptId].orderedCost  += v.orderedCost  || 0;
           catMap[deptId].received     += v.received;
-          catMap[deptId].cost         += v.cost || 0;
+          catMap[deptId].cost         += v.cost         || 0;
+          catMap[deptId].returned     += v.returned     || 0;
+          catMap[deptId].returnedCost += v.returnedCost || 0;
           catMap[deptId].sold         += v.sold;
         }
       }
@@ -486,7 +528,7 @@ export default async function handler(req, res) {
     }
 
     // Split state across two keys: small operational fields + big data blobs
-    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion","fixIdx"]);
+    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","returnConsigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion","fixIdx"]);
     const small = {}, big = {};
     for (const [k, v] of Object.entries(state)) {
       if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;

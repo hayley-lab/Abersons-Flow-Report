@@ -58,13 +58,15 @@ function mergeOverride(data, override) {
   const summaryRows = Object.values(override.stores).map(ov => {
     const ls = lsDeptByName[normName(ov.name)];
     return {
-      id:          ls ? ls.id : ov.id,
-      name:        ov.name,
-      ordered:     ov.ordered  || 0,
-      orderedCost: ls ? (ls.orderedCost || 0) : 0,
-      received:    ov.received || 0,
-      cost:        ls ? (ls.cost || 0) : 0,
-      sold:        ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
+      id:           ls ? ls.id : ov.id,
+      name:         ov.name,
+      ordered:      ov.ordered  || 0,
+      orderedCost:  ls ? (ls.orderedCost  || 0) : 0,
+      received:     ov.received || 0,
+      cost:         ls ? (ls.cost         || 0) : 0,
+      returned:     ls ? (ls.returned     || 0) : 0,
+      returnedCost: ls ? (ls.returnedCost || 0) : 0,
+      sold:         ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
     };
   });
 
@@ -94,9 +96,11 @@ function mergeOverride(data, override) {
         id:               ls ? ls.id : ov.vendorId,
         name:             ov.vendorName,
         ordered:          ov.ordered  || 0,
-        orderedCost:      ls ? (ls.orderedCost || 0) : 0,
+        orderedCost:      ls ? (ls.orderedCost  || 0) : 0,
         received:         ov.received || 0,
-        cost:             ls ? (ls.cost || 0) : 0,
+        cost:             ls ? (ls.cost         || 0) : 0,
+        returned:         ls ? (ls.returned     || 0) : 0,
+        returnedCost:     ls ? (ls.returnedCost || 0) : 0,
         sold:             ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
         overrideProducts: ov.products || [],
       };

@@ -563,11 +563,12 @@ export default function FlowReport() {
   const totalSold         = summaryRows.reduce((a, r) => a + r.sold,               0);
   const totalRecPct    = totalOrdered  > 0 ? (totalReceived / totalOrdered)  * 100 : 0;
   const totalSoldPct   = totalReceived > 0 ? (totalSold     / totalReceived) * 100 : 0;
-  const vTotalOrdered      = vendorRows.reduce((a, r) => a + r.ordered,              0);
-  const vTotalOrderedCost  = vendorRows.reduce((a, r) => a + (r.orderedCost || 0),  0);
-  const vTotalReceived     = vendorRows.reduce((a, r) => a + r.received,             0);
-  const vTotalReceivedCost = vendorRows.reduce((a, r) => a + (r.cost || 0),         0);
-  const vTotalSold         = vendorRows.reduce((a, r) => a + r.sold,                0);
+  const vTotalOrdered      = vendorRows.reduce((a, r) => a + r.ordered,               0);
+  const vTotalOrderedCost  = vendorRows.reduce((a, r) => a + (r.orderedCost  || 0),  0);
+  const vTotalReceived     = vendorRows.reduce((a, r) => a + r.received,              0);
+  const vTotalReceivedCost = vendorRows.reduce((a, r) => a + (r.cost         || 0),  0);
+  const vTotalReturned     = vendorRows.reduce((a, r) => a + (r.returned     || 0),  0);
+  const vTotalSold         = vendorRows.reduce((a, r) => a + r.sold,                 0);
 
   const BUCKET_COLORS = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
   const BUCKET_LABELS = { ordered: "ordered", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
@@ -899,12 +900,13 @@ export default function FlowReport() {
             {!vendorLoading && (
               <>
                 <KpiRow items={[
-                  { label: "Ordered (retail)", value: fmt(vTotalOrdered) },
-                  { label: "Ordered (cost)",   value: fmt(vTotalOrderedCost) },
-                  { label: "Received (retail)",value: fmt(vTotalReceived),     sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "%" : "—" },
-                  { label: "Received (cost)",  value: fmt(vTotalReceivedCost) },
-                  { label: "Sold (retail)",    value: fmt(vTotalSold),         sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "%" : "—" },
-                  { label: "Vendors",          value: vendorRows.filter(r => r.ordered > 0 || r.sold > 0).length },
+                  { label: "Ordered (retail)",   value: fmt(vTotalOrdered) },
+                  { label: "Ordered (cost)",     value: fmt(vTotalOrderedCost) },
+                  { label: "Received (retail)",  value: fmt(vTotalReceived),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "%" : "—" },
+                  { label: "Received (cost)",    value: fmt(vTotalReceivedCost) },
+                  { label: "Returned (retail)",  value: fmt(vTotalReturned) },
+                  { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "%" : "—" },
+                  { label: "Vendors",            value: vendorRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={(currentDept ? currentDept.name : "") + " — by Vendor"}>
                   <div style={{ overflowX: "auto" }}>
@@ -917,6 +919,7 @@ export default function FlowReport() {
                         <SortTH col="orderedCost"  sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Ordered (cost)</SortTH>
                         <SortTH col="received"     sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Received (retail)</SortTH>
                         <SortTH col="cost"         sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Received (cost)</SortTH>
+                        <SortTH col="returned"     sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Returned (retail)</SortTH>
                         <SortTH col="sold"         sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Sold (retail)</SortTH>
                         <SortTH col="recPct"       sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Received %</SortTH>
                         <SortTH col="soldPct"      sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Sold %</SortTH>
@@ -942,6 +945,7 @@ export default function FlowReport() {
                             <TD right>{r.orderedCost > 0 ? fmt(r.orderedCost)       : ""}</TD>
                             <TD right>{r.received > 0 ? fmt(r.received)             : ""}</TD>
                             <TD right>{r.cost     > 0 ? fmt(r.cost)                 : ""}</TD>
+                            <TD right>{r.returned > 0 ? fmt(r.returned)             : ""}</TD>
                             <TD right>{r.sold     > 0 ? fmt(r.sold)                 : ""}</TD>
                             <TD right><PctBadge pct={r.recPct}  zero={zero} /></TD>
                             <TD right><PctBadge pct={r.soldPct} zero={zero} /></TD>
@@ -973,12 +977,13 @@ export default function FlowReport() {
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
-                { label: "Ordered (retail)", value: fmt(currentVendor ? currentVendor.ordered      : 0) },
-                { label: "Ordered (cost)",   value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
-                { label: "Received (retail)",value: fmt(currentVendor ? currentVendor.received    : 0) },
-                { label: "Received (cost)",  value: fmt(currentVendor ? currentVendor.cost        : 0) },
-                { label: "Sold (retail)",    value: fmt(currentVendor ? currentVendor.sold        : 0) },
-                { label: "SKUs",             value: productRows.length },
+                { label: "Ordered (retail)",  value: fmt(currentVendor ? currentVendor.ordered      : 0) },
+                { label: "Ordered (cost)",    value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
+                { label: "Received (retail)", value: fmt(currentVendor ? currentVendor.received    : 0) },
+                { label: "Received (cost)",   value: fmt(currentVendor ? currentVendor.cost        : 0) },
+                { label: "Returned (retail)", value: fmt(currentVendor ? (currentVendor.returned || 0) : 0) },
+                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0) },
+                { label: "SKUs",              value: productRows.length },
               ].map(function(kv) {
                 return (
                   <div key={kv.label} style={{ background: "#fff", border: "1px solid #e2ddd5", borderRadius: 6, padding: "7px 13px" }}>
