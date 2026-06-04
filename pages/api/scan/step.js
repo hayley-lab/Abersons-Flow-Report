@@ -343,6 +343,7 @@ export default async function handler(req, res) {
 
         for (const item of items) {
           if (!seasonPidSet.has(item.product_id)) continue;
+          if ((item.count || 0) < 0) continue; // skip vendor returns / adjustments
           const pid    = item.product_id;
           const cid    = state.pidToType[pid]     || "__none__";
           const sup    = state.pidToSupplier[pid];
