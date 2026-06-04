@@ -352,15 +352,17 @@ export default async function handler(req, res) {
 
           if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
           if (!state.deptVendorData[cid][sup.i]) {
-            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, sold: 0, cost: 0 };
+            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, cost: 0, sold: 0 };
           }
           const v = state.deptVendorData[cid][sup.i];
-          const itemCost = parseFloat(item.cost || 0);
-          v.ordered      += price    * (item.count    || 0);
-          v.orderedCost  += itemCost * (item.count    || 0);
-          v.received     += price    * (item.received || 0);
-          v.cost         += itemCost * (item.received || 0);
-          state.pidToQtyOrdered[pid] = (state.pidToQtyOrdered[pid] || 0) + (item.count || 0);
+          const itemCost   = parseFloat(item.cost || 0);
+          const qtyOrdered = Math.max(0, item.count    || 0);
+          const qtyRecvd   = Math.max(0, item.received || 0);
+          v.ordered      += price    * qtyOrdered;
+          v.orderedCost  += itemCost * qtyOrdered;
+          v.received     += price    * qtyRecvd;
+          v.cost         += itemCost * qtyRecvd;
+          state.pidToQtyOrdered[pid] = (state.pidToQtyOrdered[pid] || 0) + qtyOrdered;
         }
 
         state.consigIdx++;
