@@ -35,7 +35,7 @@ async function loadOverride(season) {
 }
 
 function normName(s) {
-  return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (s || "").replace(/&[a-z]+;/gi, "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function mergeOverride(data, override) {
