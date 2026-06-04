@@ -168,6 +168,7 @@ export default function FlowReport() {
   const [scanning, setScanning]         = useState(false);
   const [scanProgress, setScanProgress] = useState("");
   const [scanError, setScanError]       = useState(null);
+  const [scanInterrupted, setScanInterrupted] = useState(false);
   const scanAbort = useRef(false);
 
   const [currentDept, setCurrentDept]   = useState(null);
@@ -226,8 +227,10 @@ export default function FlowReport() {
         if (r.status === 401) { setAuthed(false); return; }
         throw new Error(d.error || "HTTP " + r.status);
       }
-      const { data, hasOverride: ov } = await r.json();
+      const { data, job, hasOverride: ov } = await r.json();
       setHasOverride(!!ov);
+      const activePhases = new Set(["init","products","products_slow","products_slow_done","products_fix","products_variants","consignments","sales","finalizing"]);
+      setScanInterrupted(!!(job && activePhases.has(job.phase)));
       if (data) {
         setScanData(data);
         setSummaryRows(data.summaryRows || []);
@@ -255,6 +258,7 @@ export default function FlowReport() {
   const runScan = useCallback(async (restart) => {
     setScanError(null);
     setScanning(true);
+    setScanInterrupted(false);
     setScanProgress("Starting scan…");
     scanAbort.current = false;
 
@@ -735,6 +739,13 @@ export default function FlowReport() {
                         <span style={{ fontSize: 11, color: "#9e9892" }}>
                           updated {new Date(dataTs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
                         </span>
+                      )}
+                      {scanInterrupted && !scanning && (
+                        <button
+                          onClick={() => runScan(false)}
+                          style={{ background: "none", border: "1px solid #f5c842", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#9a7d0a", cursor: "pointer" }}>
+                          ↺ Resume interrupted scan
+                        </button>
                       )}
                       <button
                         onClick={() => { if (!scanning) runScan(true); }}
