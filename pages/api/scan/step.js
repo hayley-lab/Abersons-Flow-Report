@@ -453,7 +453,8 @@ export default async function handler(req, res) {
             // Per-product stats (units)
             if (!state.productStats[pid]) state.productStats[pid] = { sold: 0, onSale: 0, returned: 0 };
             if (li.is_return) {
-              state.productStats[pid].returned += qty;
+              // Customer return — net out of sold (black dot is for supplier returns only)
+              state.productStats[pid].sold = Math.max(0, (state.productStats[pid].sold || 0) - qty);
             } else {
               state.productStats[pid].sold += qty;
               const unitPrice   = qty > 0 ? amount / qty : 0;
