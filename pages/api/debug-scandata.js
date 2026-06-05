@@ -36,12 +36,14 @@ export default async function handler(req, res) {
       const base    = lsBase();
       const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-      // Search for the product by SKU
-      const searchRes = await fetch(`${base}/2.0/products?active=1&search=${encodeURIComponent(sku)}&page_size=5`, { headers });
+      // Search for the product by SKU - try both the full SKU and the part before "/"
+      const skuBase = sku.split("/")[0];
+      const searchRes = await fetch(`${base}/2.0/products?active=1&search=${encodeURIComponent(skuBase)}&page_size=50`, { headers });
       const searchData = await searchRes.json();
-      const products = (searchData.data || []).filter(p => {
+      const allProducts = searchData.data || [];
+      const products = allProducts.filter(p => {
         const s = ((p.custom_sku || "") + " " + (p.sku || "")).toLowerCase();
-        return s.includes(sku.toLowerCase());
+        return s.includes(sku.toLowerCase()) || s.includes(skuBase.toLowerCase());
       });
 
       if (products.length > 0) {
@@ -69,9 +71,9 @@ export default async function handler(req, res) {
             }
           }
         }
-        skuSales = { pid, product_name: products[0].name, sku: products[0].custom_sku || products[0].sku, matchingLines };
+        skuSales = { pid, product_name: products[0].name, sku: products[0].custom_sku || products[0].sku, matchingLines, allMatches: products.map(p => ({ id: p.id, name: p.name, custom_sku: p.custom_sku, sku: p.sku })) };
       } else {
-        skuSales = { error: "product not found", sku };
+        skuSales = { error: "product not found", sku, skuBase, rawCount: allProducts.length, rawSample: allProducts.slice(0, 3).map(p => ({ id: p.id, name: p.name, custom_sku: p.custom_sku, sku: p.sku })) };
       }
     } catch (e) {
       skuSales = { error: e.message };
