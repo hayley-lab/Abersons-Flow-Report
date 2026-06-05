@@ -1062,7 +1062,7 @@ export default function FlowReport() {
                             return (
                               <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
                                 <TD><span style={{ display: "flex", gap: 2, flexWrap: "wrap", maxWidth: 36 }}>{s.statusDots(p).map(function(c, di) { return <span key={di} style={{ width: 6, height: 14, borderRadius: 2, background: c, display: "inline-block", flexShrink: 0 }} />; })}</span></TD>
-                                <TD>{p.name}</TD>
+                                <TD><span title={p.name} style={{ display: "block", maxWidth: 260, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{p.name}</span></TD>
                                 <TD mono>{p.sku}</TD>
                                 <TD><span style={{ color: "#6b6560" }}>{p.variant}</span></TD>
                                 <TD right>{p.cost       > 0 ? fmt(p.cost)  : ""}</TD>
