@@ -34,6 +34,10 @@ async function loadOverride(season) {
   return { stores, vendors };
 }
 
+function decodeHtml(s) {
+  return (s || "").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#039;/gi, "'");
+}
+
 function normName(s) {
   return (s || "").replace(/&[a-z]+;/gi, "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -59,7 +63,7 @@ function mergeOverride(data, override) {
     const ls = lsDeptByName[normName(ov.name)];
     return {
       id:           ls ? ls.id : ov.id,
-      name:         ov.name,
+      name:         ls ? ls.name : decodeHtml(ov.name),
       ordered:      ov.ordered  || 0,
       orderedCost:  ls ? (ls.orderedCost  || 0) : 0,
       received:     ov.received || (ls ? (ls.received || 0) : 0),
@@ -94,7 +98,7 @@ function mergeOverride(data, override) {
       const ls = lsVendors[normName(ov.vendorName)];
       return {
         id:               ls ? ls.id : ov.vendorId,
-        name:             ov.vendorName,
+        name:             ls ? ls.name : decodeHtml(ov.vendorName),
         ordered:          ov.ordered  || 0,
         orderedCost:      ls ? (ls.orderedCost  || 0) : 0,
         received:         ov.received || (ls ? (ls.received || 0) : 0),
