@@ -980,10 +980,10 @@ export default function FlowReport() {
               {[
                 { label: "Ordered (retail)",  value: fmt(currentVendor ? currentVendor.ordered      : 0) },
                 { label: "Ordered (cost)",    value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
-                { label: "Received (retail)", value: fmt(currentVendor ? currentVendor.received    : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : null },
+                { label: "Received (retail)", value: fmt(currentVendor ? currentVendor.received    : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "—" },
                 { label: "Received (cost)",   value: fmt(currentVendor ? currentVendor.cost        : 0) },
                 { label: "Returned (retail)", value: fmt(currentVendor ? (currentVendor.returned || 0) : 0) },
-                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: currentVendor && currentVendor.received > 0 ? ((currentVendor.sold / currentVendor.received) * 100).toFixed(1) + "% of received" : null },
+                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: currentVendor && currentVendor.received > 0 ? ((currentVendor.sold / currentVendor.received) * 100).toFixed(1) + "% of received" : "—" },
                 { label: "SKUs",              value: productRows.length },
               ].map(function(kv) {
                 return (
