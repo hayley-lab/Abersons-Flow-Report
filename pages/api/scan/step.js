@@ -456,14 +456,17 @@ export default async function handler(req, res) {
             // Per-product stats (units)
             if (!state.productStats[pid]) state.productStats[pid] = { sold: 0, onSale: 0, returned: 0 };
             if (qty < 0) {
-              // Customer return — net out of sold; clamp to 0
-              state.productStats[pid].sold = Math.max(0, (state.productStats[pid].sold || 0) + qty);
+              // Customer return — net out of sold (clamp to 0) and track returned units
+              state.productStats[pid].sold     = Math.max(0, (state.productStats[pid].sold || 0) + qty);
+              state.productStats[pid].returned = (state.productStats[pid].returned || 0) + Math.abs(qty);
             } else {
               state.productStats[pid].sold += qty;
               const unitPrice   = qty > 0 ? amount / qty : 0;
               const retailPrice = state.pidToPrice ? (state.pidToPrice[pid] || 0) : 0;
-              const discounted  = parseFloat(li.discount || li.line_discount || li.discount_total || 0) > 0;
-              if (discounted || (retailPrice > 0 && (unitPrice === 0 || unitPrice < retailPrice * 0.99))) {
+              // Detect discount: explicit discount field OR total_price is $0 (100% off)
+              const discounted  = parseFloat(li.discount || li.line_discount || li.discount_total || 0) > 0
+                || amount === 0;
+              if (discounted || (retailPrice > 0 && unitPrice < retailPrice * 0.99)) {
                 state.productStats[pid].onSale += qty;
               }
             }
