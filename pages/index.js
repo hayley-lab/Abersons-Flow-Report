@@ -681,7 +681,7 @@ export default function FlowReport() {
         cancel
       </button>
     </div>
-  ) : (scanError && !hasOverride) ? (
+  ) : (scanError) ? (
     <div style={{ background: "#fdeaea", border: "1px solid #f0b8b8", borderRadius: 8, padding: "10px 16px", marginBottom: "1rem", fontSize: 13, color: "#8b2020" }}>
       Scan failed: {scanError}
     </div>
