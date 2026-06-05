@@ -990,6 +990,7 @@ export default function FlowReport() {
                   <div key={kv.label} style={{ background: "#fff", border: "1px solid #e2ddd5", borderRadius: 6, padding: "7px 13px" }}>
                     <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "#9e9892", marginBottom: 2 }}>{kv.label}</div>
                     <div style={{ fontWeight: 600, color: "#1a1816" }}>{kv.value}</div>
+                    {kv.sub && <div style={{ fontSize: 11, color: "#6b6560", marginTop: 2 }}>{kv.sub}</div>}
                   </div>
                 );
               })}

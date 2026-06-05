@@ -117,9 +117,18 @@ function mergeOverride(data, override) {
     });
   });
 
-  // Preserve any LS depts not in override
+  // Preserve any LS depts not in override (vendors and summaryRows)
+  const lsDeptRowById = {};
+  (data.summaryRows || []).forEach(r => { lsDeptRowById[r.id] = r; });
   Object.entries(data.deptVendors || {}).forEach(([deptId, vendors]) => {
-    if (!deptVendors[deptId]) deptVendors[deptId] = vendors;
+    if (!deptVendors[deptId]) {
+      deptVendors[deptId] = vendors;
+      // Also add to summaryRows if not already there
+      if (!summaryRows.find(r => String(r.id) === String(deptId))) {
+        const ls = lsDeptRowById[deptId];
+        if (ls) summaryRows.push(ls);
+      }
+    }
   });
 
   // Rebuild summaryRows by summing deptVendors so dept totals always match vendor drilldown
