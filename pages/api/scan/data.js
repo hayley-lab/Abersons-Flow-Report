@@ -64,9 +64,9 @@ function mergeOverride(data, override) {
     return {
       id:           ls ? ls.id : ov.id,
       name:         ls ? ls.name : decodeHtml(ov.name),
-      ordered:      ov.ordered  || 0,
+      ordered:      (ov.ordered  || 0) + (ls ? (ls.ordered  || 0) : 0),
       orderedCost:  ls ? (ls.orderedCost  || 0) : 0,
-      received:     ov.received || (ls ? (ls.received || 0) : 0),
+      received:     (ov.received || 0) + (ls ? (ls.received || 0) : 0),
       cost:         ls ? (ls.cost         || 0) : 0,
       returned:     ls ? (ls.returned     || 0) : 0,
       returnedCost: ls ? (ls.returnedCost || 0) : 0,
@@ -99,9 +99,9 @@ function mergeOverride(data, override) {
       return {
         id:               ls ? ls.id : ov.vendorId,
         name:             ls ? ls.name : decodeHtml(ov.vendorName),
-        ordered:          ov.ordered  || 0,
+        ordered:          (ov.ordered  || 0) + (ls ? (ls.ordered  || 0) : 0),
         orderedCost:      ls ? (ls.orderedCost  || 0) : 0,
-        received:         ov.received || (ls ? (ls.received || 0) : 0),
+        received:         (ov.received || 0) + (ls ? (ls.received || 0) : 0),
         cost:             ls ? (ls.cost         || 0) : 0,
         returned:         ls ? (ls.returned     || 0) : 0,
         returnedCost:     ls ? (ls.returnedCost || 0) : 0,
