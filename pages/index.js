@@ -145,13 +145,7 @@ export default function FlowReport() {
   const [loginLoading, setLoginLoading] = useState(false);
 
   const [screen, setScreen]       = useState("summary");
-  const [season, setSeason]       = useState(function() {
-    try {
-      const saved = typeof window !== "undefined" && localStorage.getItem("flow_season");
-      if (saved && SEASONS.some(function(s) { return s.id === saved; })) return saved;
-    } catch (e) {}
-    return SEASONS[0].id;
-  });
+  const [season, setSeason]       = useState(SEASONS[0].id);
 
   // Persist season selection to localStorage
   const setSeasonAndSave = useCallback(function(id) {
@@ -185,7 +179,13 @@ export default function FlowReport() {
   const [vendorSort,  setVendorSort]    = useState({ col: "name", dir: 1 });
   const [summarySort, setSummarySort]  = useState({ col: "name", dir: 1 });
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    setMounted(true);
+    try {
+      const saved = localStorage.getItem("flow_season");
+      if (saved && SEASONS.some(s => s.id === saved)) setSeason(saved);
+    } catch (e) {}
+  }, []);
 
   // ── auth check ─────────────────────────────────────────────────────────────
 
