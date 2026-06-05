@@ -1,5 +1,6 @@
 // Debug: read raw scan data from KV for a season and show specific vendor/product stats
 import { kv } from "@vercel/kv";
+import { getLsToken, lsBase } from "../../lib/ls-auth";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../lib/session";
 
@@ -27,22 +28,60 @@ export default async function handler(req, res) {
     });
   }
 
-  // Find product stats by SKU
-  const skuMatches = [];
-  if (sku && big && big.pidToSupplier) {
-    const skuToPid = big.skuToPid || {};
-    Object.entries(skuToPid).forEach(([skuKey, pid]) => {
-      if (skuKey.includes(sku.toLowerCase())) {
-        const stats = (big.productStats || {})[pid] || {};
-        skuMatches.push({ sku: skuKey, pid, sold: stats.sold, onSale: stats.onSale, returned: stats.returned });
+  // If SKU given, find product in LS and fetch its recent sale line items
+  let skuSales = null;
+  if (sku) {
+    try {
+      const token   = await getLsToken();
+      const base    = lsBase();
+      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+
+      // Search for the product by SKU
+      const searchRes = await fetch(`${base}/2.0/products?active=1&search=${encodeURIComponent(sku)}&page_size=5`, { headers });
+      const searchData = await searchRes.json();
+      const products = (searchData.data || []).filter(p => {
+        const s = ((p.custom_sku || "") + " " + (p.sku || "")).toLowerCase();
+        return s.includes(sku.toLowerCase());
+      });
+
+      if (products.length > 0) {
+        const pid = products[0].id;
+        // Fetch recent sales containing this product
+        const salesRes = await fetch(`${base}/2.0/sales?page_size=200&date_from=2025-11-01`, { headers });
+        const salesData = await salesRes.json();
+        const matchingLines = [];
+        for (const sale of (salesData.data || [])) {
+          for (const li of (sale.line_items || [])) {
+            if (li.product_id === pid) {
+              matchingLines.push({
+                sale_id: sale.id,
+                sale_status: sale.status,
+                sale_date: sale.completed_at || sale.created_at,
+                qty: li.quantity,
+                price: li.price,
+                unit_price: li.unit_price,
+                total_price: li.total_price,
+                discount: li.discount,
+                discount_total: li.discount_total,
+                is_return: li.is_return,
+                status: li.status,
+              });
+            }
+          }
+        }
+        skuSales = { pid, product_name: products[0].name, sku: products[0].custom_sku || products[0].sku, matchingLines };
+      } else {
+        skuSales = { error: "product not found", sku };
       }
-    });
+    } catch (e) {
+      skuSales = { error: e.message };
+    }
   }
 
   return res.json({
     season,
     scanTs: data ? new Date(data.ts).toISOString() : null,
     vendorMatches,
-    skuMatches,
+    skuSales,
   });
 }
