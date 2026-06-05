@@ -579,11 +579,11 @@ export default function FlowReport() {
       var price = p.price || 0;
       var soldFull = Math.max(0, (p.sold || 0) - (p.onSale || 0));
       var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.returned || 0));
-      if (soldFull   > 0) { b.sold.n++;     b.sold.v     += price; }
-      if (p.onSale   > 0) { b.sale.n++;     b.sale.v     += price; }
-      if (p.onHand   > 0) { b.stock.n++;    b.stock.v    += price; }
-      if (p.returned > 0) { b.returned.n++; b.returned.v += price; }
-      if (notReceived> 0) { b.ordered.n++;  b.ordered.v  += price; }
+      if (soldFull   > 0) { b.sold.n++;     b.sold.v     += price * soldFull; }
+      if (p.onSale   > 0) { b.sale.n++;     b.sale.v     += price * p.onSale; }
+      if (p.onHand   > 0) { b.stock.n++;    b.stock.v    += price * p.onHand; }
+      if (p.returned > 0) { b.returned.n++; b.returned.v += price * p.returned; }
+      if (notReceived> 0) { b.ordered.n++;  b.ordered.v  += price * notReceived; }
     });
     return b;
   })();
