@@ -448,7 +448,7 @@ export default async function handler(req, res) {
             if (!seasonPidSet.has(pid)) continue;
 
             const qty    = parseInt(li.quantity || 1);
-            const amount = parseFloat(li.total_price || li.price || 0);
+            const amount = li.total_price != null ? parseFloat(li.total_price) : parseFloat(li.price || 0);
 
             // Per-product stats (units)
             if (!state.productStats[pid]) state.productStats[pid] = { sold: 0, onSale: 0, returned: 0 };
@@ -456,10 +456,10 @@ export default async function handler(req, res) {
               state.productStats[pid].returned += qty;
             } else {
               state.productStats[pid].sold += qty;
-              const unitPrice   = parseFloat(li.price || 0) || (qty > 0 ? amount / qty : 0);
+              const unitPrice   = qty > 0 ? amount / qty : 0;
               const retailPrice = state.pidToPrice ? (state.pidToPrice[pid] || 0) : 0;
               const discounted  = parseFloat(li.discount || li.line_discount || 0) > 0;
-              if (discounted || (retailPrice > 0 && unitPrice > 0 && unitPrice < retailPrice * 0.99)) {
+              if (discounted || (retailPrice > 0 && (unitPrice === 0 || unitPrice < retailPrice * 0.99))) {
                 state.productStats[pid].onSale += qty;
               }
             }
