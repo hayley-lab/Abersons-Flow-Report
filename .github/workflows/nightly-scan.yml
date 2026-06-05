@@ -1,0 +1,26 @@
+name: Nightly Scan
+
+on:
+  schedule:
+    # 6am UTC = ~1am Central, runs nightly
+    - cron: "0 6 * * *"
+  workflow_dispatch: # allow manual trigger from GitHub Actions tab
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Drive scans to completion
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          echo "Starting nightly scan loop..."
+          for i in $(seq 1 200); do
+            echo "--- Call $i ---"
+            curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Content-Type: application/json" | jq .
+            sleep 12
+          done
+          echo "Scan loop complete."
