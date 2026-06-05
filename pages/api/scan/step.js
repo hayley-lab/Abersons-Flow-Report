@@ -162,10 +162,12 @@ export default async function handler(req, res) {
     // ── INIT: departments + PO headers ──────────────────────────────────────
     if (state.phase === "init") {
       state.progress = "Loading departments & purchase orders…";
+      const dateFrom   = seasonSalesDateFrom(season);
+      const dateParam  = dateFrom ? `&date_from=${dateFrom}` : "";
       const [cats, consignments, returnConsignments] = await Promise.all([
         lsFetchAll("2.0/product_types"),
-        lsFetchAll("2.0/consignments?type=SUPPLIER"),
-        lsFetchAll("2.0/consignments?type=SUPPLIER_RETURN"),
+        lsFetchAll(`2.0/consignments?type=SUPPLIER${dateParam}`),
+        lsFetchAll(`2.0/consignments?type=SUPPLIER_RETURN${dateParam}`),
       ]);
       const skuCodes = seasonSkuCodes(season);
       const skuBase  = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
