@@ -37,11 +37,17 @@ function seasonSkuCodes(seasonId) {
   return [];
 }
 
-// Hardcoded lower-bound product-version cursors so sales scan skips history
-// predating the season. Same logic as the browser scan.
-const SEASON_START_CURSORS = {
-  pf26: 50022000000,
-};
+// Returns an ISO date string 9 months before the season's nominal start,
+// used as date_from on the sales query so we don't scan 20 years of history.
+function seasonSalesDateFrom(seasonId) {
+  const m = seasonId.match(/^(prefall|fall|prespring|spring)(\d{2})$/);
+  if (!m) return null;
+  const year = 2000 + parseInt(m[2]);
+  // Fall/Pre-Fall start ~Aug; Spring/Pre-Spring start ~Feb — subtract 9 months for buffer
+  const startMonth = (m[1] === "fall" || m[1] === "prefall") ? 8 : 2;
+  const fromDate = new Date(year, startMonth - 1 - 9, 1); // 9 months before season opens
+  return fromDate.toISOString().slice(0, 10);
+}
 
 function getCursor(data, items) {
   const vfr = (data.version && typeof data.version === "object") ? data.version.max : null;
@@ -424,9 +430,11 @@ export default async function handler(req, res) {
     // ── SALES: aggregate sold $ (vendor) and sold units (product) ───────────
     if (state.phase === "sales" && Date.now() < deadline) {
       const seasonPidSet = new Set(state.seasonPids);
+      if (!state.salesDateFrom) state.salesDateFrom = seasonSalesDateFrom(season) || "";
 
       while (Date.now() < deadline) {
-        const path      = "2.0/sales?page_size=500" + (state.saleCursor ? "&after=" + state.saleCursor : "");
+        const dateParam = state.salesDateFrom ? "&date_from=" + state.salesDateFrom : "";
+        const path      = "2.0/sales?page_size=500" + dateParam + (state.saleCursor ? "&after=" + state.saleCursor : "");
         const data      = await lsFetch(path);
         const saleItems = data.data || [];
         state.salesPages++;
