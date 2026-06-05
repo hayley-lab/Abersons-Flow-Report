@@ -903,10 +903,10 @@ export default function FlowReport() {
                 <KpiRow items={[
                   { label: "Ordered (retail)",   value: fmt(vTotalOrdered) },
                   { label: "Ordered (cost)",     value: fmt(vTotalOrderedCost) },
-                  { label: "Received (retail)",  value: fmt(vTotalReceived),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "% of ordered" : "—" },
+                  { label: "Received (retail)",  value: fmt(vTotalReceived),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
                   { label: "Received (cost)",    value: fmt(vTotalReceivedCost) },
                   { label: "Returned (retail)",  value: fmt(vTotalReturned) },
-                  { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "% of received" : "—" },
+                  { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                   { label: "Vendors",            value: vendorRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={(currentDept ? currentDept.name : "") + " — by Vendor"}>
@@ -980,10 +980,10 @@ export default function FlowReport() {
               {[
                 { label: "Ordered (retail)",  value: fmt(currentVendor ? currentVendor.ordered      : 0) },
                 { label: "Ordered (cost)",    value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
-                { label: "Received (retail)", value: fmt(currentVendor ? currentVendor.received    : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "—" },
+                { label: "Received (retail)", value: fmt(currentVendor ? currentVendor.received    : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
                 { label: "Received (cost)",   value: fmt(currentVendor ? currentVendor.cost        : 0) },
                 { label: "Returned (retail)", value: fmt(currentVendor ? (currentVendor.returned || 0) : 0) },
-                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: currentVendor && currentVendor.received > 0 ? ((currentVendor.sold / currentVendor.received) * 100).toFixed(1) + "% of received" : "—" },
+                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: currentVendor && currentVendor.received > 0 ? ((currentVendor.sold / currentVendor.received) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                 { label: "SKUs",              value: productRows.length },
               ].map(function(kv) {
                 return (
