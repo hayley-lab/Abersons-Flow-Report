@@ -70,7 +70,7 @@ function mergeOverride(data, override) {
       cost:         ls ? (ls.cost         || 0) : 0,
       returned:     ls ? (ls.returned     || 0) : 0,
       returnedCost: ls ? (ls.returnedCost || 0) : 0,
-      sold:         ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
+      sold:         ls ? (ls.sold || 0) : (ov.sold || 0),
     };
   });
 
@@ -105,7 +105,7 @@ function mergeOverride(data, override) {
         cost:             ls ? (ls.cost         || 0) : 0,
         returned:         ls ? (ls.returned     || 0) : 0,
         returnedCost:     ls ? (ls.returnedCost || 0) : 0,
-        sold:             ls ? (ls.sold || ov.sold || 0) : (ov.sold || 0),
+        sold:             ls ? (ls.sold || 0) : (ov.sold || 0),
         overrideProducts: ov.products || [],
       };
     });
