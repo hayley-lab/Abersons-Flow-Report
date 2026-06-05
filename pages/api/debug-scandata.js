@@ -36,11 +36,19 @@ export default async function handler(req, res) {
       const base    = lsBase();
       const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-      // Search for the product by SKU - try both the full SKU and the part before "/"
+      // Search for the product by SKU - try multiple strategies
       const skuBase = sku.split("/")[0];
-      const searchRes = await fetch(`${base}/2.0/products?active=1&search=${encodeURIComponent(skuBase)}&page_size=50`, { headers });
-      const searchData = await searchRes.json();
-      const allProducts = searchData.data || [];
+      // Try 1: search without active filter (product may be marked inactive/sold out)
+      const [r1, r2] = await Promise.all([
+        fetch(`${base}/2.0/products?search=${encodeURIComponent(skuBase)}&page_size=50`, { headers }),
+        fetch(`${base}/2.0/products?custom_sku=${encodeURIComponent(sku)}&page_size=10`, { headers }),
+      ]);
+      const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+      const combined = [...(d1.data || []), ...(d2.data || [])];
+      // Dedupe by id
+      const seen = new Set();
+      const allProducts = combined.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; });
+
       const products = allProducts.filter(p => {
         const s = ((p.custom_sku || "") + " " + (p.sku || "")).toLowerCase();
         return s.includes(sku.toLowerCase()) || s.includes(skuBase.toLowerCase());
@@ -71,9 +79,9 @@ export default async function handler(req, res) {
             }
           }
         }
-        skuSales = { pid, product_name: products[0].name, sku: products[0].custom_sku || products[0].sku, matchingLines, allMatches: products.map(p => ({ id: p.id, name: p.name, custom_sku: p.custom_sku, sku: p.sku })) };
+        skuSales = { pid, product_name: products[0].name, sku: products[0].custom_sku || products[0].sku, matchingLines, allMatches: products.map(p => ({ id: p.id, name: p.name, custom_sku: p.custom_sku, sku: p.sku, active: p.active })) };
       } else {
-        skuSales = { error: "product not found", sku, skuBase, rawCount: allProducts.length, rawSample: allProducts.slice(0, 3).map(p => ({ id: p.id, name: p.name, custom_sku: p.custom_sku, sku: p.sku })) };
+        skuSales = { error: "product not found", sku, skuBase, totalFound: allProducts.length, rawSample: allProducts.slice(0, 5).map(p => ({ id: p.id, name: p.name, custom_sku: p.custom_sku, sku: p.sku, active: p.active })) };
       }
     } catch (e) {
       skuSales = { error: e.message };
