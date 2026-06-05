@@ -18,6 +18,10 @@ import { sessionOptions } from "../../../lib/session";
 
 const CHUNK_MS = 6000;
 
+const SEASON_START_CURSORS = {
+  pf26: 50022000000,
+};
+
 function seasonSkuCodes(seasonId) {
   const m = seasonId.match(/^(prefall|fall|spring|prespring)(\d+)$/);
   if (!m) return [];
