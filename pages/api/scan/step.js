@@ -449,28 +449,29 @@ export default async function handler(req, res) {
 
             const qty    = parseInt(li.quantity || 1);
             const amount = li.total_price != null ? parseFloat(li.total_price) : parseFloat(li.price || 0);
+            // LS uses negative qty and negative total_price for returns — signs are already correct
 
             // Per-product stats (units)
             if (!state.productStats[pid]) state.productStats[pid] = { sold: 0, onSale: 0, returned: 0 };
-            if (li.is_return) {
-              // Customer return — net out of sold (black dot is for supplier returns only)
-              state.productStats[pid].sold = Math.max(0, (state.productStats[pid].sold || 0) - qty);
+            if (qty < 0) {
+              // Customer return — net out of sold; clamp to 0
+              state.productStats[pid].sold = Math.max(0, (state.productStats[pid].sold || 0) + qty);
             } else {
               state.productStats[pid].sold += qty;
               const unitPrice   = qty > 0 ? amount / qty : 0;
               const retailPrice = state.pidToPrice ? (state.pidToPrice[pid] || 0) : 0;
-              const discounted  = parseFloat(li.discount || li.line_discount || 0) > 0;
+              const discounted  = parseFloat(li.discount || li.line_discount || li.discount_total || 0) > 0;
               if (discounted || (retailPrice > 0 && (unitPrice === 0 || unitPrice < retailPrice * 0.99))) {
                 state.productStats[pid].onSale += qty;
               }
             }
 
-            // Per-vendor sold $ (for vendor drilldown table)
+            // Per-vendor sold $ — amount already negative for returns, just add
             const cid = state.pidToType[pid] || "__none__";
             const sup = state.pidToSupplier[pid];
             if (sup && sup.i !== "__none__" && state.deptVendorData[cid] && state.deptVendorData[cid][sup.i]) {
               const v = state.deptVendorData[cid][sup.i];
-              if (li.is_return) { v.sold -= amount; } else { v.sold += amount; }
+              v.sold += amount;
             }
           }
         }
