@@ -138,6 +138,7 @@ async function withConcurrency(tasks, limit) {
 // ── main component ────────────────────────────────────────────────────────────
 
 export default function FlowReport() {
+  const [mounted, setMounted]     = useState(false);
   const [authed, setAuthed]       = useState(null);
   const [password, setPassword]   = useState("");
   const [loginError, setLoginError] = useState(null);
@@ -183,6 +184,8 @@ export default function FlowReport() {
   const [productSort, setProductSort]   = useState({ col: "name", dir: 1 });
   const [vendorSort,  setVendorSort]    = useState({ col: "name", dir: 1 });
   const [summarySort, setSummarySort]  = useState({ col: "name", dir: 1 });
+
+  useEffect(() => { setMounted(true); }, []);
 
   // ── auth check ─────────────────────────────────────────────────────────────
 
@@ -737,7 +740,7 @@ export default function FlowReport() {
                 <TableWrap title={"Store Summary — " + seasonLabel}
                   right={
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {dataTs && !scanning && (
+                      {dataTs && !scanning && mounted && (
                         <span style={{ fontSize: 11, color: "#9e9892" }}>
                           updated {new Date(dataTs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
                         </span>
