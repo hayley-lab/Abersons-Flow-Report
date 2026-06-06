@@ -256,6 +256,26 @@ export default function FlowReport() {
   // Reload after a completed scan
   const reloadAfterScan = useCallback(() => loadData(season), [loadData, season]);
 
+  // ── auto-poll: silently refresh data when a newer scan is available ─────────
+  useEffect(() => {
+    if (!authed) return;
+    const POLL_MS = 90_000;
+    const id = setInterval(async () => {
+      if (scanning) return; // don't poll while user-driven scan is in progress
+      try {
+        const r = await fetch(`/api/scan/data?season=${encodeURIComponent(season)}`);
+        if (!r.ok) return;
+        const { data } = await r.json();
+        if (data && data.ts && data.ts !== dataTs) {
+          setScanData(data);
+          setSummaryRows(data.summaryRows || []);
+          setDataTs(data.ts);
+        }
+      } catch (_) {}
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [authed, season, scanning, dataTs]);
+
   // ── server-side refresh scan ───────────────────────────────────────────────
 
   const runScan = useCallback(async (restart) => {
