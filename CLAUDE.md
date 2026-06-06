@@ -52,6 +52,19 @@ KV keys:
 - `scan:job:big:{season}` — large data blobs (pidMaps, productStats), 6h TTL
 - `scan:data:{season}` — final report, 48h TTL
 
+### SKU Structure
+Every product SKU follows this format: `{item_number}/{season_code}`
+
+Examples: `1234/s26`, `5678/f26`, `9999/rs26`
+
+Season codes:
+- `/s26` — Spring 2026
+- `/f26` — Fall 2026
+- `/rs26` or `/ps26` — Pre-Spring (2027+)
+- `/pf26` — Pre-Fall (2027+)
+
+The slash comes AFTER the item number and BEFORE the season code. The season code is always at the end.
+
 ### Product Identification — CRITICAL
 Products in LS are identified by season using their SKU format: `{item_number}/{season_code}` e.g. `1234/s26`
 
@@ -60,6 +73,13 @@ Season codes: `/s26` (spring26), `/f26` (fall26), `/rs26` or `/ps26` (prespring)
 The `seasonSkuCodes()` function generates these. The products_slow scan checks both `sku` and `custom_sku` fields for the season code. **AS OF THE LAST SESSION, products_slow was finding 0 products for ALL seasons including active ones.** A debug log was added to the first page of products_slow to show what fields the LS API actually returns — this needs to be checked in Vercel logs after a sync runs.
 
 **DO NOT change the product-matching strategy without first checking those logs.** The SKU format `1234/s26` SHOULD match the check for `/s26` — the issue is likely that `sku`/`custom_sku` fields aren't returned by the list API, or are named differently.
+
+### Data Flow — Bottom Up (CRITICAL)
+All totals are calculated at the individual product/SKU level first, then flowed up through each report level. Never calculate totals top-down.
+
+Flow: **individual product SKU → vendor total → department total → season summary**
+
+Each level's numbers are the sum of the level below it. If a number looks wrong at the vendor or department level, the root cause is always at the product level. Fix it there and it propagates up automatically.
 
 ### productStats — single source of truth
 `productStats[pid] = { ordered, orderedCost, received, receivedCost, retVal, retCost, soldAmt, saleAmt, sold, onSale, returned }`
