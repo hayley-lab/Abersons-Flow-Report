@@ -595,8 +595,8 @@ export default async function handler(req, res) {
       if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;
     }
     await Promise.all([
-      kv.set(jobKey, small, { ex: 3600 }),
-      kv.set(bigKey, big,   { ex: 3600 }),
+      kv.set(jobKey, small, { ex: 6 * 3600 }),
+      kv.set(bigKey, big,   { ex: 6 * 3600 }),
     ]);
     return res.json({ phase: state.phase, progress: state.progress || "…" });
 

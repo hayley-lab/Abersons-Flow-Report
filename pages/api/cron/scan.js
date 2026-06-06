@@ -69,6 +69,10 @@ export default async function handler(req, res) {
         return { season, action: "skipped", msSinceScan };
       }
       restart = "1";
+    } else if (force) {
+      // force=1 from UI: restart ALL seasons including in-progress ones so we
+      // never resume from expired or partial KV state.
+      restart = "1";
     }
 
     try {
