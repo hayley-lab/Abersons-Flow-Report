@@ -54,9 +54,10 @@ export default async function handler(req, res) {
     ]))
   );
 
-  // Fire all season steps in parallel so the cron function finishes in ~60s
-  // instead of seasons.length × 60s which would timeout
-  const results = await Promise.all(seasons.map(async (season, i) => {
+  // Process seasons with limited concurrency to avoid LS API rate limits.
+  // 3 at a time balances speed vs. not hammering the LS API with 8+ parallel requests.
+  const CONCURRENCY = 3;
+  const tasks = seasons.map((season, i) => async () => {
     const [job, data] = kvResults[i];
     const phase = job ? job.phase : null;
     const lastTs = data ? data.ts : null;
@@ -80,7 +81,13 @@ export default async function handler(req, res) {
     } catch (e) {
       return { season, action: "error", error: e.message };
     }
-  }));
+  });
+
+  const results = [];
+  for (let i = 0; i < tasks.length; i += CONCURRENCY) {
+    const batch = await Promise.all(tasks.slice(i, i + CONCURRENCY).map(t => t()));
+    results.push(...batch);
+  }
 
   return res.json({ ok: true, results });
 }

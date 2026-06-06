@@ -137,13 +137,22 @@ export default async function handler(req, res) {
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
   const deadline = Date.now() + CHUNK_MS;
 
-  async function lsFetch(path) {
-    const r = await fetch(`${base}/${path}`, { headers });
-    if (!r.ok) {
-      const txt = await r.text().catch(() => "");
-      throw new Error(`LS ${r.status} /${path.split("?")[0]}: ${txt.slice(0, 120)}`);
+  async function lsFetch(path, retries = 4) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const r = await fetch(`${base}/${path}`, { headers });
+      if (r.status === 429 || r.status === 503) {
+        if (attempt < retries) {
+          const wait = Math.min(2000 * Math.pow(2, attempt), 16000);
+          await new Promise(resolve => setTimeout(resolve, wait));
+          continue;
+        }
+      }
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        throw new Error(`LS ${r.status} /${path.split("?")[0]}: ${txt.slice(0, 120)}`);
+      }
+      return r.json();
     }
-    return r.json();
   }
 
   async function lsFetchAll(path) {
@@ -573,6 +582,7 @@ export default async function handler(req, res) {
     return res.json({ phase: state.phase, progress: state.progress || "…" });
 
   } catch (e) {
+    console.error(`[step] ${season} error:`, e.message);
     const errState = { phase: "error", season, error: e.message };
     await kv.set(jobKey, errState, { ex: 300 }).catch(() => {});
     return res.status(500).json({ phase: "error", error: e.message });
