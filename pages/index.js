@@ -278,44 +278,52 @@ export default function FlowReport() {
 
   // ── server-side refresh scan ───────────────────────────────────────────────
 
-  const runScan = useCallback(async (restart) => {
+  const runScan = useCallback(async () => {
     setScanError(null);
     setScanning(true);
     setScanInterrupted(false);
-    setScanProgress("Starting scan…");
+    setScanProgress("Starting full sync for all seasons…");
     scanAbort.current = false;
 
     try {
-      let phase = "init";
-      while (phase !== "done" && phase !== "error" && !scanAbort.current) {
-        const url = `/api/scan/step?season=${encodeURIComponent(season)}` +
-                    (restart ? "&restart=1" : "");
-        restart = false; // only first call gets restart flag
-        const r = await fetch(url, { method: "POST" });
+      // Drive all seasons to completion by looping the cron endpoint (same as
+      // the nightly GitHub Actions workflow). Each call advances every active
+      // season by one chunk; we keep going until all report done/error.
+      let allDone = false;
+      let iterations = 0;
+      while (!allDone && !scanAbort.current && iterations < 300) {
+        const r = await fetch("/api/cron/scan?force=1", { method: "POST" });
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
           if (r.status === 401) { setAuthed(false); break; }
           throw new Error(d.error || "HTTP " + r.status);
         }
-        const state = await r.json();
-        phase = state.phase;
-        setScanProgress(state.progress || "…");
-        if (phase === "error") {
-          setScanError(state.error || "Scan failed");
-          break;
+        const { results } = await r.json();
+        iterations++;
+
+        // Build a progress summary from all seasons
+        const active = (results || []).filter(r => r.action !== "skipped");
+        const done   = (results || []).filter(r => r.phase === "done" || r.action === "skipped");
+        const errors = (results || []).filter(r => r.phase === "error");
+        if (errors.length) {
+          setScanError(errors.map(e => `${e.season}: ${e.phase}`).join(", "));
         }
-        if (phase === "done") {
+        if (active.length > 0) {
+          const progressParts = active.map(r => `${r.season}: ${r.progress || r.phase || "…"}`);
+          setScanProgress(progressParts.join(" · "));
+        }
+        allDone = active.length === 0 || done.length === results.length;
+        if (allDone) {
           await reloadAfterScan();
           break;
         }
-        // Small pause between chunks so we don't instantly re-hammer the server
-        await new Promise(res => setTimeout(res, 200));
+        await new Promise(res => setTimeout(res, 5000)); // 5s between chunks
       }
     } catch (e) {
       setScanError(e.message);
     }
     setScanning(false);
-  }, [season, reloadAfterScan]);
+  }, [reloadAfterScan]);
 
   const runDelta = useCallback(async () => {
     if (scanning) return;
@@ -787,7 +795,7 @@ export default function FlowReport() {
                       )}
                       {scanInterrupted && !scanning && (
                         <button
-                          onClick={() => runScan(false)}
+                          onClick={() => runScan()}
                           style={{ background: "none", border: "1px solid #f5c842", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#9a7d0a", cursor: "pointer" }}>
                           ↺ Resume interrupted scan
                         </button>
@@ -800,7 +808,7 @@ export default function FlowReport() {
                         </button>
                       )}
                       <button
-                        onClick={() => { if (!scanning) runScan(true); }}
+                        onClick={() => { if (!scanning) runScan(); }}
                         disabled={scanning}
                         style={{ background: "none", border: "1px solid #e2ddd5", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: scanning ? "#b0aba5" : "#6b6560", cursor: scanning ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5 }}>
                         {scanning ? "↺ Scanning…" : hasOverride ? "↺ Sync from LS" : "↺ Refresh"}

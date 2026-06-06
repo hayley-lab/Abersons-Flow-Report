@@ -4,6 +4,8 @@
 // When a scan completes, it won't restart until RESCAN_INTERVAL_MS has passed.
 import { kv } from "@vercel/kv";
 import { SEASONS } from "../../../lib/seasons";
+import { getIronSession } from "iron-session";
+import { sessionOptions } from "../../../lib/session";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 
@@ -21,10 +23,16 @@ function currentSeasons() {
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
 
-  // Vercel cron sends Authorization: Bearer <CRON_SECRET>
-  if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
-    return res.status(401).json({ error: "Unauthorized" });
+  // Accept cron secret OR logged-in session (so the UI can trigger all-seasons scan)
+  const cronAuth = process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
+  if (!cronAuth) {
+    const session = await getIronSession(req, res, sessionOptions);
+    if (!session.authed) return res.status(401).json({ error: "Unauthorized" });
   }
+
+  // When called from the UI with ?force=1, ignore the rescan interval so a
+  // manual full sync always starts fresh regardless of last scan time.
+  const force = req.query.force === "1";
 
   const base = `https://${process.env.VERCEL_URL}`;
   const headers = {
@@ -48,8 +56,8 @@ export default async function handler(req, res) {
 
       let restart = "0";
       if (!phase || phase === "done" || phase === "error") {
-        // Only restart if enough time has passed since last completed scan
-        if (msSinceScan < RESCAN_INTERVAL_MS) {
+        // force=1 (manual UI trigger) always restarts; otherwise respect interval
+        if (!force && msSinceScan < RESCAN_INTERVAL_MS) {
           results.push({ season, action: "skipped", msSinceScan });
           continue;
         }
