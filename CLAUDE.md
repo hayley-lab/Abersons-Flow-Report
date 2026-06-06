@@ -17,9 +17,13 @@ Old PO ordered/received data that never made it into LS was imported directly in
 
 ### 2. LS POs (consignments in LS API, type=SUPPLIER)
 Pull ordered and received quantities and dollars from LS purchase orders. These go into the Ordered and Received columns. Must not collide with the hard pull data.
-- Ordered/Received qty in designated columns
+- Ordered/Received qty in designated columns (qty, not dollars)
 - Retail $ summed into color key and pushed to header
 - Cost $ also shown in header
+- When a product is received, it adds to both the Received column AND the On Hand column
+
+**On Hand formula:** `received qty − vendor returns − sold qty − on sale qty + customer returns`
+(Customer returns add back to on hand because the item is back in stock. Vendor returns reduce on hand because the item left the store.)
 
 ### 3. Vendor Returns (consignments in LS API, type=SUPPLIER_RETURN)
 Vendor returns reduce received inventory and go into the Returned column.
@@ -35,9 +39,11 @@ Vendor returns reduce received inventory and go into the Returned column.
 - Sold and On Sale columns are mutually exclusive — an item is in one or the other, never both
 
 ## Sync Schedule
-- **Nightly full scan:** rescans ALL data (products, POs, returns, sales) — runs in the middle of the night via Vercel cron
-- **Delta sync throughout the day:** sales-only update, runs approximately every 10 minutes via Vercel cron (`/api/cron/delta`)
-- **Auto-poll:** the UI polls in the background and refreshes automatically when new sales data is available, so users don't need to manually refresh
+Three separate mechanisms keep data current:
+
+1. **Nightly full scan** — rescans EVERYTHING (products, POs, vendor returns, sales). Runs in the middle of the night via Vercel cron (`/api/cron/scan`).
+2. **Delta sync** — sales-only update, runs every ~10 minutes via Vercel cron (`/api/cron/delta`). Does NOT re-scan products, POs, or vendor returns — only sales.
+3. **Page auto-refresh** — the UI polls in the background and automatically refreshes the display when new delta sync data is available. Users never need to manually refresh the page to see new sales.
 
 ## Key Architecture
 
@@ -121,6 +127,7 @@ Active seasons for scanning: current year, next year, prior year.
 - Season navigation: changing seasons keeps the user on the same drilldown view (dept or vendor). Falls back to dept list if vendor doesn't exist in new season, falls back to summary if dept doesn't exist.
 - Color key uses actual `saleAmt` for on-sale items (not retail price × qty).
 - Sold column: full-price sales only. On Sale column: discounted sales only.
+- **On-sale visual highlighting** (DEFERRED): in the old RMH system, items on sale had different font color in the product list. We will replicate this in LS using pricebooks — come back to this once the pricebook workflow is settled in LS.
 
 ## What's Currently Broken / In Progress
 1. **products_slow finding 0 products** — debug log added to step.js, need to check Vercel runtime logs after a sync runs to see actual LS API field names on product objects. This is blocking everything — all scan data is empty until this is fixed.
