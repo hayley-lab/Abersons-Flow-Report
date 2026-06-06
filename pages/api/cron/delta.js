@@ -24,7 +24,9 @@ export default async function handler(req, res) {
     if (!session.authed) return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const base    = `https://${process.env.VERCEL_URL}`;
+  const base = process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : `https://${process.env.VERCEL_URL}`;
   const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.CRON_SECRET}` };
 
   const seasons = currentSeasons();

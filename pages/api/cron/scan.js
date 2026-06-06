@@ -34,7 +34,11 @@ export default async function handler(req, res) {
   // manual full sync always starts fresh regardless of last scan time.
   const force = req.query.force === "1";
 
-  const base = `https://${process.env.VERCEL_URL}`;
+  // VERCEL_URL is deployment-specific and can return 404/HTML for the production alias.
+  // VERCEL_PROJECT_PRODUCTION_URL is the stable production domain (no protocol prefix).
+  const base = process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : `https://${process.env.VERCEL_URL}`;
   const headers = {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${process.env.CRON_SECRET}`,
