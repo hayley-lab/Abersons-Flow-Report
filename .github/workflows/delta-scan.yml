@@ -1,0 +1,19 @@
+name: Delta Scan (Quick Refresh)
+on:
+  schedule:
+    # Every 2 hours, 12pm–10pm UTC (7am–5pm Central) on weekdays + Sat
+    - cron: "0 12,14,16,18,20,22 * * 1-6"
+  workflow_dispatch:
+
+jobs:
+  delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger delta scan
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/delta" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" | jq .

@@ -20,6 +20,12 @@
     },
     "pages/api/cron/scan.js": {
       "maxDuration": 60
+    },
+    "pages/api/scan/delta.js": {
+      "maxDuration": 60
+    },
+    "pages/api/cron/delta.js": {
+      "maxDuration": 60
     }
   }
 }

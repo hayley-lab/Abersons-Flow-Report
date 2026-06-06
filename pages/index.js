@@ -317,6 +317,22 @@ export default function FlowReport() {
     setScanning(false);
   }, [season, reloadAfterScan]);
 
+  const runDelta = useCallback(async () => {
+    if (scanning) return;
+    setScanError(null);
+    setScanning(true);
+    setScanProgress("Quick refresh — loading recent sales…");
+    try {
+      const r = await fetch(`/api/scan/delta?season=${encodeURIComponent(season)}`, { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+      await reloadAfterScan();
+    } catch (e) {
+      setScanError(e.message);
+    }
+    setScanning(false);
+  }, [season, scanning, reloadAfterScan]);
+
   // ── department drilldown ───────────────────────────────────────────────────
 
   const openDept = useCallback(function(dept) {
@@ -774,6 +790,13 @@ export default function FlowReport() {
                           onClick={() => runScan(false)}
                           style={{ background: "none", border: "1px solid #f5c842", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#9a7d0a", cursor: "pointer" }}>
                           ↺ Resume interrupted scan
+                        </button>
+                      )}
+                      {dataTs && !scanning && (
+                        <button
+                          onClick={runDelta}
+                          style={{ background: "none", border: "1px solid #b8d4b8", borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 500, color: "#3a7a3a", cursor: "pointer" }}>
+                          ⚡ Quick Refresh
                         </button>
                       )}
                       <button
