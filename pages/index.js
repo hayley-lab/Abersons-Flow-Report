@@ -253,6 +253,21 @@ export default function FlowReport() {
     if (authed === true) loadData(season);
   }, [authed, loadData, season]);
 
+  // When season data reloads, fall back if the current dept/vendor no longer exists
+  useEffect(() => {
+    if (screen === "dept" && summaryRows.length > 0 && currentDept) {
+      const deptExists = summaryRows.some(r => r.id === currentDept.id || r.name === currentDept.name);
+      if (!deptExists) setScreen("summary");
+    }
+  }, [summaryRows, screen, currentDept]);
+
+  useEffect(() => {
+    if (screen === "vendor" && vendorRows.length > 0 && currentVendor) {
+      const vendorExists = vendorRows.some(r => r.id === currentVendor.id || r.name === currentVendor.name);
+      if (!vendorExists) setScreen("dept");
+    }
+  }, [vendorRows, screen, currentVendor]);
+
   // Reload after a completed scan
   const reloadAfterScan = useCallback(() => loadData(season), [loadData, season]);
 
@@ -431,6 +446,7 @@ export default function FlowReport() {
             sold:       stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
             onSale:     stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
             returned:   stats.returned != null ? stats.returned : (p.qtyReturned || 0),
+            saleAmt:    stats.saleAmt  || 0,
           };
         }));
         setProductLoading(false);
@@ -475,6 +491,7 @@ export default function FlowReport() {
           sold:       stats.sold     || 0,
           onSale:     stats.onSale   || 0,
           returned:   stats.returned || 0,
+          saleAmt:    stats.saleAmt  || 0,
         };
       }));
     } catch (e) {
@@ -552,6 +569,7 @@ export default function FlowReport() {
             sold:     stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
             onSale:   stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
             returned: stats.returned != null ? stats.returned : (p.qtyReturned || 0),
+            saleAmt:  stats.saleAmt  || 0,
           };
         }));
         setProductLoading(false);
@@ -593,6 +611,7 @@ export default function FlowReport() {
           sold:       stats.sold     || 0,
           onSale:     stats.onSale   || 0,
           returned:   stats.returned || 0,
+          saleAmt:    stats.saleAmt  || 0,
         };
       }));
     } catch (e) {
@@ -634,10 +653,10 @@ export default function FlowReport() {
     const b = { ordered: {n:0,v:0}, stock: {n:0,v:0}, sold: {n:0,v:0}, sale: {n:0,v:0}, returned: {n:0,v:0} };
     productRows.forEach(function(p) {
       var price = p.price || 0;
-      var soldFull = Math.max(0, (p.sold || 0) - (p.onSale || 0));
-      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.returned || 0));
-      if (soldFull   > 0) { b.sold.n++;     b.sold.v     += price * soldFull; }
-      if (p.onSale   > 0) { b.sale.n++;     b.sale.v     += price * p.onSale; }
+      // sold and onSale are now mutually exclusive buckets (onSale items not in sold)
+      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.onSale || 0) - (p.returned || 0));
+      if (p.sold     > 0) { b.sold.n++;     b.sold.v     += price * p.sold; }
+      if (p.onSale   > 0) { b.sale.n++;     b.sale.v     += (p.saleAmt || price * p.onSale); }
       if (p.onHand   > 0) { b.stock.n++;    b.stock.v    += price * p.onHand; }
       if (p.returned > 0) { b.returned.n++; b.returned.v += price * p.returned; }
       if (notReceived> 0) { b.ordered.n++;  b.ordered.v  += price * notReceived; }
@@ -666,10 +685,9 @@ export default function FlowReport() {
     demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
     statusDots: function(p) {
       var C = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
-      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.returned || 0));
-      var soldFull = Math.max(0, (p.sold || 0) - (p.onSale || 0));
+      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.onSale || 0) - (p.returned || 0));
       var marks = [
-        { color: C.sold,     n: soldFull },
+        { color: C.sold,     n: p.sold || 0 },
         { color: C.sale,     n: p.onSale    || 0 },
         { color: C.stock,    n: p.onHand    || 0 },
         { color: C.returned, n: p.returned  || 0 },
@@ -757,12 +775,12 @@ export default function FlowReport() {
               var next = SEASONS[idx + 1];
               var btnStyle = function(enabled) { return { background: "none", border: "none", padding: "0 3px", fontSize: 20, lineHeight: 1, color: enabled ? "#3a5a8c" : "#ccc", cursor: enabled ? "pointer" : "default", fontFamily: "'DM Sans',sans-serif" }; };
               return (<>
-                <button style={btnStyle(!!next)} disabled={!next} onClick={function() { if (next) { setSeasonAndSave(next.id); setScreen("summary"); } }}>‹</button>
-                <select value={season} onChange={function(e) { setSeasonAndSave(e.target.value); setScreen("summary"); }}
+                <button style={btnStyle(!!next)} disabled={!next} onClick={function() { if (next) setSeasonAndSave(next.id); }}>‹</button>
+                <select value={season} onChange={function(e) { setSeasonAndSave(e.target.value); }}
                   style={{ background: "none", border: "none", fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 500, color: "#1a1816", cursor: "pointer", outline: "none" }}>
                   {SEASONS.map(function(s2) { return <option key={s2.id} value={s2.id}>{s2.name}</option>; })}
                 </select>
-                <button style={btnStyle(!!prev)} disabled={!prev} onClick={function() { if (prev) { setSeasonAndSave(prev.id); setScreen("summary"); } }}>›</button>
+                <button style={btnStyle(!!prev)} disabled={!prev} onClick={function() { if (prev) setSeasonAndSave(prev.id); }}>›</button>
               </>);
             })()}
           </div>

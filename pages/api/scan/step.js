@@ -469,23 +469,29 @@ export default async function handler(req, res) {
             const amount = li.total_price != null ? parseFloat(li.total_price) : parseFloat(li.price || 0);
             // LS uses negative qty and negative total_price for returns — signs are already correct
 
-            if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
+            if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, saleAmt: 0, sold: 0, onSale: 0, returned: 0 };
             const ps = state.productStats[pid];
             // soldAmt tracks net $ (negative for customer returns)
             ps.soldAmt = (ps.soldAmt || 0) + amount;
+            const unitPrice   = qty !== 0 ? Math.abs(amount / qty) : 0;
+            const retailPrice = state.pidToPrice ? (state.pidToPrice[pid] || 0) : 0;
+            const discounted  = parseFloat(li.discount || li.line_discount || li.discount_total || 0) > 0
+              || amount === 0
+              || (retailPrice > 0 && unitPrice < retailPrice * 0.99);
             if (qty < 0) {
-              // Customer return — net out of sold (clamp to 0) and track returned units
-              ps.sold     = Math.max(0, (ps.sold || 0) + qty);
+              // Customer return — remove from the correct bucket, track returned units
+              if (discounted) {
+                ps.onSale = Math.max(0, (ps.onSale || 0) + qty);
+              } else {
+                ps.sold = Math.max(0, (ps.sold || 0) + qty);
+              }
               ps.returned = (ps.returned || 0) + Math.abs(qty);
             } else {
-              ps.sold += qty;
-              const unitPrice   = qty > 0 ? amount / qty : 0;
-              const retailPrice = state.pidToPrice ? (state.pidToPrice[pid] || 0) : 0;
-              // Detect discount: explicit discount field OR total_price is $0 (100% off)
-              const discounted  = parseFloat(li.discount || li.line_discount || li.discount_total || 0) > 0
-                || amount === 0;
-              if (discounted || (retailPrice > 0 && unitPrice < retailPrice * 0.99)) {
-                ps.onSale += qty;
+              if (discounted) {
+                ps.onSale = (ps.onSale || 0) + qty;
+                ps.saleAmt = (ps.saleAmt || 0) + amount; // actual discounted sale dollars
+              } else {
+                ps.sold += qty;
               }
             }
           }
