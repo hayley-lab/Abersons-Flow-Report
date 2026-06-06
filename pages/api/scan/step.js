@@ -269,6 +269,15 @@ export default async function handler(req, res) {
     // ── PRODUCTS_SLOW: full catalog scan (fallback) ──────────────────────────
     if (state.phase === "products_slow" && Date.now() < deadline) {
       const skuCodes = seasonSkuCodes(season);
+
+      // If we've already scanned 10k+ products and found nothing, this season
+      // has no products yet — skip immediately rather than scanning 80k+ entries.
+      if (state.seasonPids.length === 0 && (state.slowScanned || 0) >= 10000) {
+        const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
+        await kv.set(dataKey, result, { ex: 48 * 3600 });
+        await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
+        return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No products found for season — skipped." });
+      }
       while (Date.now() < deadline) {
         const path  = "2.0/products?active=1&page_size=500" + (state.slowAfter ? "&after=" + state.slowAfter : "");
         const data  = await lsFetch(path);
