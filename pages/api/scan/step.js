@@ -194,8 +194,7 @@ export default async function handler(req, res) {
       state.skuToPid           = {};
       state.variantsSeenInScan   = false;
       state.variantNeedsFixup    = {};
-      state.deptVendorData       = {};  // { deptId: { vendorId: {id,name,ordered,received,returned,sold,...} } }
-      state.productStats         = {};  // { pid: {sold, onSale, returned} }
+      state.productStats         = {};  // single source of truth per product
       state.anchorVersion        = (skuBase && SEASON_START_CURSORS[skuBase] != null)
         ? SEASON_START_CURSORS[skuBase] : null;
 
@@ -362,24 +361,20 @@ export default async function handler(req, res) {
         for (const item of items) {
           if (!seasonPidSet.has(item.product_id)) continue;
           if ((item.count || 0) < 0) continue; // skip vendor returns / adjustments
-          const pid    = item.product_id;
-          const cid    = state.pidToType[pid]     || "__none__";
-          const sup    = state.pidToSupplier[pid];
+          const pid        = item.product_id;
+          const sup        = state.pidToSupplier[pid];
           if (!sup || sup.i === "__none__") continue;
-          const price  = state.pidToPrice[pid] || 0;
-
-          if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
-          if (!state.deptVendorData[cid][sup.i]) {
-            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
-          }
-          const v = state.deptVendorData[cid][sup.i];
+          const price      = state.pidToPrice[pid] || 0;
           const itemCost   = parseFloat(item.cost || 0);
           const qtyOrdered = Math.max(0, item.count    || 0);
           const qtyRecvd   = Math.max(0, item.received || 0);
-          v.ordered      += price    * qtyOrdered;
-          v.orderedCost  += itemCost * qtyOrdered;
-          v.received     += price    * qtyRecvd;
-          v.cost         += itemCost * qtyRecvd;
+
+          if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
+          const ps = state.productStats[pid];
+          ps.ordered     += price    * qtyOrdered;
+          ps.orderedCost += itemCost * qtyOrdered;
+          ps.received    += price    * qtyRecvd;
+          ps.receivedCost += itemCost * qtyRecvd;
           state.pidToQtyOrdered[pid] = (state.pidToQtyOrdered[pid] || 0) + qtyOrdered;
         }
 
@@ -411,21 +406,17 @@ export default async function handler(req, res) {
           const qty      = Math.max(0, item.count || 0);
           if (!qty) continue;
 
-          // Use product maps if the product is in this season's active scan;
-          // fall back to consignment-level supplier for inactive/returned products.
           const inSeason = seasonPidSet.has(pid);
-          const cid      = (inSeason && state.pidToType[pid])     || "__none__";
           const sup      = (inSeason && state.pidToSupplier[pid]) || { i: c.suppId, n: c.suppName };
           if (!sup || sup.i === "__none__") continue;
-          const price    = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || 0;
+          const price = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || 0;
 
-          if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
-          if (!state.deptVendorData[cid][sup.i]) {
-            state.deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
-          }
-          const v = state.deptVendorData[cid][sup.i];
-          v.returned     += price    * qty;
-          v.returnedCost += itemCost * qty;
+          if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
+          const ps = state.productStats[pid];
+          ps.retVal  += price    * qty;
+          ps.retCost += itemCost * qty;
+          // Store fallback supplier on out-of-season products so finalizing can roll them up
+          if (!inSeason) ps._sup = { i: sup.i, n: sup.n };
         }
 
         state.returnConsigIdx++;
@@ -465,30 +456,24 @@ export default async function handler(req, res) {
             const amount = li.total_price != null ? parseFloat(li.total_price) : parseFloat(li.price || 0);
             // LS uses negative qty and negative total_price for returns — signs are already correct
 
-            // Per-product stats (units)
-            if (!state.productStats[pid]) state.productStats[pid] = { sold: 0, onSale: 0, returned: 0 };
+            if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
+            const ps = state.productStats[pid];
+            // soldAmt tracks net $ (negative for customer returns)
+            ps.soldAmt = (ps.soldAmt || 0) + amount;
             if (qty < 0) {
               // Customer return — net out of sold (clamp to 0) and track returned units
-              state.productStats[pid].sold     = Math.max(0, (state.productStats[pid].sold || 0) + qty);
-              state.productStats[pid].returned = (state.productStats[pid].returned || 0) + Math.abs(qty);
+              ps.sold     = Math.max(0, (ps.sold || 0) + qty);
+              ps.returned = (ps.returned || 0) + Math.abs(qty);
             } else {
-              state.productStats[pid].sold += qty;
+              ps.sold += qty;
               const unitPrice   = qty > 0 ? amount / qty : 0;
               const retailPrice = state.pidToPrice ? (state.pidToPrice[pid] || 0) : 0;
               // Detect discount: explicit discount field OR total_price is $0 (100% off)
               const discounted  = parseFloat(li.discount || li.line_discount || li.discount_total || 0) > 0
                 || amount === 0;
               if (discounted || (retailPrice > 0 && unitPrice < retailPrice * 0.99)) {
-                state.productStats[pid].onSale += qty;
+                ps.onSale += qty;
               }
-            }
-
-            // Per-vendor sold $ — amount already negative for returns, just add
-            const cid = state.pidToType[pid] || "__none__";
-            const sup = state.pidToSupplier[pid];
-            if (sup && sup.i !== "__none__" && state.deptVendorData[cid] && state.deptVendorData[cid][sup.i]) {
-              const v = state.deptVendorData[cid][sup.i];
-              v.sold += amount;
             }
           }
         }
@@ -501,15 +486,36 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── FINALIZING: compute summary rows + write to KV ───────────────────────
+    // ── FINALIZING: roll productStats up to vendor → dept → summary ────────────
     if (state.phase === "finalizing") {
       delete state.pidToPrice;
+
+      // Roll up productStats → deptVendorData
+      const deptVendorData = {};
+      for (const [pid, ps] of Object.entries(state.productStats)) {
+        const cid = state.pidToType[pid]     || "__none__";
+        const sup = state.pidToSupplier[pid] || ps._sup;
+        if (!sup || sup.i === "__none__") continue;
+        if (!deptVendorData[cid]) deptVendorData[cid] = {};
+        if (!deptVendorData[cid][sup.i]) {
+          deptVendorData[cid][sup.i] = { id: sup.i, name: sup.n, ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
+        }
+        const v = deptVendorData[cid][sup.i];
+        v.ordered      += ps.ordered      || 0;
+        v.orderedCost  += ps.orderedCost  || 0;
+        v.received     += ps.received     || 0;
+        v.cost         += ps.receivedCost || 0;
+        v.returned     += ps.retVal       || 0;
+        v.returnedCost += ps.retCost      || 0;
+        v.sold         += ps.soldAmt      || 0;
+      }
+
       // Build summary (dept-level) from deptVendorData
       const catMap = {};
       for (const cat of state.cats) {
         catMap[cat.id] = { id: cat.id, name: cat.name, ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
       }
-      for (const [deptId, vendors] of Object.entries(state.deptVendorData)) {
+      for (const [deptId, vendors] of Object.entries(deptVendorData)) {
         if (!catMap[deptId]) catMap[deptId] = { id: deptId, name: "Other", ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
         for (const v of Object.values(vendors)) {
           catMap[deptId].ordered      += v.ordered;
@@ -523,9 +529,9 @@ export default async function handler(req, res) {
       }
       const summaryRows = Object.values(catMap).sort((a, b) => b.ordered - a.ordered);
 
-      // deptVendors: { deptId: [{id,name,ordered,received,sold,cost}] }
+      // deptVendors: { deptId: [{id,name,ordered,received,sold,cost,...}] }
       const deptVendors = {};
-      for (const [deptId, vendors] of Object.entries(state.deptVendorData)) {
+      for (const [deptId, vendors] of Object.entries(deptVendorData)) {
         deptVendors[deptId] = Object.values(vendors).sort((a, b) => b.ordered - a.ordered);
       }
 
