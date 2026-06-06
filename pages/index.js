@@ -292,7 +292,11 @@ export default function FlowReport() {
       let allDone = false;
       let iterations = 0;
       while (!allDone && !scanAbort.current && iterations < 300) {
-        const r = await fetch("/api/cron/scan?force=1", { method: "POST" });
+        // First iteration: restart=1 forces a clean start for all seasons (including
+        // any that were left in a partial/expired state from a previous scan).
+        // Subsequent iterations just advance without restarting.
+        const url = iterations === 0 ? "/api/cron/scan?force=1&restart=1" : "/api/cron/scan?force=1";
+        const r = await fetch(url, { method: "POST" });
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
           if (r.status === 401) { setAuthed(false); break; }

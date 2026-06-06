@@ -33,6 +33,9 @@ export default async function handler(req, res) {
   // When called from the UI with ?force=1, ignore the rescan interval so a
   // manual full sync always starts fresh regardless of last scan time.
   const force = req.query.force === "1";
+  // ?restart=1 forces a clean restart of ALL seasons including in-progress ones.
+  // The UI passes this only on the first call of a scan loop, not subsequent iterations.
+  const restartAll = req.query.restart === "1";
 
   // VERCEL_URL is deployment-specific and can return 404/HTML for the production alias.
   // VERCEL_PROJECT_PRODUCTION_URL is the stable production domain (no protocol prefix).
@@ -64,14 +67,13 @@ export default async function handler(req, res) {
     const msSinceScan = lastTs ? Date.now() - lastTs : Infinity;
 
     let restart = "0";
-    if (!phase || phase === "done" || phase === "error") {
+    if (restartAll) {
+      // First call of a manual sync: restart every season clean regardless of phase.
+      restart = "1";
+    } else if (!phase || phase === "done" || phase === "error") {
       if (!force && msSinceScan < RESCAN_INTERVAL_MS) {
         return { season, action: "skipped", msSinceScan };
       }
-      restart = "1";
-    } else if (force) {
-      // force=1 from UI: restart ALL seasons including in-progress ones so we
-      // never resume from expired or partial KV state.
       restart = "1";
     }
 
