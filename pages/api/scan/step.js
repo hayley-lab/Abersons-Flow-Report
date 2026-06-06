@@ -227,8 +227,9 @@ export default async function handler(req, res) {
           );
           const items = data.data || [];
           for (const prod of items) {
-            const sku = (prod.sku || "").toLowerCase();
-            if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
+            const fields = [prod.sku, prod.custom_sku, prod.handle, prod.supplier_code]
+              .map(v => (v || "").toLowerCase());
+            if (skuCodes.some(c => fields.some(f => f.includes(c)))) registerProduct(state, prod);
           }
           if (items.length < 200) break;
           after = getCursor(data, items);
@@ -266,18 +267,29 @@ export default async function handler(req, res) {
         const prods = data.data || [];
         state.slowScanned += prods.length;
 
-        // One-time debug: log first product's fields so we can see the actual API shape
-        if (state.slowScanned <= 500 && prods.length > 0 && !state._debugLogged) {
-          state._debugLogged = true;
-          const sample = prods[0];
-          console.log("[step] products_slow sample fields:", JSON.stringify(Object.fromEntries(
-            ["id","name","sku","custom_sku","handle","supplier_code","description","active","variant_parent_id","product_type_id"].map(k => [k, sample[k]])
-          )));
+        // Debug: log first product that has a slash in any text field (a real season product)
+        if (!state._debugLogged) {
+          const slashProd = prods.find(p =>
+            [p.sku, p.custom_sku, p.handle, p.supplier_code, p.name].some(v => v && String(v).includes("/"))
+          );
+          if (slashProd) {
+            state._debugLogged = true;
+            console.log("[step] products_slow first slash-field product:", JSON.stringify(
+              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code","active","variant_parent_id","product_type_id"].map(k => [k, slashProd[k]]))
+            ));
+          } else if (state.slowScanned >= 5000 && !state._debugLogged5k) {
+            state._debugLogged5k = true;
+            const s = prods[0] || {};
+            console.log("[step] products_slow 5k sample (no slash yet):", JSON.stringify(
+              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code"].map(k => [k, s[k]]))
+            ));
+          }
         }
 
         for (const prod of prods) {
-          const sku = (prod.sku || "").toLowerCase();
-          if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
+          const fields = [prod.sku, prod.custom_sku, prod.handle, prod.supplier_code]
+            .map(v => (v || "").toLowerCase());
+          if (skuCodes.some(c => fields.some(f => f.includes(c)))) registerProduct(state, prod);
         }
 
         if (prods.length === 0) { state.phase = "products_slow_done"; break; }

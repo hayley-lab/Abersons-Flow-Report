@@ -66,17 +66,23 @@ KV keys:
 - `scan:data:{season}` — final report, 48h TTL
 
 ### SKU Structure
-Every product SKU follows this format: `{item_number}/{season_code}`
+Every product SKU follows this format: `{item_code}/{season_code}{variant_number}`
 
-Examples: `1234/s26`, `5678/f26`, `9999/rs26`
+Examples: `sphoenix/rs260101`, `s980621/s260108`, `stokyo/pf261`
 
-Season codes:
-- `/s26` — Spring 2026
-- `/f26` — Fall 2026
-- `/rs26` or `/ps26` — Pre-Spring (2027+)
-- `/pf26` — Pre-Fall (2027+)
+The slash comes AFTER the item code and BEFORE the season code. The variant number is appended directly to the season code with no separator.
 
-The slash comes AFTER the item number and BEFORE the season code. The season code is always at the end.
+Season codes (2 digits at end = year):
+- `s26` — Spring 2026
+- `f26` — Fall 2026
+- `rs26` or `ps26` — Pre-Spring (2027+)
+- `pf26` — Pre-Fall (2027+)
+
+**Season breakdown by year:**
+- **2025 & 2026:** Spring and Fall only. Pre-season was combined into the main season because of the hard pull from the old system. No separate PreSpring or PreFall seasons exist for these years.
+- **2027+:** All four seasons — PreSpring, Spring, PreFall, Fall
+
+**Important:** For 2025 & 2026, products with `rs26`/`ps26` codes are counted under Spring, and products with `pf26` codes are counted under Fall. The scan must capture all of these codes for the correct season.
 
 ### Product Identification — CRITICAL
 Products in LS are identified by season using their SKU format: `{item_number}/{season_code}` e.g. `1234/s26`
