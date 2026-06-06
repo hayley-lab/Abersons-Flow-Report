@@ -207,6 +207,15 @@ export default async function handler(req, res) {
       state.anchorVersion        = (skuBase && SEASON_START_CURSORS[skuBase] != null)
         ? SEASON_START_CURSORS[skuBase] : null;
 
+      // If no POs exist for this season yet, mark done immediately — no point scanning.
+      if (consignments.length === 0) {
+        state.phase = "done";
+        state.progress = "No purchase orders found — skipping.";
+        const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
+        await kv.set(dataKey, result, { ex: 48 * 3600 });
+        return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No purchase orders — nothing to scan." });
+      }
+
       state.phase            = "products";
       state.productSearchIdx = 0;
       state.progress         = `Loaded ${cats.length} depts, ${consignments.length} POs, ${returnConsignments.length} returns — searching products…`;
