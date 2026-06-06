@@ -1,8 +1,8 @@
 name: Delta Scan (Quick Refresh)
 on:
   schedule:
-    # Every 2 hours, 12pm–10pm UTC (7am–5pm Central) on weekdays + Sat
-    - cron: "0 12,14,16,18,20,22 * * 1-6"
+    # Every hour Tue–Sat 10am–5pm Central (15:00–22:00 UTC, days 2–6)
+    - cron: "0 15,16,17,18,19,20,21,22 * * 2-6"
   workflow_dispatch:
 
 jobs:
