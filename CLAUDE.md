@@ -1,13 +1,43 @@
 # Abersons Flow Report — Project Context
 
-## What This Is
-A Next.js app on Vercel that replaces Abersons' old spreadsheet-based "flow report." It pulls data from Lightspeed Retail (X-Series / Vend) via their API and shows ordered, received, sold, on-sale, and returned totals by season → department → vendor → product.
+## Background
+Abersons switched POS systems from RMH (old) to Lightspeed Retail / LS (new). The old flow report was connected to RMH. This new app connects to LS and replaces it. Sales history was transferred into LS, but not all POs were — some older POs were hard-pulled from the old flow report.
 
 ## Tech Stack
 - Next.js 14 pages router
 - Vercel KV (Redis/Upstash) for scan state and cached results
 - Iron-session for auth
 - Lightspeed Retail API v2 (`https://{LS_DOMAIN_PREFIX}.retail.lightspeed.app/api/2.0/`)
+
+## How The Data Is Supposed To Work (Hayley's Spec)
+
+### 1. Hard Pull (datatail import)
+Old PO ordered/received data that never made it into LS was imported directly into the app (via `pages/api/import/datatail.js`). This covers ordered & received quantities and dollars from the RMH era. These amounts must ADD to any matching LS POs — they must not be double-counted or overwritten.
+- **Pending:** Carrie had a vendor return entered in the wrong season — need to check Staud in spring26.
+
+### 2. LS POs (consignments in LS API, type=SUPPLIER)
+Pull ordered and received quantities and dollars from LS purchase orders. These go into the Ordered and Received columns. Must not collide with the hard pull data.
+- Ordered/Received qty in designated columns
+- Retail $ summed into color key and pushed to header
+- Cost $ also shown in header
+
+### 3. Vendor Returns (consignments in LS API, type=SUPPLIER_RETURN)
+Vendor returns reduce received inventory and go into the Returned column.
+- Qty goes into Returned column
+- Retail $ summed into color key
+- Returned retail $ is deducted from the Received (retail) header total
+
+### 4. Sales (LS sales API)
+- **Full-price sale:** qty removed from stock, placed in Sold column, retail $ in color key
+- **Discounted sale (any discount, including 100% off):** qty goes into On Sale column (NOT Sold), color key uses the ACTUAL sold dollar amount (e.g. 50% off → half price; 100% off → $0)
+- **Customer return of full-price item:** qty removed from Sold column, added back to on-hand
+- **Customer return of discounted item:** qty removed from On Sale column, added back to on-hand
+- Sold and On Sale columns are mutually exclusive — an item is in one or the other, never both
+
+## Sync Schedule
+- **Nightly full scan:** rescans ALL data (products, POs, returns, sales) — runs in the middle of the night via Vercel cron
+- **Delta sync throughout the day:** sales-only update, runs approximately every 10 minutes via Vercel cron (`/api/cron/delta`)
+- **Auto-poll:** the UI polls in the background and refreshes automatically when new sales data is available, so users don't need to manually refresh
 
 ## Key Architecture
 
@@ -40,7 +70,7 @@ The `seasonSkuCodes()` function generates these. The products_slow scan checks b
 - `soldAmt` = net sale dollars (can be negative for net-return products)
 
 ### Cron / Scan Loop
-- `vercel.json` cron fires daily at 8am: `GET /api/cron/scan`
+- `vercel.json` cron fires nightly: `GET /api/cron/scan`
 - UI "Sync from LS" button POSTs to `/api/cron/scan` in a loop
 - First call: `?force=1&restart=1` — restarts all seasons fresh
 - Subsequent calls: `?force=1` — advances in-progress seasons, SKIPS seasons completed within 1 hour
@@ -49,7 +79,7 @@ The `seasonSkuCodes()` function generates these. The products_slow scan checks b
 - cron/scan and cron/delta maxDuration: 300s; step.js: 60s
 
 ### Delta Sync
-There is a separate delta/sales-only sync (`/api/cron/delta`) that runs throughout the day for incremental sales updates. DO NOT break this when changing the product scan logic.
+Separate sales-only sync at `/api/cron/delta`, runs ~every 10 minutes. Only updates sales — does NOT re-scan products, POs, or returns. DO NOT break this when changing the product scan logic.
 
 ## Seasons
 Generated in `lib/seasons.js`. Current year + 1 ahead, back to 2025.
@@ -65,6 +95,7 @@ Active seasons for scanning: current year, next year, prior year.
 - Not all POs are in LS — some were imported from the old flow report (datatail import). The scan must work for products that may not have LS consignments.
 - Judi Powers spring26 consignment returns not pulling in correctly — not yet fixed.
 - Some vendor returns were entered in both old and new systems during transition — minor overlap expected.
+- Staud spring26 may have a return entered in the wrong season (Carrie entered it) — needs investigation.
 
 ## UI Behavior
 - Season navigation: changing seasons keeps the user on the same drilldown view (dept or vendor). Falls back to dept list if vendor doesn't exist in new season, falls back to summary if dept doesn't exist.
@@ -72,8 +103,9 @@ Active seasons for scanning: current year, next year, prior year.
 - Sold column: full-price sales only. On Sale column: discounted sales only.
 
 ## What's Currently Broken / In Progress
-1. **products_slow finding 0 products** — debug log added, need to check Vercel logs after a sync to see actual LS API field names on product objects.
+1. **products_slow finding 0 products** — debug log added to step.js, need to check Vercel runtime logs after a sync runs to see actual LS API field names on product objects. This is blocking everything — all scan data is empty until this is fixed.
 2. **Judi Powers spring26 returns** — not investigated yet.
+3. **Staud spring26 return** — may be in wrong season, needs checking.
 
 ## What NOT To Do
 - Do not remove the 6h KV TTL (was 1h before, caused state loss on long scans)
@@ -81,3 +113,5 @@ Active seasons for scanning: current year, next year, prior year.
 - Do not scan all 83k products for 2027 seasons and error — complete gracefully with empty data
 - Do not put discounted items in both Sold and On Sale columns
 - Do not use retail price in the color key for on-sale items — use actual saleAmt
+- Do not break the delta sync when modifying the full scan logic
+- Do not assume all POs are in LS — some came from the datatail import
