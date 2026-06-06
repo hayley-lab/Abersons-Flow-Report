@@ -49,13 +49,20 @@ export default async function handler(req, res) {
 
   const seasons = currentSeasons();
 
-  // Load all KV state in parallel first
-  const kvResults = await Promise.all(
-    seasons.map(season => Promise.all([
-      kv.get(`scan:job:${season}`),
-      kv.get(`scan:data:${season}`),
-    ]))
-  );
+  // Load all KV state in parallel first — wrap in try/catch so a transient
+  // KV error returns a 503 instead of an unhandled 500.
+  let kvResults;
+  try {
+    kvResults = await Promise.all(
+      seasons.map(season => Promise.all([
+        kv.get(`scan:job:${season}`),
+        kv.get(`scan:data:${season}`),
+      ]))
+    );
+  } catch (e) {
+    console.error("[cron/scan] KV read failed:", e.message);
+    return res.status(503).json({ error: "KV read failed: " + e.message });
+  }
 
   // Process seasons with limited concurrency to avoid LS API rate limits.
   // 3 at a time balances speed vs. not hammering the LS API with 8+ parallel requests.
