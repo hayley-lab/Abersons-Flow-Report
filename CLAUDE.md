@@ -25,12 +25,15 @@ Pull ordered and received quantities and dollars from LS purchase orders. These 
 
 **On Hand (product level):** Pulled directly from LS live inventory count — NOT calculated from a formula. This is accurate because LS updates its inventory in real time when items are received, sold, returned, or sent back to vendor. Formula for reference: `received qty − vendor returns − sold − on sale + customer returns` — but LS handles this internally.
 
+**Caveat:** If inventory is manually adjusted in LS (e.g. during a physical inventory count or a manual correction), the on-hand count in the flow report will reflect that adjustment. This means on-hand can diverge from what the received/sold/returned columns would mathematically imply. This is expected behavior — LS is the source of truth for inventory. Worth noting to staff: manual LS inventory adjustments will show up here.
+
 
 ### 3. Vendor Returns (consignments in LS API, type=SUPPLIER_RETURN)
 Vendor returns reduce received inventory and go into the Returned column.
 - Qty goes into Returned column
 - Retail $ summed into color key
-- Returned retail $ is deducted from the Received (retail) header total
+- The Received and Returned columns show their actual totals (not netted against each other)
+- The **header total for Received (retail)** = received dollars − returned dollars (netted)
 
 ### 4. Sales (LS sales API)
 - **Full-price sale:** qty removed from stock, placed in Sold column, retail $ in color key
