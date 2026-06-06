@@ -267,6 +267,14 @@ export default async function handler(req, res) {
 
     // ── PRODUCTS_SLOW: full catalog scan (fallback) ──────────────────────────
     if (state.phase === "products_slow" && Date.now() < deadline) {
+      // If there are no POs for this season, skip the entire catalog scan.
+      if (!state.consignments || state.consignments.length === 0) {
+        state.phase = "done";
+        const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
+        await kv.set(dataKey, result, { ex: 48 * 3600 });
+        await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
+        return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No purchase orders — skipped." });
+      }
       const skuCodes = seasonSkuCodes(season);
       while (Date.now() < deadline) {
         const path  = "2.0/products?active=1&page_size=500" + (state.slowAfter ? "&after=" + state.slowAfter : "");
