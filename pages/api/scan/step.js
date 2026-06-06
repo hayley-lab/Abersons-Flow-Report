@@ -266,6 +266,15 @@ export default async function handler(req, res) {
         const prods = data.data || [];
         state.slowScanned += prods.length;
 
+        // One-time debug: log first product's fields so we can see the actual API shape
+        if (state.slowScanned <= 500 && prods.length > 0 && !state._debugLogged) {
+          state._debugLogged = true;
+          const sample = prods[0];
+          console.log("[step] products_slow sample fields:", JSON.stringify(Object.fromEntries(
+            ["id","name","sku","custom_sku","handle","supplier_code","description","active","variant_parent_id","product_type_id"].map(k => [k, sample[k]])
+          )));
+        }
+
         for (const prod of prods) {
           const sku = ((prod.sku || "") + " " + (prod.custom_sku || "")).toLowerCase();
           if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
