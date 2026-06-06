@@ -64,7 +64,7 @@ function registerProduct(state, p) {
   const suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
   const suppName = (p.supplier && p.supplier.name) || "Unknown";
   const price    = parseFloat(p.price_excluding_tax || 0);
-  const skuKey   = ((p.custom_sku || "") || (p.sku || "")).toLowerCase().trim();
+  const skuKey   = (p.sku || "").toLowerCase().trim();
 
   let resolvedType = typeId, resolvedSuppId = suppId, resolvedSuppName = suppName;
   let resolvedPrice = price;
@@ -227,7 +227,7 @@ export default async function handler(req, res) {
           );
           const items = data.data || [];
           for (const prod of items) {
-            const sku = ((prod.sku || "") + " " + (prod.custom_sku || "")).toLowerCase();
+            const sku = (prod.sku || "").toLowerCase();
             if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
           }
           if (items.length < 200) break;
@@ -276,7 +276,7 @@ export default async function handler(req, res) {
         }
 
         for (const prod of prods) {
-          const sku = ((prod.sku || "") + " " + (prod.custom_sku || "")).toLowerCase();
+          const sku = (prod.sku || "").toLowerCase();
           if (skuCodes.some(c => sku.includes(c))) registerProduct(state, prod);
         }
 
