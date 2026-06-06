@@ -20,7 +20,7 @@ jobs:
             echo "--- Call $i ---"
             curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
               -H "Authorization: Bearer $CRON_SECRET" \
-              -H "Content-Type: application/json" | jq .
+              -H "Content-Type: application/json" | jq . || true
             sleep 12
           done
           echo "Scan loop complete."
