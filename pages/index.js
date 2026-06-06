@@ -331,7 +331,7 @@ export default function FlowReport() {
     setScanning(true);
     setScanProgress("Quick refresh — loading recent sales…");
     try {
-      const r = await fetch(`/api/scan/delta?season=${encodeURIComponent(season)}`, { method: "POST" });
+      const r = await fetch("/api/cron/delta", { method: "POST" });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
       await reloadAfterScan();

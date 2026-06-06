@@ -2,6 +2,8 @@
 // Skips seasons that don't have a completed base scan yet.
 import { kv } from "@vercel/kv";
 import { SEASONS } from "../../../lib/seasons";
+import { getIronSession } from "iron-session";
+import { sessionOptions } from "../../../lib/session";
 
 function currentSeasons() {
   const year = new Date().getFullYear();
@@ -16,8 +18,10 @@ function currentSeasons() {
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
 
-  if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
-    return res.status(401).json({ error: "Unauthorized" });
+  const cronAuth = process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
+  if (!cronAuth) {
+    const session = await getIronSession(req, res, sessionOptions);
+    if (!session.authed) return res.status(401).json({ error: "Unauthorized" });
   }
 
   const base    = `https://${process.env.VERCEL_URL}`;
