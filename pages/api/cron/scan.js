@@ -78,7 +78,7 @@ export default async function handler(req, res) {
       // First call of a manual sync: restart every season clean regardless of phase.
       restart = "1";
     } else if (!phase || phase === "done" || phase === "error") {
-      if (!force && msSinceScan < RESCAN_INTERVAL_MS) {
+      if (msSinceScan < RESCAN_INTERVAL_MS) {
         return { season, action: "skipped", msSinceScan };
       }
       restart = "1";
