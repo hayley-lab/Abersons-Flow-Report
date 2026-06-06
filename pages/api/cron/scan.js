@@ -45,39 +45,42 @@ export default async function handler(req, res) {
   };
 
   const seasons = currentSeasons();
-  const results = [];
 
-  for (const season of seasons) {
-    try {
-      const [job, data] = await Promise.all([
-        kv.get(`scan:job:${season}`),
-        kv.get(`scan:data:${season}`),
-      ]);
+  // Load all KV state in parallel first
+  const kvResults = await Promise.all(
+    seasons.map(season => Promise.all([
+      kv.get(`scan:job:${season}`),
+      kv.get(`scan:data:${season}`),
+    ]))
+  );
 
-      const phase = job ? job.phase : null;
-      const lastTs = data ? data.ts : null;
-      const msSinceScan = lastTs ? Date.now() - lastTs : Infinity;
+  // Fire all season steps in parallel so the cron function finishes in ~60s
+  // instead of seasons.length × 60s which would timeout
+  const results = await Promise.all(seasons.map(async (season, i) => {
+    const [job, data] = kvResults[i];
+    const phase = job ? job.phase : null;
+    const lastTs = data ? data.ts : null;
+    const msSinceScan = lastTs ? Date.now() - lastTs : Infinity;
 
-      let restart = "0";
-      if (!phase || phase === "done" || phase === "error") {
-        // force=1 (manual UI trigger) always restarts; otherwise respect interval
-        if (!force && msSinceScan < RESCAN_INTERVAL_MS) {
-          results.push({ season, action: "skipped", msSinceScan });
-          continue;
-        }
-        restart = "1";
+    let restart = "0";
+    if (!phase || phase === "done" || phase === "error") {
+      if (!force && msSinceScan < RESCAN_INTERVAL_MS) {
+        return { season, action: "skipped", msSinceScan };
       }
+      restart = "1";
+    }
 
+    try {
       const r = await fetch(`${base}/api/scan/step?season=${encodeURIComponent(season)}&restart=${restart}`, {
         method: "POST",
         headers,
       });
       const json = await r.json();
-      results.push({ season, action: restart === "1" ? "started" : "advanced", phase: json.phase, progress: json.progress });
+      return { season, action: restart === "1" ? "started" : "advanced", phase: json.phase, progress: json.progress };
     } catch (e) {
-      results.push({ season, action: "error", error: e.message });
+      return { season, action: "error", error: e.message };
     }
-  }
+  }));
 
   return res.json({ ok: true, results });
 }

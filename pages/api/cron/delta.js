@@ -30,30 +30,27 @@ export default async function handler(req, res) {
   const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.CRON_SECRET}` };
 
   const seasons = currentSeasons();
-  const results = [];
 
-  for (const season of seasons) {
-    // Skip if a full scan is currently in progress
-    const job = await kv.get(`scan:job:${season}`);
+  // Check job states in parallel, then fire all delta scans in parallel
+  const jobs = await Promise.all(seasons.map(s => kv.get(`scan:job:${s}`)));
+
+  const results = await Promise.all(seasons.map(async (season, i) => {
+    const job = jobs[i];
     if (job && job.phase && job.phase !== "done" && job.phase !== "error") {
-      results.push({ season, action: "skipped", reason: "full scan in progress" });
-      continue;
+      return { season, action: "skipped", reason: "full scan in progress" };
     }
-
     try {
       const r = await fetch(`${base}/api/scan/delta?season=${encodeURIComponent(season)}`, {
         method: "POST", headers,
       });
       const json = await r.json();
-      if (r.ok) {
-        results.push({ season, action: "delta", ts: json.ts, pages: json.pages });
-      } else {
-        results.push({ season, action: "skipped", reason: json.error });
-      }
+      return r.ok
+        ? { season, action: "delta", ts: json.ts, pages: json.pages }
+        : { season, action: "skipped", reason: json.error };
     } catch (e) {
-      results.push({ season, action: "error", error: e.message });
+      return { season, action: "error", error: e.message };
     }
-  }
+  }));
 
   return res.json({ ok: true, results });
 }
