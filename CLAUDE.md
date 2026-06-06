@@ -21,9 +21,10 @@ Pull ordered and received quantities and dollars from LS purchase orders. These 
 - Retail $ summed into color key and pushed to header
 - Cost $ also shown in header
 - When a product is received, it adds to both the Received column AND the On Hand column
+- Partial receipts work correctly — LS tracks ordered qty and received qty separately per PO line item, so if 2 are ordered and 1 comes in, ordered shows 2 and received shows 1
 
-**On Hand formula:** `received qty − vendor returns − sold qty − on sale qty + customer returns`
-(Customer returns add back to on hand because the item is back in stock. Vendor returns reduce on hand because the item left the store.)
+**On Hand (product level):** Pulled directly from LS live inventory count — NOT calculated from a formula. This is accurate because LS updates its inventory in real time when items are received, sold, returned, or sent back to vendor. Formula for reference: `received qty − vendor returns − sold − on sale + customer returns` — but LS handles this internally.
+
 
 ### 3. Vendor Returns (consignments in LS API, type=SUPPLIER_RETURN)
 Vendor returns reduce received inventory and go into the Returned column.
