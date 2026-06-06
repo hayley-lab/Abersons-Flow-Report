@@ -179,7 +179,11 @@ export default async function handler(req, res) {
       // Trim to only needed fields to keep KV payloads small
       state.cats               = cats.map(c => ({ id: c.id, name: c.name }));
       state.consignments       = consignments.map(c => ({ id: c.id }));
-      state.returnConsignments = returnConsignments.map(c => ({ id: c.id }));
+      state.returnConsignments = returnConsignments.map(c => ({
+        id:      c.id,
+        suppId:  (c.supplier && c.supplier.id)   || c.supplier_id   || "__none__",
+        suppName:(c.supplier && c.supplier.name) || "Unknown",
+      }));
       state.parentStore        = {};
       state.seasonPids         = [];
       state.seasonParentIds    = [];
@@ -402,14 +406,18 @@ export default async function handler(req, res) {
         const items = await lsFetchAll("2.0/consignments/" + c.id + "/products");
 
         for (const item of items) {
-          if (!seasonPidSet.has(item.product_id)) continue;
           const pid      = item.product_id;
-          const cid      = state.pidToType[pid]     || "__none__";
-          const sup      = state.pidToSupplier[pid];
-          if (!sup || sup.i === "__none__") continue;
-          const price    = state.pidToPrice[pid] || 0;
           const itemCost = parseFloat(item.cost || 0);
           const qty      = Math.max(0, item.count || 0);
+          if (!qty) continue;
+
+          // Use product maps if the product is in this season's active scan;
+          // fall back to consignment-level supplier for inactive/returned products.
+          const inSeason = seasonPidSet.has(pid);
+          const cid      = (inSeason && state.pidToType[pid])     || "__none__";
+          const sup      = (inSeason && state.pidToSupplier[pid]) || { i: c.suppId, n: c.suppName };
+          if (!sup || sup.i === "__none__") continue;
+          const price    = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || 0;
 
           if (!state.deptVendorData[cid]) state.deptVendorData[cid] = {};
           if (!state.deptVendorData[cid][sup.i]) {
