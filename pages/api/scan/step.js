@@ -207,15 +207,6 @@ export default async function handler(req, res) {
       state.anchorVersion        = (skuBase && SEASON_START_CURSORS[skuBase] != null)
         ? SEASON_START_CURSORS[skuBase] : null;
 
-      // If no POs exist for this season yet, mark done immediately — no point scanning.
-      if (consignments.length === 0) {
-        state.phase = "done";
-        state.progress = "No purchase orders found — skipping.";
-        const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
-        await kv.set(dataKey, result, { ex: 48 * 3600 });
-        return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No purchase orders — nothing to scan." });
-      }
-
       state.phase            = "products";
       state.productSearchIdx = 0;
       state.progress         = `Loaded ${cats.length} depts, ${consignments.length} POs, ${returnConsignments.length} returns — searching products…`;
@@ -248,12 +239,12 @@ export default async function handler(req, res) {
 
       if (state.productSearchIdx >= skuCodes.length) {
         if (state.seasonPids.length === 0) {
-          // No products found for this season's SKU codes — season hasn't started yet.
-          // Skip immediately rather than scanning 80,000+ products for nothing.
-          const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
-          await kv.set(dataKey, result, { ex: 48 * 3600 });
-          await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
-          return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No products found for season — skipped." });
+          // Fast-path found nothing — fall back to full catalog scan.
+          // (LS search API searches product names, not custom SKUs, so this is expected for all seasons.)
+          state.phase      = "products_slow";
+          state.slowAfter  = null;
+          state.slowScanned = 0;
+          state.progress   = "Fast-path found nothing — scanning full catalog…";
         } else if (!state.variantsSeenInScan) {
           state.phase      = "products_variants";
           state.variantIdx = 0;
@@ -269,15 +260,6 @@ export default async function handler(req, res) {
     // ── PRODUCTS_SLOW: full catalog scan (fallback) ──────────────────────────
     if (state.phase === "products_slow" && Date.now() < deadline) {
       const skuCodes = seasonSkuCodes(season);
-
-      // If we've already scanned 10k+ products and found nothing, this season
-      // has no products yet — skip immediately rather than scanning 80k+ entries.
-      if (state.seasonPids.length === 0 && (state.slowScanned || 0) >= 10000) {
-        const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
-        await kv.set(dataKey, result, { ex: 48 * 3600 });
-        await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
-        return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No products found for season — skipped." });
-      }
       while (Date.now() < deadline) {
         const path  = "2.0/products?active=1&page_size=500" + (state.slowAfter ? "&after=" + state.slowAfter : "");
         const data  = await lsFetch(path);
@@ -299,9 +281,12 @@ export default async function handler(req, res) {
 
     if (state.phase === "products_slow_done") {
       if (state.seasonPids.length === 0) {
-        const skuCodes = seasonSkuCodes(season);
-        state.phase = "error";
-        state.error = `No products found matching ${skuCodes.join(", ")} after scanning ${(state.slowScanned || 0).toLocaleString()} catalog entries.`;
+        // No products found after scanning the full catalog — season hasn't started yet.
+        // Complete gracefully with empty data rather than erroring.
+        const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
+        await kv.set(dataKey, result, { ex: 48 * 3600 });
+        await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
+        return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No products found for season." });
       } else if (state.variantNeedsFixup && Object.keys(state.variantNeedsFixup).length > 0) {
         // Fetch parent data for variants whose parent wasn't in-memory during slow scan
         state.phase      = "products_fix";
