@@ -564,9 +564,13 @@ export default function FlowReport() {
   const totalOrderedCost  = summaryRows.reduce((a, r) => a + (r.orderedCost || 0), 0);
   const totalReceived     = summaryRows.reduce((a, r) => a + r.received,            0);
   const totalReceivedCost = summaryRows.reduce((a, r) => a + (r.cost || 0),        0);
+  const totalReturned     = summaryRows.reduce((a, r) => a + (r.returned || 0),    0);
+  const totalReturnedCost = summaryRows.reduce((a, r) => a + (r.returnedCost || 0), 0);
   const totalSold         = summaryRows.reduce((a, r) => a + r.sold,               0);
-  const totalRecPct    = totalOrdered  > 0 ? (totalReceived / totalOrdered)  * 100 : 0;
-  const totalSoldPct   = totalReceived > 0 ? (totalSold     / totalReceived) * 100 : 0;
+  const totalNetReceived     = totalReceived - totalReturned;
+  const totalNetReceivedCost = totalReceivedCost - totalReturnedCost;
+  const totalRecPct    = totalOrdered       > 0 ? (totalReceived / totalOrdered)       * 100 : 0;
+  const totalSoldPct   = totalNetReceived   > 0 ? (totalSold     / totalNetReceived)   * 100 : 0;
   const vTotalOrdered      = vendorRows.reduce((a, r) => a + r.ordered,               0);
   const vTotalOrderedCost  = vendorRows.reduce((a, r) => a + (r.orderedCost  || 0),  0);
   const vTotalReceived     = vendorRows.reduce((a, r) => a + r.received,              0);
@@ -732,9 +736,9 @@ export default function FlowReport() {
                 <KpiRow items={[
                   { label: "Ordered (retail)",  value: fmt(totalOrdered) },
                   { label: "Ordered (cost)",    value: fmt(totalOrderedCost) },
-                  { label: "Received (retail)", value: fmt(totalReceived),     sub: totalRecPct.toFixed(1)  + "% of ordered" },
-                  { label: "Received (cost)",   value: fmt(totalReceivedCost) },
-                  { label: "Sold (retail)",     value: fmt(totalSold),         sub: totalSoldPct.toFixed(1) + "% of received" },
+                  { label: "Received (retail)", value: fmt(totalNetReceived),     sub: totalRecPct.toFixed(1)  + "% of ordered" },
+                  { label: "Received (cost)",   value: fmt(totalNetReceivedCost) },
+                  { label: "Sold (retail)",     value: fmt(totalSold),            sub: totalSoldPct.toFixed(1) + "% of received" },
                   { label: "Departments",       value: summaryRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={"Store Summary — " + seasonLabel}
@@ -782,8 +786,9 @@ export default function FlowReport() {
                       </thead>
                       <tbody>
                         {summaryRows.filter(r => r.ordered > 0 || r.received > 0 || r.sold > 0).map(function(r) {
-                          var recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
-                          var soldPct = r.received > 0 ? (r.sold     / r.received) * 100 : 0;
+                          var netReceived = (r.received || 0) - (r.returned || 0);
+                          var recPct  = r.ordered    > 0 ? (r.received / r.ordered)  * 100 : 0;
+                          var soldPct = netReceived  > 0 ? (r.sold     / netReceived) * 100 : 0;
                           return { ...r, recPct, soldPct };
                         }).sort(function(a, b) {
                           var col = summarySort.col;
@@ -906,10 +911,10 @@ export default function FlowReport() {
                 <KpiRow items={[
                   { label: "Ordered (retail)",   value: fmt(vTotalOrdered) },
                   { label: "Ordered (cost)",     value: fmt(vTotalOrderedCost) },
-                  { label: "Received (retail)",  value: fmt(vTotalReceived),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
-                  { label: "Received (cost)",    value: fmt(vTotalReceivedCost) },
+                  { label: "Received (retail)",  value: fmt(vTotalReceived - vTotalReturned),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
+                  { label: "Received (cost)",    value: fmt(vTotalReceivedCost - vendorRows.reduce((a, r) => a + (r.returnedCost || 0), 0)) },
                   { label: "Returned (retail)",  value: fmt(vTotalReturned) },
-                  { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "% of received" : "0.0% of received" },
+                  { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: (vTotalReceived - vTotalReturned) > 0 ? ((vTotalSold / (vTotalReceived - vTotalReturned)) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                   { label: "Vendors",            value: vendorRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={(currentDept ? currentDept.name : "") + " — by Vendor"}>
@@ -931,8 +936,9 @@ export default function FlowReport() {
                     </thead>
                     <tbody>
                       {vendorRows.map(function(r) {
-                        var recPct  = r.ordered  > 0 ? (r.received / r.ordered)  * 100 : 0;
-                        var soldPct = r.received > 0 ? (r.sold     / r.received) * 100 : 0;
+                        var vNetReceived = (r.received || 0) - (r.returned || 0);
+                        var recPct  = r.ordered     > 0 ? (r.received / r.ordered)   * 100 : 0;
+                        var soldPct = vNetReceived  > 0 ? (r.sold     / vNetReceived) * 100 : 0;
                         return { ...r, recPct, soldPct };
                       }).sort(function(a, b) {
                         var col = vendorSort.col;
@@ -983,10 +989,10 @@ export default function FlowReport() {
               {[
                 { label: "Ordered (retail)",  value: fmt(currentVendor ? currentVendor.ordered      : 0) },
                 { label: "Ordered (cost)",    value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
-                { label: "Received (retail)", value: fmt(currentVendor ? currentVendor.received    : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
-                { label: "Received (cost)",   value: fmt(currentVendor ? currentVendor.cost        : 0) },
+                { label: "Received (retail)", value: fmt(currentVendor ? (currentVendor.received - (currentVendor.returned || 0)) : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
+                { label: "Received (cost)",   value: fmt(currentVendor ? ((currentVendor.cost || 0) - (currentVendor.returnedCost || 0)) : 0) },
                 { label: "Returned (retail)", value: fmt(currentVendor ? (currentVendor.returned || 0) : 0) },
-                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: currentVendor && currentVendor.received > 0 ? ((currentVendor.sold / currentVendor.received) * 100).toFixed(1) + "% of received" : "0.0% of received" },
+                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: (currentVendor && (currentVendor.received - (currentVendor.returned || 0)) > 0) ? ((currentVendor.sold / (currentVendor.received - (currentVendor.returned || 0))) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                 { label: "SKUs",              value: productRows.length },
               ].map(function(kv) {
                 return (
