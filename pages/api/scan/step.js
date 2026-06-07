@@ -59,7 +59,7 @@ function registerProduct(state, p) {
   const typeId   = p.product_type_id || "__none__";
   const suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
   const suppName = (p.supplier && p.supplier.name) || "Unknown";
-  const price    = parseFloat(p.price_excluding_tax || 0);
+  const price    = parseFloat(p.price_excluding_tax || p.price || p.retail_price || p.price_including_tax || 0);
   const skuKey   = (p.sku || "").toLowerCase().trim();
 
   let resolvedType = typeId, resolvedSuppId = suppId, resolvedSuppName = suppName;
@@ -291,7 +291,7 @@ export default async function handler(req, res) {
           if (slashProd) {
             state._debugLogged = true;
             console.log("[step] products_slow first slash-field product:", JSON.stringify(
-              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code","active","variant_parent_id","product_type_id"].map(k => [k, slashProd[k]]))
+              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code","active","variant_parent_id","product_type_id","price","price_excluding_tax","price_including_tax","retail_price","cost"].map(k => [k, slashProd[k]]))
             ));
           } else if (state.slowScanned >= 5000 && !state._debugLogged5k) {
             state._debugLogged5k = true;
@@ -369,7 +369,7 @@ export default async function handler(req, res) {
           const pt = prod.product_type_id || "__none__";
           const si = (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__";
           const sn = (prod.supplier && prod.supplier.name) || "Unknown";
-          const pp = parseFloat(prod.price_excluding_tax || 0);
+          const pp = parseFloat(prod.price_excluding_tax || prod.price || prod.retail_price || prod.price_including_tax || 0);
           for (const [variantId, pId] of Object.entries(state.variantNeedsFixup || {})) {
             if (pId !== parentId) continue;
             if ((state.pidToType[variantId] || "__none__") === "__none__" && pt !== "__none__") state.pidToType[variantId] = pt;
@@ -407,7 +407,7 @@ export default async function handler(req, res) {
             i: (vp.supplier && vp.supplier.id)   || vp.supplier_id   || par?.si || "__none__",
             n: (vp.supplier && vp.supplier.name) || par?.sn || "Unknown",
           };
-          state.pidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || 0) || par?.p || 0;
+          state.pidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || vp.price || vp.retail_price || vp.price_including_tax || 0) || par?.p || 0;
         }
         state.variantIdx++;
         state.progress = `Fetching variants (${state.variantIdx}/${state.seasonParentIds.length})…`;
@@ -436,6 +436,9 @@ export default async function handler(req, res) {
           const pid        = item.product_id;
           const sup        = state.pidToSupplier[pid];
           if (!sup || sup.i === "__none__") continue;
+          // Backfill pidToPrice from PO line item if products list didn't return a price
+          const itemRetailPrice = parseFloat(item.price || item.unit_price || item.retail_price || 0);
+          if (!state.pidToPrice[pid] && itemRetailPrice) state.pidToPrice[pid] = itemRetailPrice;
           const price      = state.pidToPrice[pid] || 0;
           const itemCost   = parseFloat(item.cost || 0);
           const qtyOrdered = Math.max(0, item.count    || 0);
@@ -497,7 +500,9 @@ export default async function handler(req, res) {
             ? state.pidToSupplier[pid]
             : { i: c.suppId, n: c.suppName };
           if (!sup || sup.i === "__none__") continue;
-          const price = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || 0;
+          // Try pidToPrice first, then item's own retail price field as fallback
+          const itemRetailPrice = parseFloat(item.price || item.unit_price || item.retail_price || 0);
+          const price = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || (inSeason ? itemRetailPrice : 0);
 
           if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
           const ps = state.productStats[pid];
@@ -512,6 +517,13 @@ export default async function handler(req, res) {
       }
 
       if (state.returnConsigIdx >= state.returnConsignments.length) {
+        // Summary log: total retVal / retCost across all products so we can confirm returns were captured
+        let totalRetVal = 0, totalRetCost = 0, retProds = 0;
+        for (const ps of Object.values(state.productStats)) {
+          if (ps.retVal || ps.retCost) { totalRetVal += ps.retVal || 0; totalRetCost += ps.retCost || 0; retProds++; }
+        }
+        console.log(`[step] ${season} RETURNS DONE: ${retProds} products with returns, totalRetVal=$${totalRetVal.toFixed(2)}, totalRetCost=$${totalRetCost.toFixed(2)}`);
+
         delete state.returnConsignments;
         state.phase      = "sales";
         state.salesPages = 0;
