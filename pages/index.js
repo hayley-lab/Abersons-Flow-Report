@@ -637,7 +637,7 @@ export default function FlowReport() {
   const totalReturnedCost = summaryRows.reduce((a, r) => a + (r.returnedCost || 0), 0);
   const totalSold         = summaryRows.reduce((a, r) => a + r.sold,               0);
   const totalNetReceived     = totalReceived - totalReturned;
-  const totalNetReceivedCost = totalReceivedCost - totalReturnedCost;
+  const totalNetReceivedCost = Math.max(0, totalReceivedCost - totalReturnedCost);
   const totalRecPct    = totalOrdered       > 0 ? (totalReceived / totalOrdered)       * 100 : 0;
   const totalSoldPct   = totalNetReceived   > 0 ? (totalSold     / totalNetReceived)   * 100 : 0;
   const vTotalOrdered      = vendorRows.reduce((a, r) => a + r.ordered,               0);
@@ -987,7 +987,7 @@ export default function FlowReport() {
                   { label: "Ordered (retail)",   value: fmt(vTotalOrdered) },
                   { label: "Ordered (cost)",     value: fmt(vTotalOrderedCost) },
                   { label: "Received (retail)",  value: fmt(vTotalReceived - vTotalReturned),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
-                  { label: "Received (cost)",    value: fmt(vTotalReceivedCost - vendorRows.reduce((a, r) => a + (r.returnedCost || 0), 0)) },
+                  { label: "Received (cost)",    value: fmt(Math.max(0, vTotalReceivedCost - vendorRows.reduce((a, r) => a + (r.returnedCost || 0), 0))) },
                   { label: "Returned (retail)",  value: fmt(vTotalReturned) },
                   { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: (vTotalReceived - vTotalReturned) > 0 ? ((vTotalSold / (vTotalReceived - vTotalReturned)) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                   { label: "Vendors",            value: vendorRows.filter(r => r.ordered > 0 || r.sold > 0).length },
@@ -1065,7 +1065,7 @@ export default function FlowReport() {
                 { label: "Ordered (retail)",  value: fmt(currentVendor ? currentVendor.ordered      : 0) },
                 { label: "Ordered (cost)",    value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
                 { label: "Received (retail)", value: fmt(currentVendor ? (currentVendor.received - (currentVendor.returned || 0)) : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
-                { label: "Received (cost)",   value: fmt(currentVendor ? ((currentVendor.cost || 0) - (currentVendor.returnedCost || 0)) : 0) },
+                { label: "Received (cost)",   value: fmt(currentVendor ? Math.max(0, (currentVendor.cost || 0) - (currentVendor.returnedCost || 0)) : 0) },
                 { label: "Returned (retail)", value: fmt(currentVendor ? (currentVendor.returned || 0) : 0) },
                 { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: (currentVendor && (currentVendor.received - (currentVendor.returned || 0)) > 0) ? ((currentVendor.sold / (currentVendor.received - (currentVendor.returned || 0))) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                 { label: "SKUs",              value: productRows.length },

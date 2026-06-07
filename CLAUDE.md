@@ -39,7 +39,7 @@ Vendor returns reduce received inventory and go into the Returned column.
 - Retail $ summed into color key
 - The Received and Returned columns show their actual totals (not netted against each other)
 - The **header total for Received (retail)** = received retail dollars − returned retail dollars (netted)
-- The **header total for Received (cost)** = received cost dollars − returned cost dollars (same netting rule as retail)
+- The **header total for Received (cost)** = received cost dollars − returned cost dollars (same netting rule as retail). **For consignment/datatail-only vendors, received cost = $0 (no upfront cost on consignment), so do not show a negative — cap at $0.**
 
 ### 4. Sales (LS sales API)
 - **Full-price sale:** qty removed from stock, placed in Sold column, retail $ in color key
@@ -67,13 +67,16 @@ Three separate mechanisms keep data current:
 ### Scan Pipeline (step.js)
 Each POST to `/api/scan/step` does ~6 seconds of work and saves state to KV. Client loops until done.
 
-Phases in order:
-`init` → `products` (fast-path SKU search, always finds 0) → `products_slow` (full 83k catalog scan, matches by SKU) → `products_slow_done` → `products_fix` (variant parent fixup) → `consignments` → `returns` → `sales` → `finalizing`
+Phases in order (CURRENT — as of Jun 2026):
+`init` → `products_seed` → `consignments` → `returns` → `sales` → `finalizing`
+
+The old catalog-scan phases (`products`, `products_slow`, `products_slow_done`, `products_fix`, `products_variants`) have been **removed** and replaced by `products_seed`. Do not restore them.
 
 KV keys:
-- `scan:job:{season}` — small operational state (phase, cursors), 6h TTL
-- `scan:job:big:{season}` — large data blobs (pidMaps, productStats), 6h TTL
-- `scan:data:{season}` — final report, 48h TTL
+- `scan:job:{season}` — small operational state (phase, cursors, progress). On completion: `{ phase: "done", season, ts }` with 2h TTL (kept so cron skip logic works).
+- `scan:job:big:{season}` — large data blobs (pidMaps, productStats) during scan, 6h TTL. Deleted after finalizing.
+- `scan:data:{season}` — final report blob, 48h TTL.
+- `scan:pids:{season}` — lightweight pid maps saved after each full scan: `{ seasonPids, pidToType, pidToSupplier, skuToPid, pidToPrice }`, 48h TTL. Used by products_seed to restore product maps without loading the full 5-10MB scan:data blob.
 
 ### SKU Structure
 Every product SKU follows this format: `{item_code}/{season_code}{variant_number}`
@@ -94,14 +97,18 @@ Season codes (2 digits at end = year):
 
 **Important:** For 2025 & 2026, products with `rs26`/`ps26` codes are counted under Spring, and products with `pf26` codes are counted under Fall. The scan must capture all of these codes for the correct season.
 
-### Product Identification — CRITICAL
-Products in LS are identified by season using their SKU format: `{item_number}/{season_code}` e.g. `1234/s26`
+### Product Identification — products_seed phase
+Products are discovered from three targeted sources (in order, deduplicating by PID):
 
-Season codes: `/s26` (spring26), `/f26` (fall26), `/rs26` or `/ps26` (prespring), `/pf26` (prefall)
+1. **Prior scan** (`scan:pids:{season}` KV key) — restores `seasonPids`, `pidToType`, `pidToSupplier`, `skuToPid`, `pidToPrice` directly. No API calls. Fastest path when prior data exists.
+2. **Datatail override SKUs** (`scan:override:{season}:v:*` in KV) — `style` field = full LS SKU (e.g. `cafmrhalo/s2601`). Derives handle by removing the slash (`cafmrhalos2601`) and looks up via `?handle=`. Only fetches handles NOT already in skuToPid.
+3. **LS PO line items** (lazy registration during consignments phase) — when a product appears in a PO but wasn't found by sources 1 or 2, fetches it by ID and checks its SKU against season codes before registering.
 
-The `seasonSkuCodes()` function generates these. The products_slow scan checks both `sku` and `custom_sku` fields for the season code. **AS OF THE LAST SESSION, products_slow was finding 0 products for ALL seasons including active ones.** A debug log was added to the first page of products_slow to show what fields the LS API actually returns — this needs to be checked in Vercel logs after a sync runs.
-
-**DO NOT change the product-matching strategy without first checking those logs.** The SKU format `1234/s26` SHOULD match the check for `/s26` — the issue is likely that `sku`/`custom_sku` fields aren't returned by the list API, or are named differently.
+**Key facts:**
+- Products exist in BOTH old system (datatail) and new LS POs — no clean dividing line
+- Deduplication is automatic: `registerProduct` is a no-op if the PID is already in `seasonPids`
+- `state.negPids` caches non-season product IDs to avoid re-fetching on each step call
+- `pidToPrice` is critical for retVal/retCost in the returns phase — always save it to `scan:pids`
 
 ### Data Flow — Bottom Up (CRITICAL)
 All totals are calculated at the individual product/SKU level first, then flowed up through each report level. Never calculate totals top-down.
@@ -121,14 +128,21 @@ Each level's numbers are the sum of the level below it. If a number looks wrong 
 - `saleAmt` = actual discounted sale dollars (used in color key, NOT retail price × qty)
 - `soldAmt` = net sale dollars (can be negative for net-return products)
 
+### Override / Datatail Vendors — Special Notes
+- Override products (datatail import) may have `pidToPrice[pid] = 0` if the LS API didn't return a retail price for those products. This causes `retVal = 0` in the returns phase.
+- **Fix (Jun 2026, data.js):** `computeReturnedFromSkus` falls back to `override_product.price × retQty` when `retVal = 0` but `retQty > 0`. This ensures the Returned (retail) header is correct for consignment/datatail vendors.
+- Consignment vendors (e.g. Judi Powers) have `receivedCost = 0` because no upfront cost is charged. LS may still record a cost on their return consignments. **Do not show negative Received (cost) — cap at $0.**
+
 ### Cron / Scan Loop
 - `vercel.json` cron fires nightly: `GET /api/cron/scan`
 - UI "Sync from LS" button POSTs to `/api/cron/scan` in a loop
 - First call: `?force=1&restart=1` — restarts all seasons fresh
-- Subsequent calls: `?force=1` — advances in-progress seasons, SKIPS seasons completed within 1 hour
+- Subsequent calls: `?force=1` — advances in-progress seasons, skips seasons completed within 1 hour
 - Concurrency: 3 seasons at a time (avoids LS rate limits)
 - 429/503 from LS: exponential backoff, up to 4 retries (2s, 4s, 8s, 16s)
 - cron/scan and cron/delta maxDuration: 300s; step.js: 60s
+- UI scan loop retries on HTTP 500 and 503 (8s wait) — a single transient error no longer stops the whole scan
+- On completion, `scan:job:{season}` is kept as `{ phase: "done", ts }` (2h TTL) so the skip-interval check works
 
 ### Delta Sync
 Separate sales-only sync at `/api/cron/delta`, runs ~every 10 minutes. Only updates sales — does NOT re-scan products, POs, or returns. DO NOT break this when changing the product scan logic.
@@ -139,15 +153,36 @@ Generated in `lib/seasons.js`. Current year + 1 ahead, back to 2025.
 - 2026: fall26, spring26 (no pre-seasons — transition year)
 - 2027+: fall, prefall, spring, prespring
 
-**2027 seasons have no orders yet** — they should complete quickly with empty data (not error).
+**2027 seasons have no orders yet** — they should complete quickly with empty data (not error). They now complete correctly and do not repeat.
 
 Active seasons for scanning: current year, next year, prior year.
 
-## Known Data Facts
-- Not all POs are in LS — some were imported from the old flow report (datatail import). The scan must work for products that may not have LS consignments.
-- Judi Powers spring26 consignment returns not pulling in correctly — not yet fixed.
-- Some vendor returns were entered in both old and new systems during transition — minor overlap expected.
-- Staud spring26 may have a return entered in the wrong season (Carrie entered it) — needs investigation.
+## Current State (Jun 7, 2026) — First Successful Full Scan
+The scan pipeline is working end-to-end. Key things confirmed working:
+- products_seed restores ~7000+ products from scan:pids without API calls on second+ run
+- Ordered qty (qtyOrdered) flows correctly from LS POs to product rows
+- Vendor returns: retQty shows in Returned column per product
+- Returned (retail) header correct for datatail/consignment vendors (fallback price fix)
+- 2027 seasons complete with empty data and do not repeat
+- UI scan loop retries on 500/503 — won't stop prematurely on transient errors
+- scan:job kept on completion so cron interval check works correctly
+
+## Known Remaining Issues
+1. **Received (cost) shows negative for consignment vendors** — e.g. Judi Powers shows −$159,190. Fix: cap at $0 in the UI since consignment vendors have no upfront received cost. **IN PROGRESS.**
+2. **Staud spring26 return** — Carrie may have entered a return in the wrong season. Needs investigation.
+3. **Ordered (cost) = $0 for some vendors** — datatail-only vendors have no LS cost data on POs. This is a data gap from the old system, not a code bug.
+
+## Stable Checkpoint — Revert Instructions
+If the scan breaks again, the last known-good commit is the one that merged `Fix Returned (retail) header for datatail-only vendors` to main (Jun 7, 2026). To find it:
+```
+git log --oneline main | head -5
+```
+The key files and their roles:
+- `pages/api/scan/step.js` — full scan pipeline. `products_seed` phase is the critical product-discovery logic.
+- `pages/api/scan/data.js` — merges override (datatail) data with LS scan data at request time. `computeReturnedFromSkus` handles returned retail for datatail vendors.
+- `pages/api/cron/scan.js` — orchestrates season scanning, skip logic, concurrency.
+- `pages/api/cron/delta.js` — sales-only delta sync, runs every ~10 min.
+- `pages/index.js` — UI, scan loop (retries on 500/503).
 
 ## UI Behavior
 - Season navigation: changing seasons keeps the user on the same drilldown view (dept or vendor). Falls back to dept list if vendor doesn't exist in new season, falls back to summary if dept doesn't exist.
@@ -155,37 +190,14 @@ Active seasons for scanning: current year, next year, prior year.
 - Sold column: full-price sales only. On Sale column: discounted sales only.
 - **On-sale visual highlighting** (DEFERRED): in the old RMH system, items on sale had different font color in the product list. We will replicate this in LS using pricebooks — come back to this once the pricebook workflow is settled in LS.
 
-## What's Currently Broken / In Progress
-1. **products_slow finding 0 products** — root cause confirmed: LS catalog search doesn't match our SKU pattern, and `active=1` filter doesn't work (field is `is_active`). The catalog scan grinds through 110k+ active products and times out. Fixed (Jun 2026) by replacing catalog scan with `products_seed` phase — see below.
-2. **Judi Powers spring26 returns** — not investigated yet.
-3. **Staud spring26 return** — may be in wrong season, needs checking.
-
-## Product Discovery Strategy — products_seed phase (replaces catalog scan)
-
-Instead of scanning 110k+ products, the `products_seed` phase discovers season products from three targeted sources (in order, deduplicating by PID):
-
-1. **Prior scan data** (`scan:data:{season}` in KV) — fetches each known PID by ID. Fastest path when prior data exists.
-2. **Datatail override SKUs** (`scan:override:{season}:v:*` in KV) — `style` field = full LS SKU (e.g. `cafmrhalo/s2601`). Derives handle by removing the slash (`cafmrhalos2601`) and looks up via `?handle=`. Covers old-system products that never got POs in LS.
-3. **LS PO line items** (consignments phase lazy registration) — when a product appears in a PO but wasn't found by sources 1 or 2, fetches it by ID and checks its SKU against season codes before registering. Covers LS-native POs.
-
-**Key facts about the overlap:**
-- Products exist in BOTH old system (datatail) and new LS POs — no clean dividing line
-- Deduplication is automatic: `registerProduct` is a no-op if the PID is already in `seasonPids`
-- `state.negPids` caches non-season product IDs to avoid re-fetching on each step call
-
-### If products_seed needs to be reverted:
-The old approach was a full catalog scan with a bootstrap cursor. The relevant git commits are on `claude/determined-brown-C3xNA`. To revert:
-- Restore the `products` phase (fast-path SKU search with `?search=`)
-- Restore the `products_slow` phase (full catalog scan with `?is_active=true`)
-- Restore `products_slow_done`, `products_fix`, `products_variants` phases
-- Remove the `products_seed` phase and `negPids` lazy registration from consignments
-The old code had fundamental issues: LS search API doesn't support substring matching on SKU, `active=1` filter doesn't work (correct field is `is_active`), and 110k active + 148k inactive products made the full scan take 1.5+ hours and time out.
-
 ## What NOT To Do
-- Do not remove the 6h KV TTL (was 1h before, caused state loss on long scans)
-- Do not use `force=1` to bypass the 1-hour rescan interval on completed seasons (use `restart=1` on first call only)
-- Do not scan all 83k products for 2027 seasons and error — complete gracefully with empty data
+- Do not remove the 6h KV TTL on scan:job:big (was 1h before, caused state loss on long scans)
+- Do not delete scan:job on completion — keep it with `{ phase: "done", ts }` so the 1-hour rescan interval check works
+- Do not restore the old catalog-scan phases (products, products_slow, etc.) — they timed out on 110k+ products
+- Do not scan all products for 2027 seasons — they complete gracefully with empty data
 - Do not put discounted items in both Sold and On Sale columns
 - Do not use retail price in the color key for on-sale items — use actual saleAmt
 - Do not break the delta sync when modifying the full scan logic
 - Do not assume all POs are in LS — some came from the datatail import
+- Do not use supplier ID for brand matching — multiple brands share one LS supplier ID; match by SKU
+- Do not show negative Received (cost) — cap at $0 for consignment vendors
