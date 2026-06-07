@@ -181,11 +181,7 @@ export default async function handler(req, res) {
 
       // Trim to only needed fields to keep KV payloads small
       state.cats               = cats.map(c => ({ id: c.id, name: c.name }));
-      state.consignments       = consignments.map(c => ({
-        id:      c.id,
-        suppId:  (c.supplier && c.supplier.id)   || c.supplier_id   || "__none__",
-        suppName:(c.supplier && c.supplier.name) || "Unknown",
-      }));
+      state.consignments       = consignments.map(c => ({ id: c.id }));
       state.returnConsignments = returnConsignments.map(c => ({
         id:      c.id,
         suppId:  (c.supplier && c.supplier.id)   || c.supplier_id   || "__none__",
@@ -315,14 +311,6 @@ export default async function handler(req, res) {
           if ((item.count || 0) < 0) continue; // skip vendor returns / adjustments
           const pid = item.product_id;
           if (!seasonPidSet.has(pid)) continue;
-          let sup = state.pidToSupplier[pid];
-          // Backfill supplier from PO header when product was registered without one
-          if ((!sup || sup.i === "__none__") && c.suppId !== "__none__") {
-            sup = { i: c.suppId, n: c.suppName };
-            state.pidToSupplier[pid] = sup;
-          }
-          if (!sup || sup.i === "__none__") continue;
-          // Backfill pidToPrice from PO line item if products list didn't return a price
           const itemRetailPrice = parseFloat(item.price || item.unit_price || item.retail_price || 0);
           if (!state.pidToPrice[pid] && itemRetailPrice) state.pidToPrice[pid] = itemRetailPrice;
           const price      = state.pidToPrice[pid] || 0;
@@ -330,13 +318,20 @@ export default async function handler(req, res) {
           const qtyOrdered = Math.max(0, item.count    || 0);
           const qtyRecvd   = Math.max(0, item.received || 0);
 
+          // Always accumulate qty — pidToQtyOrdered is looked up by SKU for override products,
+          // so supplier doesn't matter here
+          state.pidToQtyOrdered[pid] = (state.pidToQtyOrdered[pid] || 0) + qtyOrdered;
+
+          // Dollar rollup only makes sense when we know the supplier (non-override products)
+          const sup = state.pidToSupplier[pid];
+          if (!sup || sup.i === "__none__") continue;
+
           if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
           const ps = state.productStats[pid];
-          ps.ordered     += price    * qtyOrdered;
-          ps.orderedCost += itemCost * qtyOrdered;
-          ps.received    += price    * qtyRecvd;
+          ps.ordered      += price    * qtyOrdered;
+          ps.orderedCost  += itemCost * qtyOrdered;
+          ps.received     += price    * qtyRecvd;
           ps.receivedCost += itemCost * qtyRecvd;
-          state.pidToQtyOrdered[pid] = (state.pidToQtyOrdered[pid] || 0) + qtyOrdered;
         }
 
         state.consigIdx++;
