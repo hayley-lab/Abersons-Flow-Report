@@ -205,25 +205,34 @@ export default async function handler(req, res) {
 
     // ── PRODUCTS_SEED: discover season products without a full catalog scan ───
     // Sources (deduplicated by PID):
-    //   1. Prior scan's seasonPids — fetched by ID (fastest when prior data exists)
-    //   2. Datatail override SKUs  — handle lookup (covers old-system hard-pull products)
-    //   3. LS PO line items        — lazy registration in consignments phase below
+    //   1. Prior scan's pid maps — restored directly from KV (instant, no API calls)
+    //   2. Datatail override SKUs — handle lookup for any new products not in prior scan
+    //   3. LS PO line items       — lazy registration in consignments phase below
     if (state.phase === "products_seed" && Date.now() < deadline) {
-      // One-time init: load prior scan pids + override handles
       if (!state._seedReady) {
-        state._seedReady    = true;
-        state._priorPids    = [];
-        state._seedHandles  = []; // handles derived from override SKUs
-        state._priorIdx     = 0;
-        state._handleIdx    = 0;
+        state._seedReady   = true;
+        state._seedHandles = [];
+        state._handleIdx   = 0;
+        const priorPidSet  = new Set(state.seasonPids);
 
+        // 1. Restore pid maps directly from prior scan — no API calls needed
         try {
           const priorData = await kv.get(dataKey);
-          if (priorData && Array.isArray(priorData.seasonPids)) {
-            state._priorPids = priorData.seasonPids;
+          if (priorData && Array.isArray(priorData.seasonPids) && priorData.seasonPids.length > 0) {
+            for (const pid of priorData.seasonPids) {
+              if (!priorPidSet.has(pid)) { state.seasonPids.push(pid); priorPidSet.add(pid); }
+            }
+            // Restore lookup maps, merging over any existing entries
+            Object.assign(state.pidToType,     priorData.pidToType     || {});
+            Object.assign(state.pidToSupplier, priorData.pidToSupplier || {});
+            Object.assign(state.skuToPid,      priorData.skuToPid      || {});
+            // Restore pidToPrice from prior productStats (price * 1 isn't stored directly,
+            // but we can recover it if needed; skip for now — PO line items will backfill)
           }
         } catch (e) {}
 
+        // 2. Collect handles for override products not already in the pid set
+        //    (new products added to datatail since last scan)
         try {
           const indexRaw = await kv.get(`scan:override:${season}:vendorIndex`);
           const vendorIndex = Array.isArray(indexRaw) ? indexRaw
@@ -236,38 +245,24 @@ export default async function handler(req, res) {
             const v = !raw ? null : (typeof raw === "object" ? raw : JSON.parse(raw));
             for (const p of (v && v.products) || []) {
               const sku = (p.style || "").toLowerCase().trim();
-              if (sku) handleSet.add(sku.replace("/", ""));
+              // Only fetch if this SKU isn't already mapped to a PID
+              if (sku && !state.skuToPid[sku]) handleSet.add(sku.replace("/", ""));
             }
           }
           state._seedHandles = [...handleSet];
         } catch (e) {}
 
-        console.log(`[step] ${season} products_seed: ${state._priorPids.length} prior pids, ${state._seedHandles.length} override handles`);
-        state.progress = `Seeding products (${state._priorPids.length} prior, ${state._seedHandles.length} from datatail)…`;
+        console.log(`[step] ${season} products_seed: restored ${state.seasonPids.length} prior pids, ${state._seedHandles.length} new handles to fetch`);
+        state.progress = `Seeding products (${state.seasonPids.length} from prior scan, ${state._seedHandles.length} new from datatail)…`;
       }
 
       const pidSet = new Set(state.seasonPids);
 
-      // 1. Fetch prior scan's known products by ID
-      while (state._priorIdx < state._priorPids.length && Date.now() < deadline) {
-        const pid = state._priorPids[state._priorIdx];
-        if (!pidSet.has(pid)) {
-          try {
-            const resp = await lsFetch("2.0/products/" + pid);
-            const prod = resp && (resp.data || resp);
-            if (prod && prod.id) { registerProduct(state, prod); pidSet.add(prod.id); }
-          } catch (e) {}
-        }
-        state._priorIdx++;
-        if (state._priorIdx % 20 === 0)
-          state.progress = `Fetching prior products (${state._priorIdx}/${state._priorPids.length})…`;
-      }
-
-      // 2. Look up override/datatail products by handle
+      // Fetch only NEW override handles not covered by the prior scan
       while (state._handleIdx < state._seedHandles.length && Date.now() < deadline) {
         const handle = state._seedHandles[state._handleIdx];
         try {
-          const data  = await lsFetch("2.0/products?handle=" + encodeURIComponent(handle) + "&page_size=10");
+          const data = await lsFetch("2.0/products?handle=" + encodeURIComponent(handle) + "&page_size=10");
           for (const prod of (data.data || [])) {
             if (prod && prod.id && !pidSet.has(prod.id)) {
               registerProduct(state, prod); pidSet.add(prod.id);
@@ -276,17 +271,14 @@ export default async function handler(req, res) {
         } catch (e) {}
         state._handleIdx++;
         if (state._handleIdx % 20 === 0)
-          state.progress = `Fetching datatail products (${state._handleIdx}/${state._seedHandles.length})…`;
+          state.progress = `Fetching new datatail products (${state._handleIdx}/${state._seedHandles.length})…`;
       }
 
-      // Done when both lists are exhausted
-      if (state._priorIdx >= state._priorPids.length && state._handleIdx >= state._seedHandles.length) {
-        delete state._seedReady; delete state._priorPids;
-        delete state._seedHandles; delete state._priorIdx; delete state._handleIdx;
+      if (state._handleIdx >= state._seedHandles.length) {
+        delete state._seedReady; delete state._seedHandles; delete state._handleIdx;
         console.log(`[step] ${season} products_seed done: ${state.seasonPids.length} products found`);
 
         if (state.seasonPids.length === 0) {
-          // No products for this season — complete gracefully with empty data
           const result = { ts: Date.now(), season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
           await kv.set(dataKey, result, { ex: 48 * 3600 });
           await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
