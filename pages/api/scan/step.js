@@ -312,13 +312,11 @@ export default async function handler(req, res) {
               const prod = resp && (resp.data || resp);
               if (!prod || !prod.id) { state.negPids[pid] = 1; continue; }
               const fields = [prod.sku, prod.name].map(v => (v || "").toLowerCase());
-              if (!skuCodes.some(c => fields.some(f => f.includes(c)))) { state.negPids[pid] = 1; continue; }
+              if (!skuCodes.some(sc => fields.some(f => f.includes(sc)))) { state.negPids[pid] = 1; continue; }
               registerProduct(state, prod);
               seasonPidSet.add(pid);
             } catch (e) { state.negPids[pid] = 1; continue; }
           }
-          if (!seasonPidSet.has(item.product_id)) continue;
-          const pid        = item.product_id;
           const sup        = state.pidToSupplier[pid];
           if (!sup || sup.i === "__none__") continue;
           // Backfill pidToPrice from PO line item if products list didn't return a price
