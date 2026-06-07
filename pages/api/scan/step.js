@@ -293,7 +293,6 @@ export default async function handler(req, res) {
           return res.json({ phase: "done", season, ts: result.ts, progress: "No products found for season." });
         }
 
-        state.negPids   = {};
         state.phase     = "consignments";
         state.consigIdx = 0;
         state.progress  = `Found ${state.seasonPids.length} products — scanning POs (0/${state.consignments.length})…`;
@@ -303,8 +302,6 @@ export default async function handler(req, res) {
     // ── CONSIGNMENTS: aggregate PO values by dept+vendor ────────────────────
     if (state.phase === "consignments" && Date.now() < deadline) {
       const seasonPidSet = new Set(state.seasonPids);
-      const skuCodes     = seasonSkuCodes(season);
-      if (!state.negPids) state.negPids = {};
 
       while (state.consigIdx < state.consignments.length && Date.now() < deadline) {
         const c     = state.consignments[state.consigIdx];
@@ -313,19 +310,7 @@ export default async function handler(req, res) {
         for (const item of items) {
           if ((item.count || 0) < 0) continue; // skip vendor returns / adjustments
           const pid = item.product_id;
-          // Lazy-register products from LS POs not caught by products_seed
-          if (!seasonPidSet.has(pid)) {
-            if (state.negPids[pid]) continue;
-            try {
-              const resp = await lsFetch("2.0/products/" + pid);
-              const prod = resp && (resp.data || resp);
-              if (!prod || !prod.id) { state.negPids[pid] = 1; continue; }
-              const fields = [prod.sku, prod.name].map(v => (v || "").toLowerCase());
-              if (!skuCodes.some(sc => fields.some(f => f.includes(sc)))) { state.negPids[pid] = 1; continue; }
-              registerProduct(state, prod);
-              seasonPidSet.add(pid);
-            } catch (e) { state.negPids[pid] = 1; continue; }
-          }
+          if (!seasonPidSet.has(pid)) continue;
           const sup        = state.pidToSupplier[pid];
           if (!sup || sup.i === "__none__") continue;
           // Backfill pidToPrice from PO line item if products list didn't return a price
