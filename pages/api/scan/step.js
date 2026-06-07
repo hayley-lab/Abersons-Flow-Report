@@ -176,7 +176,7 @@ export default async function handler(req, res) {
       const [cats, consignments, returnConsignments] = await Promise.all([
         lsFetchAll("2.0/product_types"),
         lsFetchAll(`2.0/consignments?type=SUPPLIER${dateParam}`),
-        lsFetchAll(`2.0/consignments?type=SUPPLIER_RETURN${dateParam}`),
+        lsFetchAll(`2.0/consignments?type=SUPPLIER_RETURN`),
       ]);
 
       // Trim to only needed fields to keep KV payloads small
