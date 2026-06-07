@@ -2,8 +2,8 @@ name: Nightly Scan
 
 on:
   schedule:
-    # 6am UTC = ~1am Central, runs nightly
-    - cron: "0 6 * * *"
+    # 8am UTC = ~3am Central, finishes well before 6am
+    - cron: "0 8 * * *"
   workflow_dispatch: # allow manual trigger from GitHub Actions tab
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           echo "Starting nightly scan loop..."
-          for i in $(seq 1 200); do
+          for i in $(seq 1 350); do
             echo "--- Call $i ---"
             curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
               -H "Authorization: Bearer $CRON_SECRET" \
