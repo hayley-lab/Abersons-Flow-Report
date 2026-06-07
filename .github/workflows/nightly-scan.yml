@@ -9,14 +9,14 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
     steps:
       - name: Drive scans to completion
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           echo "Starting nightly scan loop..."
-          for i in $(seq 1 350); do
+          for i in $(seq 1 600); do
             echo "--- Call $i ---"
             curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
               -H "Authorization: Bearer $CRON_SECRET" \
