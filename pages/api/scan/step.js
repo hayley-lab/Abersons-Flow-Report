@@ -291,7 +291,7 @@ export default async function handler(req, res) {
           if (slashProd) {
             state._debugLogged = true;
             console.log("[step] products_slow first slash-field product:", JSON.stringify(
-              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code","active","variant_parent_id","product_type_id","price","price_excluding_tax","price_including_tax","retail_price","cost"].map(k => [k, slashProd[k]]))
+              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code","active","variant_parent_id","product_type_id","price","price_excluding_tax","retail_price","cost"].map(k => [k, slashProd[k]]))
             ));
           } else if (state.slowScanned >= 5000 && !state._debugLogged5k) {
             state._debugLogged5k = true;
