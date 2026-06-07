@@ -59,8 +59,13 @@ function mergeOverride(data, override) {
       if (!sku) continue;
       const pid = skuToPid[sku];
       if (pid && productStats[pid]) {
-        retVal  += productStats[pid].retVal  || 0;
-        retCost += productStats[pid].retCost || 0;
+        const ps  = productStats[pid];
+        const qty = ps.retQty || 0;
+        // Fall back to override product price × retQty when retVal wasn't computed during scan
+        // (happens for datatail-only products whose LS price wasn't available at scan time)
+        const fallbackPrice = parseFloat(op.price || 0);
+        retVal  += ps.retVal  > 0 ? ps.retVal  : (qty > 0 && fallbackPrice > 0 ? fallbackPrice * qty : 0);
+        retCost += ps.retCost || 0;
         matched++;
       }
     }
