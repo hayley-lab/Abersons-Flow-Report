@@ -283,11 +283,20 @@ export default async function handler(req, res) {
       if (state._priorIdx >= state._priorPids.length && state._handleIdx >= state._seedHandles.length) {
         delete state._seedReady; delete state._priorPids;
         delete state._seedHandles; delete state._priorIdx; delete state._handleIdx;
+        console.log(`[step] ${season} products_seed done: ${state.seasonPids.length} products found`);
+
+        if (state.seasonPids.length === 0) {
+          // No products for this season — complete gracefully with empty data
+          const result = { ts: Date.now(), season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
+          await kv.set(dataKey, result, { ex: 48 * 3600 });
+          await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
+          return res.json({ phase: "done", season, ts: result.ts, progress: "No products found for season." });
+        }
+
         state.negPids   = {};
         state.phase     = "consignments";
         state.consigIdx = 0;
         state.progress  = `Found ${state.seasonPids.length} products — scanning POs (0/${state.consignments.length})…`;
-        console.log(`[step] ${season} products_seed done: ${state.seasonPids.length} products found`);
       }
     }
 
