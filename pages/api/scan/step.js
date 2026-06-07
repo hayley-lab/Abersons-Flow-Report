@@ -59,7 +59,7 @@ function registerProduct(state, p) {
   const typeId   = p.product_type_id || "__none__";
   const suppId   = (p.supplier && p.supplier.id)   || p.supplier_id   || "__none__";
   const suppName = (p.supplier && p.supplier.name) || "Unknown";
-  const price    = parseFloat(p.price_excluding_tax || p.price || p.retail_price || p.price_including_tax || 0);
+  const price    = parseFloat(p.price_excluding_tax || p.price || p.retail_price || 0);
   const skuKey   = (p.sku || "").toLowerCase().trim();
 
   let resolvedType = typeId, resolvedSuppId = suppId, resolvedSuppName = suppName;
@@ -369,7 +369,7 @@ export default async function handler(req, res) {
           const pt = prod.product_type_id || "__none__";
           const si = (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__";
           const sn = (prod.supplier && prod.supplier.name) || "Unknown";
-          const pp = parseFloat(prod.price_excluding_tax || prod.price || prod.retail_price || prod.price_including_tax || 0);
+          const pp = parseFloat(prod.price_excluding_tax || prod.price || prod.retail_price || 0);
           for (const [variantId, pId] of Object.entries(state.variantNeedsFixup || {})) {
             if (pId !== parentId) continue;
             if ((state.pidToType[variantId] || "__none__") === "__none__" && pt !== "__none__") state.pidToType[variantId] = pt;
@@ -407,7 +407,7 @@ export default async function handler(req, res) {
             i: (vp.supplier && vp.supplier.id)   || vp.supplier_id   || par?.si || "__none__",
             n: (vp.supplier && vp.supplier.name) || par?.sn || "Unknown",
           };
-          state.pidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || vp.price || vp.retail_price || vp.price_including_tax || 0) || par?.p || 0;
+          state.pidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || vp.price || vp.retail_price || 0) || par?.p || 0;
         }
         state.variantIdx++;
         state.progress = `Fetching variants (${state.variantIdx}/${state.seasonParentIds.length})…`;
