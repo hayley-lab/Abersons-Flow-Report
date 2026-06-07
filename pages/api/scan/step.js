@@ -176,12 +176,7 @@ export default async function handler(req, res) {
       const [cats, consignments, returnConsignments] = await Promise.all([
         lsFetchAll("2.0/product_types"),
         lsFetchAll(`2.0/consignments?type=SUPPLIER${dateParam}`),
-        lsFetchAll(`2.0/consignments`).then(all => {
-          // Debug: log all distinct consignment types so we can see how returns are recorded in LS
-          const types = [...new Set(all.map(c => c.type))];
-          console.log(`[step] ${season} all consignment types:`, JSON.stringify(types), `total: ${all.length}`);
-          return all.filter(c => c.type === "SUPPLIER_RETURN");
-        }),
+        lsFetchAll(`2.0/consignments?type=RETURN`),
       ]);
 
       // Trim to only needed fields to keep KV payloads small
