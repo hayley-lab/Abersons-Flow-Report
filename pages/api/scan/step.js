@@ -468,24 +468,20 @@ export default async function handler(req, res) {
     if (state.phase === "returns" && Date.now() < deadline) {
       const seasonPidSet = new Set(state.seasonPids);
 
-      // One-time debug: log summary of return consignments on first entry
-      if (state.returnConsigIdx === 0 && state.returnConsignments.length > 0) {
-        console.log(`[step] ${season} returns: ${state.returnConsignments.length} return consignments, suppIds:`,
-          JSON.stringify(state.returnConsignments.slice(0, 5).map(c => ({ id: c.id, suppId: c.suppId, suppName: c.suppName }))));
-      }
-
       while (state.returnConsigIdx < state.returnConsignments.length && Date.now() < deadline) {
         const c     = state.returnConsignments[state.returnConsigIdx];
         const items = await lsFetchAll("2.0/consignments/" + c.id + "/products");
 
-        // Debug: log first return consignment's items so we can see the structure
-        if (state.returnConsigIdx === 0 && items.length > 0) {
-          const sample = items[0];
-          console.log(`[step] ${season} first return consignment ${c.id} (${c.suppName}): ${items.length} items, sample:`,
-            JSON.stringify({ product_id: sample.product_id, count: sample.count, cost: sample.cost, received: sample.received }));
-        }
-        if (state.returnConsigIdx === 0 && items.length === 0) {
-          console.log(`[step] ${season} first return consignment ${c.id} (${c.suppName}): 0 items`);
+        // Debug: log each return consignment summary
+        const inSeasonItems = items.filter(i => seasonPidSet.has(i.product_id));
+        const totalQty = items.reduce((s, i) => s + Math.abs(i.count || 0), 0);
+        if (items.length > 0 || state.returnConsigIdx < 3) {
+          console.log(`[step] ${season} return consig ${state.returnConsigIdx} (${c.suppName}): ${items.length} items, ${inSeasonItems.length} in-season, totalQty=${totalQty}, suppId=${c.suppId}`);
+          if (inSeasonItems.length > 0) {
+            const s = inSeasonItems[0];
+            const price = state.pidToPrice ? (state.pidToPrice[s.product_id] || 0) : 0;
+            console.log(`[step] ${season} in-season return sample: pid=${s.product_id}, count=${s.count}, cost=${s.cost}, price=${price}`);
+          }
         }
 
         for (const item of items) {
