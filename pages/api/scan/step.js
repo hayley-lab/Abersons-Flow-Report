@@ -18,10 +18,6 @@ import { sessionOptions } from "../../../lib/session";
 
 const CHUNK_MS = 6000;
 
-const SEASON_START_CURSORS = {
-  pf26: 50022000000,
-};
-
 function seasonSkuCodes(seasonId) {
   const m = seasonId.match(/^(prefall|fall|spring|prespring)(\d+)$/);
   if (!m) return [];
@@ -182,8 +178,6 @@ export default async function handler(req, res) {
         lsFetchAll(`2.0/consignments?type=SUPPLIER${dateParam}`),
         lsFetchAll(`2.0/consignments?type=SUPPLIER_RETURN${dateParam}`),
       ]);
-      const skuCodes = seasonSkuCodes(season);
-      const skuBase  = skuCodes[0] ? skuCodes[0].replace(/\//g, "") : null;
 
       // Trim to only needed fields to keep KV payloads small
       state.cats               = cats.map(c => ({ id: c.id, name: c.name }));
@@ -203,9 +197,28 @@ export default async function handler(req, res) {
       state.skuToPid           = {};
       state.variantsSeenInScan   = false;
       state.variantNeedsFixup    = {};
-      state.productStats         = {};  // single source of truth per product
-      state.anchorVersion        = (skuBase && SEASON_START_CURSORS[skuBase] != null)
-        ? SEASON_START_CURSORS[skuBase] : null;
+      state.productStats         = {};
+
+      // Bootstrap cursor: if we have prior scan data with known product IDs,
+      // fetch one to get its version number and start the catalog scan there
+      // instead of scanning from product #1 through 100k+ old records.
+      let anchorVersion = null;
+      try {
+        const priorData = await kv.get(dataKey);
+        const samplePid = priorData && priorData.seasonPids && priorData.seasonPids[0];
+        if (samplePid) {
+          const prodResp = await lsFetch("2.0/products/" + samplePid);
+          const ver = (prodResp.data || prodResp).version;
+          if (ver && ver > 0) {
+            // Start 2M versions before the known product so we don't miss any
+            anchorVersion = Math.max(0, ver - 2_000_000);
+            console.log(`[step] ${season} bootstrap cursor: product ${samplePid} version ${ver}, starting at ${anchorVersion}`);
+          }
+        }
+      } catch (e) {
+        console.log(`[step] ${season} bootstrap cursor failed (will do full scan):`, e.message);
+      }
+      state.anchorVersion = anchorVersion;
 
       state.phase            = "products";
       state.productSearchIdx = 0;
@@ -240,12 +253,15 @@ export default async function handler(req, res) {
 
       if (state.productSearchIdx >= skuCodes.length) {
         if (state.seasonPids.length === 0) {
-          // Fast-path found nothing — fall back to full catalog scan.
-          // (LS search API searches product names, not custom SKUs, so this is expected for all seasons.)
+          // Fast-path found nothing — fall back to catalog scan starting at anchorVersion
+          // (or from the beginning if no anchor is available).
           state.phase      = "products_slow";
-          state.slowAfter  = null;
+          state.slowAfter  = state.anchorVersion || null;
           state.slowScanned = 0;
-          state.progress   = "Fast-path found nothing — scanning full catalog…";
+          state.wrappedAround = false;
+          state.progress   = state.anchorVersion
+            ? `Scanning catalog from version ${state.anchorVersion}…`
+            : "Fast-path found nothing — scanning full catalog…";
         } else if (!state.variantsSeenInScan) {
           state.phase      = "products_variants";
           state.variantIdx = 0;
@@ -292,9 +308,31 @@ export default async function handler(req, res) {
           if (skuCodes.some(c => fields.some(f => f.includes(c)))) registerProduct(state, prod);
         }
 
-        if (prods.length === 0) { state.phase = "products_slow_done"; break; }
+        if (prods.length === 0) {
+          // Reached end of catalog. If we started mid-catalog (anchorVersion), do a second
+          // pass from the beginning to catch anything before the anchor.
+          if (state.anchorVersion && !state.wrappedAround) {
+            state.wrappedAround = true;
+            state.slowAfter = null;
+            state.progress  = `Wrapping to start of catalog (${state.seasonPids.length} found so far)…`;
+            continue;
+          }
+          state.phase = "products_slow_done"; break;
+        }
         const cursor = getCursor(data, prods);
-        if (!cursor) { state.phase = "products_slow_done"; break; }
+        if (!cursor) {
+          if (state.anchorVersion && !state.wrappedAround) {
+            state.wrappedAround = true;
+            state.slowAfter = null;
+            state.progress  = `Wrapping to start of catalog (${state.seasonPids.length} found so far)…`;
+            continue;
+          }
+          state.phase = "products_slow_done"; break;
+        }
+        // If we've wrapped around and caught back up to where we started, stop.
+        if (state.wrappedAround && cursor >= state.anchorVersion) {
+          state.phase = "products_slow_done"; break;
+        }
         state.slowAfter = cursor;
         state.progress  = `Scanning catalog… (${state.slowScanned.toLocaleString()} scanned, ${state.seasonPids.length} found)`;
       }
@@ -601,7 +639,7 @@ export default async function handler(req, res) {
     }
 
     // Split state across two keys: small operational fields + big data blobs
-    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","returnConsigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion","fixIdx"]);
+    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","returnConsigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion","fixIdx","wrappedAround","_debugLogged","_debugLogged5k"]);
     const small = {}, big = {};
     for (const [k, v] of Object.entries(state)) {
       if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;
