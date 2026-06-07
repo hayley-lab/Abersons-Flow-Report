@@ -475,11 +475,15 @@ export default async function handler(req, res) {
         for (const item of items) {
           const pid      = item.product_id;
           const itemCost = parseFloat(item.cost || 0);
-          const qty      = Math.max(0, item.count || 0);
+          // LS may store return quantities as negative (return) or positive — use absolute value
+          const qty      = Math.abs(item.count || 0);
           if (!qty) continue;
 
           const inSeason = seasonPidSet.has(pid);
-          const sup      = (inSeason && state.pidToSupplier[pid]) || { i: c.suppId, n: c.suppName };
+          // Prefer supplier from product scan; fall back to consignment header supplier
+          const sup = (inSeason && state.pidToSupplier[pid] && state.pidToSupplier[pid].i !== "__none__")
+            ? state.pidToSupplier[pid]
+            : { i: c.suppId, n: c.suppName };
           if (!sup || sup.i === "__none__") continue;
           const price = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || 0;
 
