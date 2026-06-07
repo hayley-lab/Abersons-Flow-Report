@@ -46,36 +46,22 @@ function mergeOverride(data, override) {
   if (!override) return data;
   if (!data) data = { summaryRows: [], deptVendors: {} };
 
-  // Build style-code → [pid] map from skuToPid.
-  // SKU format: "{style}/{seasonCode}{variant}" — the style is everything before the first slash.
-  // Used to attribute vendor returns to the correct override vendor by product ownership,
-  // bypassing LS supplier name (which may be shared across multiple brands).
-  const styleToPids = {};
-  Object.entries(data.skuToPid || {}).forEach(([sku, pid]) => {
-    const slash = sku.indexOf("/");
-    if (slash > 0) {
-      const style = sku.slice(0, slash).toLowerCase();
-      if (!styleToPids[style]) styleToPids[style] = [];
-      styleToPids[style].push(pid);
-    }
-  });
-
   // Given an override vendor's product list (from datatail), compute returned retail
-  // and cost by looking up each product's style in productStats.
-  // Returns null if no style matches were found (fall back to LS supplier rollup).
+  // and cost by looking up each product's full SKU directly in skuToPid → productStats.
+  // The override "style" field stores the full LS SKU (e.g. "cafmrhalo/s2601").
+  // Returns null if no SKUs matched — fall back to LS supplier rollup.
+  const skuToPid = data.skuToPid || {};
+  const productStats = data.productStats || {};
   function computeReturnedFromSkus(ovProducts) {
-    const ps = data.productStats || {};
     let retVal = 0, retCost = 0, matched = 0;
     for (const op of (ovProducts || [])) {
-      const style = (op.style || "").toLowerCase().trim();
-      if (!style) continue;
-      const pids = styleToPids[style] || [];
-      for (const pid of pids) {
-        if (ps[pid]) {
-          retVal  += ps[pid].retVal  || 0;
-          retCost += ps[pid].retCost || 0;
-          matched++;
-        }
+      const sku = (op.style || "").toLowerCase().trim();
+      if (!sku) continue;
+      const pid = skuToPid[sku];
+      if (pid && productStats[pid]) {
+        retVal  += productStats[pid].retVal  || 0;
+        retCost += productStats[pid].retCost || 0;
+        matched++;
       }
     }
     return matched > 0 ? { retVal, retCost } : null;
