@@ -504,10 +504,11 @@ export default async function handler(req, res) {
           const itemRetailPrice = parseFloat(item.price || item.unit_price || item.retail_price || 0);
           const price = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || (inSeason ? itemRetailPrice : 0);
 
-          if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
+          if (!state.productStats[pid]) state.productStats[pid] = { ordered: 0, orderedCost: 0, received: 0, receivedCost: 0, retVal: 0, retCost: 0, retQty: 0, soldAmt: 0, sold: 0, onSale: 0, returned: 0 };
           const ps = state.productStats[pid];
           ps.retVal  += price    * qty;
           ps.retCost += itemCost * qty;
+          ps.retQty  = (ps.retQty || 0) + qty;
           // Store fallback supplier on out-of-season products so finalizing can roll them up
           if (!inSeason) ps._sup = { i: sup.i, n: sup.n };
         }

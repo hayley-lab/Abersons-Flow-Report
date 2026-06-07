@@ -44,9 +44,16 @@ Vendor returns reduce received inventory and go into the Returned column.
 ### 4. Sales (LS sales API)
 - **Full-price sale:** qty removed from stock, placed in Sold column, retail $ in color key
 - **Discounted sale (any discount, including 100% off):** qty goes into On Sale column (NOT Sold), color key uses the ACTUAL sold dollar amount (e.g. 50% off → half price; 100% off → $0)
-- **Customer return of full-price item:** qty removed from Sold column, added back to on-hand
-- **Customer return of discounted item:** qty removed from On Sale column, added back to on-hand
+- **Customer return of full-price item:** qty removed from Sold column, added back to on-hand (LS handles on-hand automatically)
+- **Customer return of discounted item:** qty removed from On Sale column, added back to on-hand (LS handles on-hand automatically)
 - Sold and On Sale columns are mutually exclusive — an item is in one or the other, never both
+
+### ⚠️ RETURNED Column — Vendor Returns ONLY
+**The RETURNED column has absolutely nothing to do with customer returns.**
+- RETURNED column = items physically sent back to the vendor (vendor returns, type=RETURN consignments in LS)
+- Tracked in `ps.retQty` (quantity) and `ps.retVal` / `ps.retCost` (dollars)
+- Customer returns ONLY affect the Sold or On Sale column (subtracting from whichever the item sold from) and On Hand (LS updates automatically). They do NOT touch the Returned column at all.
+- `ps.returned` in productStats is kept only for potential future use (on-hand reconciliation indicator). It must NEVER be displayed in the Returned column or used in any Returned column calculation.
 
 ## Sync Schedule
 Three separate mechanisms keep data current:
@@ -104,10 +111,13 @@ Flow: **individual product SKU → vendor total → department total → season 
 Each level's numbers are the sum of the level below it. If a number looks wrong at the vendor or department level, the root cause is always at the product level. Fix it there and it propagates up automatically.
 
 ### productStats — single source of truth
-`productStats[pid] = { ordered, orderedCost, received, receivedCost, retVal, retCost, soldAmt, saleAmt, sold, onSale, returned }`
+`productStats[pid] = { ordered, orderedCost, received, receivedCost, retVal, retCost, retQty, soldAmt, saleAmt, sold, onSale, returned }`
 
+- `retQty` = vendor return quantity (from RETURN consignments). Displayed in the Returned column.
+- `retVal` / `retCost` = vendor return retail/cost dollars. Used in header totals.
+- `returned` = customer return quantity from sales. **Never displayed in the Returned column.** Kept only for future on-hand reconciliation indicator.
 - `sold` and `onSale` are mutually exclusive (discounted sales go ONLY to onSale, not both)
-- Customer returns subtract from whichever bucket the item sold from (discounted → onSale, full price → sold)
+- Customer returns subtract from whichever bucket the item sold from (discounted → onSale, full price → sold). They do NOT affect `retQty` or the Returned column.
 - `saleAmt` = actual discounted sale dollars (used in color key, NOT retail price × qty)
 - `soldAmt` = net sale dollars (can be negative for net-return products)
 

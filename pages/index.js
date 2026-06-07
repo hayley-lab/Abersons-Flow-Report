@@ -445,7 +445,7 @@ export default function FlowReport() {
             onHand,
             sold:       stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
             onSale:     stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
-            returned:   stats.returned != null ? stats.returned : (p.qtyReturned || 0),
+            returned:   stats.retQty   != null ? stats.retQty   : (p.qtyReturned || 0),
             saleAmt:    stats.saleAmt  || 0,
           };
         }));
@@ -568,7 +568,7 @@ export default function FlowReport() {
             qtyOrdered: p.qtyOrdered || 0, onHand,
             sold:     stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
             onSale:   stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
-            returned: stats.returned != null ? stats.returned : (p.qtyReturned || 0),
+            returned: stats.retQty   != null ? stats.retQty   : (p.qtyReturned || 0),
             saleAmt:  stats.saleAmt  || 0,
           };
         }));
