@@ -230,17 +230,17 @@ export default async function handler(req, res) {
       const skuCodes = seasonSkuCodes(season);
 
       while (state.productSearchIdx < skuCodes.length && Date.now() < deadline) {
-        const code  = skuCodes[state.productSearchIdx].replace("/", "");
+        const code  = skuCodes[state.productSearchIdx]; // e.g. "/s26" — keep slash for specific search
         let after   = null;
         for (let pg = 0; pg < 20 && Date.now() < deadline; pg++) {
           const data  = await lsFetch(
-            "2.0/products?active=1&page_size=200&search=" +
+            "2.0/products?page_size=200&search=" +
             encodeURIComponent(code) +
             (after ? "&after=" + after : "")
           );
           const items = data.data || [];
           for (const prod of items) {
-            const fields = [prod.sku, prod.custom_sku, prod.handle, prod.supplier_code]
+            const fields = [prod.sku, prod.name, prod.handle, prod.supplier_code]
               .map(v => (v || "").toLowerCase());
             if (skuCodes.some(c => fields.some(f => f.includes(c)))) registerProduct(state, prod);
           }
@@ -278,7 +278,7 @@ export default async function handler(req, res) {
     if (state.phase === "products_slow" && Date.now() < deadline) {
       const skuCodes = seasonSkuCodes(season);
       while (Date.now() < deadline) {
-        const path  = "2.0/products?active=1&page_size=500" + (state.slowAfter ? "&after=" + state.slowAfter : "");
+        const path  = "2.0/products?is_active=true&page_size=500" + (state.slowAfter ? "&after=" + state.slowAfter : "");
         const data  = await lsFetch(path);
         const prods = data.data || [];
         state.slowScanned += prods.length;
@@ -303,7 +303,7 @@ export default async function handler(req, res) {
         }
 
         for (const prod of prods) {
-          const fields = [prod.sku, prod.custom_sku, prod.handle, prod.supplier_code]
+          const fields = [prod.sku, prod.name, prod.handle, prod.supplier_code]
             .map(v => (v || "").toLowerCase());
           if (skuCodes.some(c => fields.some(f => f.includes(c)))) registerProduct(state, prod);
         }
