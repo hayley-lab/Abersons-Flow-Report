@@ -277,10 +277,14 @@ export default async function handler(req, res) {
         console.log(`[step] ${season} products_seed done: ${state.seasonPids.length} products found`);
 
         if (state.seasonPids.length === 0) {
-          const result = { ts: Date.now(), season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
-          await kv.set(dataKey, result, { ex: 48 * 3600 });
-          await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
-          return res.json({ phase: "done", season, ts: result.ts, progress: "No products found for season." });
+          const doneTs = Date.now();
+          const result = { ts: doneTs, season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
+          await Promise.all([
+            kv.set(dataKey, result, { ex: 48 * 3600 }),
+            kv.set(jobKey, { phase: "done", season, ts: doneTs }, { ex: 2 * 3600 }),
+          ]);
+          await kv.del(bigKey);
+          return res.json({ phase: "done", season, ts: doneTs, progress: "No products found for season." });
         }
 
         state.phase     = "consignments";
