@@ -226,6 +226,7 @@ export default async function handler(req, res) {
             Object.assign(state.pidToType,     priorPids.pidToType     || {});
             Object.assign(state.pidToSupplier, priorPids.pidToSupplier || {});
             Object.assign(state.skuToPid,      priorPids.skuToPid      || {});
+            Object.assign(state.pidToPrice,    priorPids.pidToPrice    || {});
           }
         } catch (e) {}
 
@@ -472,6 +473,7 @@ export default async function handler(req, res) {
 
     // ── FINALIZING: roll productStats up to vendor → dept → summary ────────────
     if (state.phase === "finalizing") {
+      const pidToPrice = state.pidToPrice || {};
       delete state.pidToPrice;
 
       // Roll up productStats → deptVendorData
@@ -536,7 +538,7 @@ export default async function handler(req, res) {
       const doneTs  = Date.now();
       await Promise.all([
         kv.set(dataKey, result, { ex: 48 * 3600 }),
-        kv.set(pidsKey, { seasonPids: state.seasonPids, pidToType: state.pidToType, pidToSupplier: state.pidToSupplier, skuToPid: state.skuToPid || {} }, { ex: 48 * 3600 }),
+        kv.set(pidsKey, { seasonPids: state.seasonPids, pidToType: state.pidToType, pidToSupplier: state.pidToSupplier, skuToPid: state.skuToPid || {}, pidToPrice }, { ex: 48 * 3600 }),
         // Keep job key with done+ts so cron/scan can check recency without loading scan:data
         kv.set(jobKey, { phase: "done", season: state.season, ts: doneTs }, { ex: 2 * 3600 }),
       ]);
