@@ -468,9 +468,25 @@ export default async function handler(req, res) {
     if (state.phase === "returns" && Date.now() < deadline) {
       const seasonPidSet = new Set(state.seasonPids);
 
+      // One-time debug: log summary of return consignments on first entry
+      if (state.returnConsigIdx === 0 && state.returnConsignments.length > 0) {
+        console.log(`[step] ${season} returns: ${state.returnConsignments.length} return consignments, suppIds:`,
+          JSON.stringify(state.returnConsignments.slice(0, 5).map(c => ({ id: c.id, suppId: c.suppId, suppName: c.suppName }))));
+      }
+
       while (state.returnConsigIdx < state.returnConsignments.length && Date.now() < deadline) {
         const c     = state.returnConsignments[state.returnConsigIdx];
         const items = await lsFetchAll("2.0/consignments/" + c.id + "/products");
+
+        // Debug: log first return consignment's items so we can see the structure
+        if (state.returnConsigIdx === 0 && items.length > 0) {
+          const sample = items[0];
+          console.log(`[step] ${season} first return consignment ${c.id} (${c.suppName}): ${items.length} items, sample:`,
+            JSON.stringify({ product_id: sample.product_id, count: sample.count, cost: sample.cost, received: sample.received }));
+        }
+        if (state.returnConsigIdx === 0 && items.length === 0) {
+          console.log(`[step] ${season} first return consignment ${c.id} (${c.suppName}): 0 items`);
+        }
 
         for (const item of items) {
           const pid      = item.product_id;
