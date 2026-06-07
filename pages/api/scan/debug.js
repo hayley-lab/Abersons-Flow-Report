@@ -100,6 +100,45 @@ export default async function handler(req, res) {
     return res.json({ count: items.length, items });
   }
 
+  // ── Show override KV data for a season (vendor names + first product styles) ─
+  if (action === "override") {
+    if (!season) return res.status(400).json({ error: "season required" });
+    const [storesRaw, indexRaw] = await Promise.all([
+      kv.get(`scan:override:${season}:stores`),
+      kv.get(`scan:override:${season}:vendorIndex`),
+    ]);
+    const vendorIndex = indexRaw ? (typeof indexRaw === "string" ? JSON.parse(indexRaw) : indexRaw) : [];
+    const vendorRaws = await Promise.all(vendorIndex.map(k => kv.get(`scan:override:${season}:v:${k}`)));
+    const vendors = vendorIndex.map((key, i) => {
+      const v = vendorRaws[i] ? (typeof vendorRaws[i] === "string" ? JSON.parse(vendorRaws[i]) : vendorRaws[i]) : null;
+      if (!v) return { key, error: "null" };
+      const prods = v.products || [];
+      return {
+        key,
+        vendorName: v.vendorName,
+        deptName: v.deptName,
+        productCount: prods.length,
+        sampleStyles: prods.slice(0, 5).map(p => ({ style: p.style, description: p.description })),
+      };
+    });
+    return res.json({ vendorCount: vendors.length, vendors });
+  }
+
+  // ── Show skuToPid entries matching a style prefix ───────────────────────────
+  if (action === "skumatch") {
+    if (!season) return res.status(400).json({ error: "season required" });
+    const { style } = req.query;
+    const data = await kv.get(`scan:data:${season}`);
+    if (!data) return res.json({ error: "No scan data" });
+    const skuToPid = data.skuToPid || {};
+    if (style) {
+      const matches = Object.entries(skuToPid).filter(([sku]) => sku.startsWith(style.toLowerCase()));
+      return res.json({ style, matches: matches.slice(0, 20) });
+    }
+    const sample = Object.entries(skuToPid).slice(0, 20).map(([sku, pid]) => ({ sku, pid }));
+    return res.json({ total: Object.keys(skuToPid).length, sample });
+  }
+
   // ── Original KV scan data debug ─────────────────────────────────────────────
   if (!season) return res.status(400).json({ error: "season or action required" });
 
