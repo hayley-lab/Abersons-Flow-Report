@@ -72,7 +72,8 @@ export default async function handler(req, res) {
   const tasks = seasons.map((season, i) => async () => {
     const [job, data] = kvResults[i];
     const phase = job ? job.phase : null;
-    const lastTs = data ? data.ts : null;
+    // Prefer ts from job key (set on completion) so we don't need scan:data for interval check
+    const lastTs = (job && job.ts) || (data && data.ts) || null;
     const msSinceScan = lastTs ? Date.now() - lastTs : Infinity;
 
     let restart = "0";
