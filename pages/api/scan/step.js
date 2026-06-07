@@ -199,240 +199,125 @@ export default async function handler(req, res) {
       state.variantNeedsFixup    = {};
       state.productStats         = {};
 
-      // Bootstrap cursor: if we have prior scan data with known product IDs,
-      // fetch one to get its version number and start the catalog scan there
-      // instead of scanning from product #1 through 100k+ old records.
-      let anchorVersion = null;
-      try {
-        const priorData = await kv.get(dataKey);
-        const samplePid = priorData && priorData.seasonPids && priorData.seasonPids[0];
-        if (samplePid) {
-          const prodResp = await lsFetch("2.0/products/" + samplePid);
-          const ver = (prodResp.data || prodResp).version;
-          if (ver && ver > 0) {
-            // Start 2M versions before the known product so we don't miss any
-            anchorVersion = Math.max(0, ver - 2_000_000);
-            console.log(`[step] ${season} bootstrap cursor: product ${samplePid} version ${ver}, starting at ${anchorVersion}`);
-          }
-        }
-      } catch (e) {
-        console.log(`[step] ${season} bootstrap cursor failed (will do full scan):`, e.message);
-      }
-      state.anchorVersion = anchorVersion;
-
-      state.phase            = "products";
-      state.productSearchIdx = 0;
-      state.progress         = `Loaded ${cats.length} depts, ${consignments.length} POs, ${returnConsignments.length} returns — searching products…`;
+      state.phase    = "products_seed";
+      state.progress = `Loaded ${cats.length} depts, ${consignments.length} POs, ${returnConsignments.length} returns — seeding products…`;
     }
 
-    // ── PRODUCTS: fast-path SKU search ──────────────────────────────────────
-    if (state.phase === "products" && Date.now() < deadline) {
-      const skuCodes = seasonSkuCodes(season);
+    // ── PRODUCTS_SEED: discover season products without a full catalog scan ───
+    // Sources (deduplicated by PID):
+    //   1. Prior scan's seasonPids — fetched by ID (fastest when prior data exists)
+    //   2. Datatail override SKUs  — handle lookup (covers old-system hard-pull products)
+    //   3. LS PO line items        — lazy registration in consignments phase below
+    if (state.phase === "products_seed" && Date.now() < deadline) {
+      // One-time init: load prior scan pids + override handles
+      if (!state._seedReady) {
+        state._seedReady    = true;
+        state._priorPids    = [];
+        state._seedHandles  = []; // handles derived from override SKUs
+        state._priorIdx     = 0;
+        state._handleIdx    = 0;
 
-      while (state.productSearchIdx < skuCodes.length && Date.now() < deadline) {
-        const code  = skuCodes[state.productSearchIdx]; // e.g. "/s26" — keep slash for specific search
-        let after   = null;
-        for (let pg = 0; pg < 20 && Date.now() < deadline; pg++) {
-          const data  = await lsFetch(
-            "2.0/products?page_size=200&search=" +
-            encodeURIComponent(code) +
-            (after ? "&after=" + after : "")
+        try {
+          const priorData = await kv.get(dataKey);
+          if (priorData && Array.isArray(priorData.seasonPids)) {
+            state._priorPids = priorData.seasonPids;
+          }
+        } catch (e) {}
+
+        try {
+          const indexRaw = await kv.get(`scan:override:${season}:vendorIndex`);
+          const vendorIndex = Array.isArray(indexRaw) ? indexRaw
+            : (indexRaw ? JSON.parse(indexRaw) : []);
+          const vendorRaws = await Promise.all(
+            vendorIndex.map(k => kv.get(`scan:override:${season}:v:${k}`))
           );
-          const items = data.data || [];
-          for (const prod of items) {
-            const fields = [prod.sku, prod.name, prod.handle, prod.supplier_code]
-              .map(v => (v || "").toLowerCase());
-            if (skuCodes.some(c => fields.some(f => f.includes(c)))) registerProduct(state, prod);
-          }
-          if (items.length < 200) break;
-          after = getCursor(data, items);
-          if (!after) break;
-        }
-        state.productSearchIdx++;
-      }
-
-      if (state.productSearchIdx >= skuCodes.length) {
-        if (state.seasonPids.length === 0) {
-          // Fast-path found nothing — fall back to catalog scan starting at anchorVersion
-          // (or from the beginning if no anchor is available).
-          state.phase      = "products_slow";
-          state.slowAfter  = state.anchorVersion || null;
-          state.slowScanned = 0;
-          state.wrappedAround = false;
-          state.progress   = state.anchorVersion
-            ? `Scanning catalog from version ${state.anchorVersion}…`
-            : "Fast-path found nothing — scanning full catalog…";
-        } else if (!state.variantsSeenInScan) {
-          state.phase      = "products_variants";
-          state.variantIdx = 0;
-          state.progress   = `Found ${state.seasonParentIds.length} products — fetching variants…`;
-        } else {
-          state.phase    = "consignments";
-          state.consigIdx = 0;
-          state.progress  = `Found ${state.seasonPids.length} SKUs — scanning POs (0/${state.consignments.length})…`;
-        }
-      }
-    }
-
-    // ── PRODUCTS_SLOW: full catalog scan (fallback) ──────────────────────────
-    if (state.phase === "products_slow" && Date.now() < deadline) {
-      const skuCodes = seasonSkuCodes(season);
-      while (Date.now() < deadline) {
-        const path  = "2.0/products?is_active=true&page_size=500" + (state.slowAfter ? "&after=" + state.slowAfter : "");
-        const data  = await lsFetch(path);
-        const prods = data.data || [];
-        state.slowScanned += prods.length;
-
-        // Debug: log first product that has a slash in any text field (a real season product)
-        if (!state._debugLogged) {
-          const slashProd = prods.find(p =>
-            [p.sku, p.custom_sku, p.handle, p.supplier_code, p.name].some(v => v && String(v).includes("/"))
-          );
-          if (slashProd) {
-            state._debugLogged = true;
-            console.log("[step] products_slow first slash-field product:", JSON.stringify(
-              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code","active","variant_parent_id","product_type_id","price","price_excluding_tax","retail_price","cost"].map(k => [k, slashProd[k]]))
-            ));
-          } else if (state.slowScanned >= 5000 && !state._debugLogged5k) {
-            state._debugLogged5k = true;
-            const s = prods[0] || {};
-            console.log("[step] products_slow 5k sample (no slash yet):", JSON.stringify(
-              Object.fromEntries(["id","name","sku","custom_sku","handle","supplier_code"].map(k => [k, s[k]]))
-            ));
-          }
-        }
-
-        for (const prod of prods) {
-          const fields = [prod.sku, prod.name, prod.handle, prod.supplier_code]
-            .map(v => (v || "").toLowerCase());
-          if (skuCodes.some(c => fields.some(f => f.includes(c)))) registerProduct(state, prod);
-        }
-
-        if (prods.length === 0) {
-          // Reached end of catalog. If we started mid-catalog (anchorVersion), do a second
-          // pass from the beginning to catch anything before the anchor.
-          if (state.anchorVersion && !state.wrappedAround) {
-            state.wrappedAround = true;
-            state.slowAfter = null;
-            state.progress  = `Wrapping to start of catalog (${state.seasonPids.length} found so far)…`;
-            continue;
-          }
-          state.phase = "products_slow_done"; break;
-        }
-        const cursor = getCursor(data, prods);
-        if (!cursor) {
-          if (state.anchorVersion && !state.wrappedAround) {
-            state.wrappedAround = true;
-            state.slowAfter = null;
-            state.progress  = `Wrapping to start of catalog (${state.seasonPids.length} found so far)…`;
-            continue;
-          }
-          state.phase = "products_slow_done"; break;
-        }
-        // If we've wrapped around and caught back up to where we started, stop.
-        if (state.wrappedAround && cursor >= state.anchorVersion) {
-          state.phase = "products_slow_done"; break;
-        }
-        state.slowAfter = cursor;
-        state.progress  = `Scanning catalog… (${state.slowScanned.toLocaleString()} scanned, ${state.seasonPids.length} found)`;
-      }
-    }
-
-    if (state.phase === "products_slow_done") {
-      if (state.seasonPids.length === 0) {
-        // No products found after scanning the full catalog — season hasn't started yet.
-        // Complete gracefully with empty data rather than erroring.
-        const result = { ts: Date.now(), season: state.season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
-        await kv.set(dataKey, result, { ex: 48 * 3600 });
-        await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
-        return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "No products found for season." });
-      } else if (state.variantNeedsFixup && Object.keys(state.variantNeedsFixup).length > 0) {
-        // Fetch parent data for variants whose parent wasn't in-memory during slow scan
-        state.phase      = "products_fix";
-        state.fixParents = [...new Set(Object.values(state.variantNeedsFixup))];
-        state.fixIdx     = 0;
-        state.progress   = `Resolving variant data (0/${state.fixParents.length})…`;
-      } else {
-        state.phase    = "consignments";
-        state.consigIdx = 0;
-      }
-    }
-
-    // ── PRODUCTS_FIX: resolve parent data for slow-path variants ────────────
-    if (state.phase === "products_fix" && Date.now() < deadline) {
-      const parents = state.fixParents || [];
-      while (state.fixIdx < parents.length && Date.now() < deadline) {
-        const parentId = parents[state.fixIdx];
-        let prod;
-        try { prod = (await lsFetch("2.0/products/" + parentId)).data || null; } catch (e) { prod = null; }
-        if (prod) {
-          const pt = prod.product_type_id || "__none__";
-          const si = (prod.supplier && prod.supplier.id) || prod.supplier_id || "__none__";
-          const sn = (prod.supplier && prod.supplier.name) || "Unknown";
-          const pp = parseFloat(prod.price_excluding_tax || prod.price || prod.retail_price || 0);
-          for (const [variantId, pId] of Object.entries(state.variantNeedsFixup || {})) {
-            if (pId !== parentId) continue;
-            if ((state.pidToType[variantId] || "__none__") === "__none__" && pt !== "__none__") state.pidToType[variantId] = pt;
-            if ((state.pidToSupplier[variantId]?.i || "__none__") === "__none__" && si !== "__none__") {
-              state.pidToSupplier[variantId] = { i: si, n: sn };
+          const handleSet = new Set();
+          for (const raw of vendorRaws) {
+            const v = !raw ? null : (typeof raw === "object" ? raw : JSON.parse(raw));
+            for (const p of (v && v.products) || []) {
+              const sku = (p.style || "").toLowerCase().trim();
+              if (sku) handleSet.add(sku.replace("/", ""));
             }
-            if (!state.pidToPrice[variantId] && pp) state.pidToPrice[variantId] = pp;
           }
-        }
-        state.fixIdx++;
-        state.progress = `Resolving variant data (${state.fixIdx}/${parents.length})…`;
-      }
-      if (state.fixIdx >= parents.length) {
-        delete state.variantNeedsFixup;
-        delete state.fixParents;
-        state.phase    = "consignments";
-        state.consigIdx = 0;
-        state.progress  = `Found ${state.seasonPids.length} SKUs — scanning POs (0/${state.consignments.length})…`;
-      }
-    }
+          state._seedHandles = [...handleSet];
+        } catch (e) {}
 
-    // ── PRODUCTS_VARIANTS: fetch variants for parent products ────────────────
-    if (state.phase === "products_variants" && Date.now() < deadline) {
+        console.log(`[step] ${season} products_seed: ${state._priorPids.length} prior pids, ${state._seedHandles.length} override handles`);
+        state.progress = `Seeding products (${state._priorPids.length} prior, ${state._seedHandles.length} from datatail)…`;
+      }
+
       const pidSet = new Set(state.seasonPids);
-      while (state.variantIdx < state.seasonParentIds.length && Date.now() < deadline) {
-        const pid      = state.seasonParentIds[state.variantIdx];
-        const variants = await lsFetchAll("2.0/products?variant_parent_id=" + pid);
-        const par      = state.parentStore[pid];
-        for (const vp of variants) {
-          if (pidSet.has(vp.id)) continue;
-          pidSet.add(vp.id);
-          state.seasonPids.push(vp.id);
-          state.pidToType[vp.id]     = vp.product_type_id || par?.t || "__none__";
-          state.pidToSupplier[vp.id] = {
-            i: (vp.supplier && vp.supplier.id)   || vp.supplier_id   || par?.si || "__none__",
-            n: (vp.supplier && vp.supplier.name) || par?.sn || "Unknown",
-          };
-          state.pidToPrice[vp.id] = parseFloat(vp.price_excluding_tax || vp.price || vp.retail_price || 0) || par?.p || 0;
+
+      // 1. Fetch prior scan's known products by ID
+      while (state._priorIdx < state._priorPids.length && Date.now() < deadline) {
+        const pid = state._priorPids[state._priorIdx];
+        if (!pidSet.has(pid)) {
+          try {
+            const resp = await lsFetch("2.0/products/" + pid);
+            const prod = resp && (resp.data || resp);
+            if (prod && prod.id) { registerProduct(state, prod); pidSet.add(prod.id); }
+          } catch (e) {}
         }
-        state.variantIdx++;
-        state.progress = `Fetching variants (${state.variantIdx}/${state.seasonParentIds.length})…`;
+        state._priorIdx++;
+        if (state._priorIdx % 20 === 0)
+          state.progress = `Fetching prior products (${state._priorIdx}/${state._priorPids.length})…`;
       }
 
-      if (state.variantIdx >= state.seasonParentIds.length) {
-        delete state.parentStore;
-        delete state.seasonParentIds;
-        state.phase    = "consignments";
+      // 2. Look up override/datatail products by handle
+      while (state._handleIdx < state._seedHandles.length && Date.now() < deadline) {
+        const handle = state._seedHandles[state._handleIdx];
+        try {
+          const data  = await lsFetch("2.0/products?handle=" + encodeURIComponent(handle) + "&page_size=10");
+          for (const prod of (data.data || [])) {
+            if (prod && prod.id && !pidSet.has(prod.id)) {
+              registerProduct(state, prod); pidSet.add(prod.id);
+            }
+          }
+        } catch (e) {}
+        state._handleIdx++;
+        if (state._handleIdx % 20 === 0)
+          state.progress = `Fetching datatail products (${state._handleIdx}/${state._seedHandles.length})…`;
+      }
+
+      // Done when both lists are exhausted
+      if (state._priorIdx >= state._priorPids.length && state._handleIdx >= state._seedHandles.length) {
+        delete state._seedReady; delete state._priorPids;
+        delete state._seedHandles; delete state._priorIdx; delete state._handleIdx;
+        state.negPids   = {};
+        state.phase     = "consignments";
         state.consigIdx = 0;
-        state.progress  = `Found ${state.seasonPids.length} SKUs — scanning POs (0/${state.consignments.length})…`;
+        state.progress  = `Found ${state.seasonPids.length} products — scanning POs (0/${state.consignments.length})…`;
+        console.log(`[step] ${season} products_seed done: ${state.seasonPids.length} products found`);
       }
     }
 
     // ── CONSIGNMENTS: aggregate PO values by dept+vendor ────────────────────
     if (state.phase === "consignments" && Date.now() < deadline) {
       const seasonPidSet = new Set(state.seasonPids);
+      const skuCodes     = seasonSkuCodes(season);
+      if (!state.negPids) state.negPids = {};
 
       while (state.consigIdx < state.consignments.length && Date.now() < deadline) {
         const c     = state.consignments[state.consigIdx];
         const items = await lsFetchAll("2.0/consignments/" + c.id + "/products");
 
         for (const item of items) {
-          if (!seasonPidSet.has(item.product_id)) continue;
           if ((item.count || 0) < 0) continue; // skip vendor returns / adjustments
+          const pid = item.product_id;
+          // Lazy-register products from LS POs not caught by products_seed
+          if (!seasonPidSet.has(pid)) {
+            if (state.negPids[pid]) continue;
+            try {
+              const resp = await lsFetch("2.0/products/" + pid);
+              const prod = resp && (resp.data || resp);
+              if (!prod || !prod.id) { state.negPids[pid] = 1; continue; }
+              const fields = [prod.sku, prod.name].map(v => (v || "").toLowerCase());
+              if (!skuCodes.some(c => fields.some(f => f.includes(c)))) { state.negPids[pid] = 1; continue; }
+              registerProduct(state, prod);
+              seasonPidSet.add(pid);
+            } catch (e) { state.negPids[pid] = 1; continue; }
+          }
+          if (!seasonPidSet.has(item.product_id)) continue;
           const pid        = item.product_id;
           const sup        = state.pidToSupplier[pid];
           if (!sup || sup.i === "__none__") continue;
@@ -528,7 +413,7 @@ export default async function handler(req, res) {
         delete state.returnConsignments;
         state.phase      = "sales";
         state.salesPages = 0;
-        state.saleCursor = state.anchorVersion ? Math.max(0, state.anchorVersion - 1_000_000) : null;
+        state.saleCursor = null;
         state.progress   = "Loading sales…";
       }
     }
@@ -668,7 +553,7 @@ export default async function handler(req, res) {
     }
 
     // Split state across two keys: small operational fields + big data blobs
-    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","productSearchIdx","variantIdx","consigIdx","returnConsigIdx","salesPages","saleCursor","slowAfter","slowScanned","variantsSeenInScan","anchorVersion","fixIdx","wrappedAround","_debugLogged","_debugLogged5k"]);
+    const SMALL_FIELDS = new Set(["phase","season","startedAt","progress","error","consigIdx","returnConsigIdx","salesPages","saleCursor","salesDateFrom","_seedReady","_priorIdx","_handleIdx"]);
     const small = {}, big = {};
     for (const [k, v] of Object.entries(state)) {
       if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;

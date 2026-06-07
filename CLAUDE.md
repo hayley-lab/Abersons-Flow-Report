@@ -156,9 +156,30 @@ Active seasons for scanning: current year, next year, prior year.
 - **On-sale visual highlighting** (DEFERRED): in the old RMH system, items on sale had different font color in the product list. We will replicate this in LS using pricebooks — come back to this once the pricebook workflow is settled in LS.
 
 ## What's Currently Broken / In Progress
-1. **products_slow finding 0 products** — debug log added to step.js, need to check Vercel runtime logs after a sync runs to see actual LS API field names on product objects. This is blocking everything — all scan data is empty until this is fixed.
+1. **products_slow finding 0 products** — root cause confirmed: LS catalog search doesn't match our SKU pattern, and `active=1` filter doesn't work (field is `is_active`). The catalog scan grinds through 110k+ active products and times out. Fixed (Jun 2026) by replacing catalog scan with `products_seed` phase — see below.
 2. **Judi Powers spring26 returns** — not investigated yet.
 3. **Staud spring26 return** — may be in wrong season, needs checking.
+
+## Product Discovery Strategy — products_seed phase (replaces catalog scan)
+
+Instead of scanning 110k+ products, the `products_seed` phase discovers season products from three targeted sources (in order, deduplicating by PID):
+
+1. **Prior scan data** (`scan:data:{season}` in KV) — fetches each known PID by ID. Fastest path when prior data exists.
+2. **Datatail override SKUs** (`scan:override:{season}:v:*` in KV) — `style` field = full LS SKU (e.g. `cafmrhalo/s2601`). Derives handle by removing the slash (`cafmrhalos2601`) and looks up via `?handle=`. Covers old-system products that never got POs in LS.
+3. **LS PO line items** (consignments phase lazy registration) — when a product appears in a PO but wasn't found by sources 1 or 2, fetches it by ID and checks its SKU against season codes before registering. Covers LS-native POs.
+
+**Key facts about the overlap:**
+- Products exist in BOTH old system (datatail) and new LS POs — no clean dividing line
+- Deduplication is automatic: `registerProduct` is a no-op if the PID is already in `seasonPids`
+- `state.negPids` caches non-season product IDs to avoid re-fetching on each step call
+
+### If products_seed needs to be reverted:
+The old approach was a full catalog scan with a bootstrap cursor. The relevant git commits are on `claude/determined-brown-C3xNA`. To revert:
+- Restore the `products` phase (fast-path SKU search with `?search=`)
+- Restore the `products_slow` phase (full catalog scan with `?is_active=true`)
+- Restore `products_slow_done`, `products_fix`, `products_variants` phases
+- Remove the `products_seed` phase and `negPids` lazy registration from consignments
+The old code had fundamental issues: LS search API doesn't support substring matching on SKU, `active=1` filter doesn't work (correct field is `is_active`), and 110k active + 148k inactive products made the full scan take 1.5+ hours and time out.
 
 ## What NOT To Do
 - Do not remove the 6h KV TTL (was 1h before, caused state loss on long scans)
