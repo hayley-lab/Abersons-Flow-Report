@@ -135,7 +135,7 @@ export default async function handler(req, res) {
 
   async function lsFetch(path, retries = 4) {
     for (let attempt = 0; attempt <= retries; attempt++) {
-      const r = await fetch(`${base}/${path}`, { headers });
+      const r = await fetch(`${base}/${path}`, { headers, cache: "no-store" });
       if (r.status === 429 || r.status === 503) {
         if (attempt < retries) {
           const wait = Math.min(2000 * Math.pow(2, attempt), 16000);
