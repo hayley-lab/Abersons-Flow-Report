@@ -1,5 +1,8 @@
 # Abersons Flow Report — Project Context
 
+## Git Workflow
+All commits go to branch `claude/determined-brown-C3xNA` — never push to `main`. Use `git push -f origin main:claude/determined-brown-C3xNA`. Before pushing, always run `git config user.email noreply@anthropic.com && git config user.name Claude` and rebase with `git rebase --exec "git commit --amend --no-edit --reset-author" origin/main` to keep commits verified.
+
 ## Background
 Abersons switched POS systems from RMH (old) to Lightspeed Retail / LS (new). The old flow report was connected to RMH. This new app connects to LS and replaces it. Sales history was transferred into LS, but not all POs were — some older POs were hard-pulled from the old flow report.
 
