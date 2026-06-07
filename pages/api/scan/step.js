@@ -215,19 +215,17 @@ export default async function handler(req, res) {
         state._handleIdx   = 0;
         const priorPidSet  = new Set(state.seasonPids);
 
-        // 1. Restore pid maps directly from prior scan — no API calls needed
+        // 1. Restore pid maps from lightweight scan:pids key (avoids loading full scan:data blob)
         try {
-          const priorData = await kv.get(dataKey);
-          if (priorData && Array.isArray(priorData.seasonPids) && priorData.seasonPids.length > 0) {
-            for (const pid of priorData.seasonPids) {
+          const pidsKey   = `scan:pids:${season}`;
+          const priorPids = await kv.get(pidsKey) || await kv.get(dataKey); // fallback for first run
+          if (priorPids && Array.isArray(priorPids.seasonPids) && priorPids.seasonPids.length > 0) {
+            for (const pid of priorPids.seasonPids) {
               if (!priorPidSet.has(pid)) { state.seasonPids.push(pid); priorPidSet.add(pid); }
             }
-            // Restore lookup maps, merging over any existing entries
-            Object.assign(state.pidToType,     priorData.pidToType     || {});
-            Object.assign(state.pidToSupplier, priorData.pidToSupplier || {});
-            Object.assign(state.skuToPid,      priorData.skuToPid      || {});
-            // Restore pidToPrice from prior productStats (price * 1 isn't stored directly,
-            // but we can recover it if needed; skip for now — PO line items will backfill)
+            Object.assign(state.pidToType,     priorPids.pidToType     || {});
+            Object.assign(state.pidToSupplier, priorPids.pidToSupplier || {});
+            Object.assign(state.skuToPid,      priorPids.skuToPid      || {});
           }
         } catch (e) {}
 
@@ -530,7 +528,11 @@ export default async function handler(req, res) {
         skuToPid:        state.skuToPid || {},
       };
 
-      await kv.set(dataKey, result, { ex: 48 * 3600 });
+      const pidsKey = `scan:pids:${state.season}`;
+      await Promise.all([
+        kv.set(dataKey, result, { ex: 48 * 3600 }),
+        kv.set(pidsKey, { seasonPids: state.seasonPids, pidToType: state.pidToType, pidToSupplier: state.pidToSupplier, skuToPid: state.skuToPid || {} }, { ex: 48 * 3600 }),
+      ]);
       await Promise.all([kv.del(jobKey), kv.del(bigKey)]);
 
       return res.json({ phase: "done", season: state.season, ts: result.ts, progress: "Scan complete!" });
