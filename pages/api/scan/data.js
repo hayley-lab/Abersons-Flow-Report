@@ -46,6 +46,41 @@ function mergeOverride(data, override) {
   if (!override) return data;
   if (!data) data = { summaryRows: [], deptVendors: {} };
 
+  // Build style-code → [pid] map from skuToPid.
+  // SKU format: "{style}/{seasonCode}{variant}" — the style is everything before the first slash.
+  // Used to attribute vendor returns to the correct override vendor by product ownership,
+  // bypassing LS supplier name (which may be shared across multiple brands).
+  const styleToPids = {};
+  Object.entries(data.skuToPid || {}).forEach(([sku, pid]) => {
+    const slash = sku.indexOf("/");
+    if (slash > 0) {
+      const style = sku.slice(0, slash).toLowerCase();
+      if (!styleToPids[style]) styleToPids[style] = [];
+      styleToPids[style].push(pid);
+    }
+  });
+
+  // Given an override vendor's product list (from datatail), compute returned retail
+  // and cost by looking up each product's style in productStats.
+  // Returns null if no style matches were found (fall back to LS supplier rollup).
+  function computeReturnedFromSkus(ovProducts) {
+    const ps = data.productStats || {};
+    let retVal = 0, retCost = 0, matched = 0;
+    for (const op of (ovProducts || [])) {
+      const style = (op.style || "").toLowerCase().trim();
+      if (!style) continue;
+      const pids = styleToPids[style] || [];
+      for (const pid of pids) {
+        if (ps[pid]) {
+          retVal  += ps[pid].retVal  || 0;
+          retCost += ps[pid].retCost || 0;
+          matched++;
+        }
+      }
+    }
+    return matched > 0 ? { retVal, retCost } : null;
+  }
+
   // Build LS lookup maps by normalized name
   const lsDeptByName = {};
   (data.summaryRows || []).forEach(r => { lsDeptByName[normName(r.name)] = r; });
@@ -97,15 +132,10 @@ function mergeOverride(data, override) {
     // Track which LS vendors were consumed by override matching so they don't appear twice
     const consumedLsVendors = new Set();
 
-    // Find the best LS vendor match for an override vendor name.
-    // Exact match first; then try LS name + "consignment" = override name
-    // (handles "Judi Powers" LS → "Judi Powers Consignment" override).
+    // Find the LS vendor entry for an override vendor by exact normalized name.
     function findLsVendor(ovName) {
       const ovNorm = normName(ovName);
       if (lsVendors[ovNorm]) return { key: ovNorm, vendor: lsVendors[ovNorm] };
-      for (const [lsNorm, lsV] of Object.entries(lsVendors)) {
-        if (ovNorm === lsNorm + "consignment") return { key: lsNorm, vendor: lsV };
-      }
       return null;
     }
 
@@ -113,6 +143,12 @@ function mergeOverride(data, override) {
       const match = findLsVendor(ov.vendorName);
       const ls = match ? match.vendor : null;
       if (match) consumedLsVendors.add(match.key);
+
+      // Compute returns from product-level SKU matching so returns are attributed to
+      // whichever override vendor owns the products, regardless of LS supplier name.
+      // (Two brands can share the same LS supplier — e.g. Judi Powers / Judi Powers Consignment.)
+      const skuReturns = computeReturnedFromSkus(ov.products);
+
       return {
         id:               ls ? ls.id : ov.vendorId,
         name:             ls ? ls.name : decodeHtml(ov.vendorName),
@@ -120,8 +156,8 @@ function mergeOverride(data, override) {
         orderedCost:      ls ? (ls.orderedCost  || 0) : 0,
         received:         ls && ls.received > 0 ? ls.received : (ov.received || 0),
         cost:             ls ? (ls.cost         || 0) : 0,
-        returned:         ls ? (ls.returned     || 0) : 0,
-        returnedCost:     ls ? (ls.returnedCost || 0) : 0,
+        returned:         skuReturns ? skuReturns.retVal  : (ls ? (ls.returned     || 0) : 0),
+        returnedCost:     skuReturns ? skuReturns.retCost : (ls ? (ls.returnedCost || 0) : 0),
         sold:             ls ? (ls.sold || 0) : (ov.sold || 0),
         overrideProducts: ov.products || [],
       };
