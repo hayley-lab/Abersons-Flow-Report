@@ -51,12 +51,14 @@ export default async function handler(req, res) {
 
   // Load all KV state in parallel first — wrap in try/catch so a transient
   // KV error returns a 503 instead of an unhandled 500.
+  // When force=1 we skip the rescan-interval check, so scan:data isn't needed
+  // (those blobs can be 5-10MB each — loading all seasons in parallel is wasteful).
   let kvResults;
   try {
     kvResults = await Promise.all(
       seasons.map(season => Promise.all([
         kv.get(`scan:job:${season}`),
-        kv.get(`scan:data:${season}`),
+        force ? Promise.resolve(null) : kv.get(`scan:data:${season}`),
       ]))
     );
   } catch (e) {
