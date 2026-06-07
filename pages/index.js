@@ -315,8 +315,8 @@ export default function FlowReport() {
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
           if (r.status === 401) { setAuthed(false); break; }
-          // 503 = transient KV/network error — wait and retry rather than failing
-          if (r.status === 503) { await new Promise(res => setTimeout(res, 8000)); continue; }
+          // 500/503 = transient error — wait and retry rather than failing
+          if (r.status === 503 || r.status === 500) { await new Promise(res => setTimeout(res, 8000)); continue; }
           throw new Error(d.error || "HTTP " + r.status);
         }
         const { results } = await r.json();
