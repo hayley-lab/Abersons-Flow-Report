@@ -2,8 +2,8 @@ name: Nightly Scan
 
 on:
   schedule:
-    # 6am UTC = ~1am Central, finishes well before 6am
-    - cron: "0 6 * * *"
+    # 4:30am UTC = ~11:30pm Central
+    - cron: "30 4 * * *"
   workflow_dispatch: # allow manual trigger from GitHub Actions tab
 
 jobs:
