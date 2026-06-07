@@ -181,7 +181,11 @@ export default async function handler(req, res) {
 
       // Trim to only needed fields to keep KV payloads small
       state.cats               = cats.map(c => ({ id: c.id, name: c.name }));
-      state.consignments       = consignments.map(c => ({ id: c.id }));
+      state.consignments       = consignments.map(c => ({
+        id:      c.id,
+        suppId:  (c.supplier && c.supplier.id)   || c.supplier_id   || "__none__",
+        suppName:(c.supplier && c.supplier.name) || "Unknown",
+      }));
       state.returnConsignments = returnConsignments.map(c => ({
         id:      c.id,
         suppId:  (c.supplier && c.supplier.id)   || c.supplier_id   || "__none__",
@@ -311,7 +315,12 @@ export default async function handler(req, res) {
           if ((item.count || 0) < 0) continue; // skip vendor returns / adjustments
           const pid = item.product_id;
           if (!seasonPidSet.has(pid)) continue;
-          const sup        = state.pidToSupplier[pid];
+          let sup = state.pidToSupplier[pid];
+          // Backfill supplier from PO header when product was registered without one
+          if ((!sup || sup.i === "__none__") && c.suppId !== "__none__") {
+            sup = { i: c.suppId, n: c.suppName };
+            state.pidToSupplier[pid] = sup;
+          }
           if (!sup || sup.i === "__none__") continue;
           // Backfill pidToPrice from PO line item if products list didn't return a price
           const itemRetailPrice = parseFloat(item.price || item.unit_price || item.retail_price || 0);
@@ -335,6 +344,8 @@ export default async function handler(req, res) {
       }
 
       if (state.consigIdx >= state.consignments.length) {
+        const orderedCount = Object.values(state.pidToQtyOrdered).filter(q => q > 0).length;
+        console.log(`[step] ${season} CONSIGNMENTS DONE: ${orderedCount} products with ordered qty, ${Object.keys(state.productStats).length} products with any stats`);
         delete state.consignments;
         delete state.parentStore;
 
