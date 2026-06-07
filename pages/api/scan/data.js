@@ -94,8 +94,25 @@ function mergeOverride(data, override) {
     if (!deptId) return;
     const lsVendors = lsVendorByDeptAndName[deptNorm] || {};
 
+    // Track which LS vendors were consumed by override matching so they don't appear twice
+    const consumedLsVendors = new Set();
+
+    // Find the best LS vendor match for an override vendor name.
+    // Exact match first; then try LS name + "consignment" = override name
+    // (handles "Judi Powers" LS → "Judi Powers Consignment" override).
+    function findLsVendor(ovName) {
+      const ovNorm = normName(ovName);
+      if (lsVendors[ovNorm]) return { key: ovNorm, vendor: lsVendors[ovNorm] };
+      for (const [lsNorm, lsV] of Object.entries(lsVendors)) {
+        if (ovNorm === lsNorm + "consignment") return { key: lsNorm, vendor: lsV };
+      }
+      return null;
+    }
+
     deptVendors[deptId] = ovVendors.map(ov => {
-      const ls = lsVendors[normName(ov.vendorName)];
+      const match = findLsVendor(ov.vendorName);
+      const ls = match ? match.vendor : null;
+      if (match) consumedLsVendors.add(match.key);
       return {
         id:               ls ? ls.id : ov.vendorId,
         name:             ls ? ls.name : decodeHtml(ov.vendorName),
@@ -110,10 +127,9 @@ function mergeOverride(data, override) {
       };
     });
 
-    // Also add any LS vendors not in override
+    // Also add any LS vendors not consumed by override matching
     Object.entries(lsVendors).forEach(([vNorm, ls]) => {
-      const already = ovVendors.some(ov => normName(ov.vendorName) === vNorm);
-      if (!already) deptVendors[deptId].push(ls);
+      if (!consumedLsVendors.has(vNorm)) deptVendors[deptId].push(ls);
     });
   });
 
