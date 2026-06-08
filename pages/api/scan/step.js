@@ -275,59 +275,22 @@ export default async function handler(req, res) {
 
       if (state._handleIdx >= state._seedHandles.length) {
         delete state._seedReady; delete state._seedHandles; delete state._handleIdx;
+        console.log(`[step] ${season} products_seed done: ${state.seasonPids.length} products found`);
 
-        // 3. Price fixup: fetch product records for season PIDs with no price,
-        //    so ordered/received retail amounts are correct in the consignments phase.
-        //    Only needed for LS-native products (supplier != __none__) — datatail products
-        //    use the override price fallback in data.js and don't need this.
-        if (!state._priceFixPids) {
-          state._priceFixPids = state.seasonPids.filter(pid =>
-            !state.pidToPrice[pid] && state.pidToSupplier[pid] && state.pidToSupplier[pid].i !== "__none__"
-          );
-          state._priceFixIdx = 0;
-          console.log(`[step] ${season} products_seed: ${state._priceFixPids.length} pids need price fixup`);
+        if (state.seasonPids.length === 0) {
+          const doneTs = Date.now();
+          const result = { ts: doneTs, season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
+          await Promise.all([
+            kv.set(dataKey, result, { ex: 48 * 3600 }),
+            kv.set(jobKey, { phase: "done", season, ts: doneTs }, { ex: 2 * 3600 }),
+          ]);
+          await kv.del(bigKey);
+          return res.json({ phase: "done", season, ts: doneTs, progress: "No products found for season." });
         }
 
-        while (state._priceFixIdx < state._priceFixPids.length && Date.now() < deadline) {
-          const pid = state._priceFixPids[state._priceFixIdx];
-          try {
-            // Use a direct fetch (no retries) so a 429 skips immediately rather
-            // than burning 30s of backoff and blowing the step deadline.
-            const r = await fetch(`${base}/2.0/products/${pid}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
-            if (r.ok) {
-              const p = await r.json();
-              const pd = p.data || p;
-              const price = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
-              if (price > 0) state.pidToPrice[pid] = price;
-            }
-          } catch (e) {}
-          state._priceFixIdx++;
-          if (state._priceFixIdx % 10 === 0)
-            state.progress = `Fetching product prices (${state._priceFixIdx}/${state._priceFixPids.length})…`;
-        }
-
-        if (state._priceFixIdx < state._priceFixPids.length) {
-          // More to process — save and return to continue next step call
-          state.progress = `Fetching product prices (${state._priceFixIdx}/${state._priceFixPids.length})…`;
-        } else {
-          delete state._priceFixPids; delete state._priceFixIdx;
-          console.log(`[step] ${season} products_seed done: ${state.seasonPids.length} products found`);
-
-          if (state.seasonPids.length === 0) {
-            const doneTs = Date.now();
-            const result = { ts: doneTs, season, summaryRows: [], deptVendors: {}, productStats: {}, seasonPids: [], pidToType: {}, pidToSupplier: {}, pidToQtyOrdered: {}, skuToPid: {} };
-            await Promise.all([
-              kv.set(dataKey, result, { ex: 48 * 3600 }),
-              kv.set(jobKey, { phase: "done", season, ts: doneTs }, { ex: 2 * 3600 }),
-            ]);
-            await kv.del(bigKey);
-            return res.json({ phase: "done", season, ts: doneTs, progress: "No products found for season." });
-          }
-
-          state.phase     = "consignments";
-          state.consigIdx = 0;
-          state.progress  = `Found ${state.seasonPids.length} products — scanning POs (0/${state.consignments.length})…`;
-        }
+        state.phase     = "consignments";
+        state.consigIdx = 0;
+        state.progress  = `Found ${state.seasonPids.length} products — scanning POs (0/${state.consignments.length})…`;
       }
     }
 
@@ -345,6 +308,27 @@ export default async function handler(req, res) {
           if (!seasonPidSet.has(pid)) continue;
           const itemRetailPrice = parseFloat(item.price || item.unit_price || item.retail_price || 0);
           if (!state.pidToPrice[pid] && itemRetailPrice) state.pidToPrice[pid] = itemRetailPrice;
+
+          // Lazy price fetch: only for LS-native products with no price, fetched at most once per pid.
+          // Limits fetches to ~200-500 distinct products in POs rather than all 7000+ season products.
+          if (!state.pidToPrice[pid]) {
+            const sup = state.pidToSupplier[pid];
+            if (sup && sup.i !== "__none__") {
+              if (!state._priceTried) state._priceTried = {};
+              if (!state._priceTried[pid]) {
+                state._priceTried[pid] = true;
+                try {
+                  const r = await fetch(`${base}/2.0/products/${pid}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
+                  if (r.ok) {
+                    const pd = (await r.json()).data || {};
+                    const fetchedPrice = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
+                    if (fetchedPrice > 0) state.pidToPrice[pid] = fetchedPrice;
+                  }
+                } catch (e) {}
+              }
+            }
+          }
+
           const price      = state.pidToPrice[pid] || 0;
           const itemCost   = parseFloat(item.cost || 0);
           const qtyOrdered = Math.max(0, item.count    || 0);
