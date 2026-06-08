@@ -636,10 +636,10 @@ export default function FlowReport() {
   const totalReturned     = summaryRows.reduce((a, r) => a + (r.returned || 0),    0);
   const totalReturnedCost = summaryRows.reduce((a, r) => a + (r.returnedCost || 0), 0);
   const totalSold         = summaryRows.reduce((a, r) => a + r.sold,               0);
-  const totalNetReceived     = totalReceived - totalReturned;
+  const totalNetReceived     = Math.max(0, totalReceived - totalReturned);
   const totalNetReceivedCost = Math.max(0, totalReceivedCost - totalReturnedCost);
-  const totalRecPct    = totalOrdered       > 0 ? (totalReceived / totalOrdered)       * 100 : 0;
-  const totalSoldPct   = totalNetReceived   > 0 ? (totalSold     / totalNetReceived)   * 100 : 0;
+  const totalRecPct    = totalOrdered       > 0 ? (Math.max(0, totalReceived) / totalOrdered) * 100 : 0;
+  const totalSoldPct   = totalNetReceived   > 0 ? (totalSold / totalNetReceived)               * 100 : 0;
   const vTotalOrdered      = vendorRows.reduce((a, r) => a + r.ordered,               0);
   const vTotalOrderedCost  = vendorRows.reduce((a, r) => a + (r.orderedCost  || 0),  0);
   const vTotalReceived     = vendorRows.reduce((a, r) => a + r.received,              0);
@@ -861,8 +861,8 @@ export default function FlowReport() {
                       </thead>
                       <tbody>
                         {summaryRows.filter(r => r.ordered > 0 || r.received > 0 || r.sold > 0).map(function(r) {
-                          var netReceived = (r.received || 0) - (r.returned || 0);
-                          var recPct  = r.ordered    > 0 ? (r.received / r.ordered)  * 100 : 0;
+                          var netReceived = Math.max(0, (r.received || 0) - (r.returned || 0));
+                          var recPct  = r.ordered    > 0 ? (Math.max(0, r.received || 0) / r.ordered) * 100 : 0;
                           var soldPct = netReceived  > 0 ? (r.sold     / netReceived) * 100 : 0;
                           return { ...r, recPct, soldPct };
                         }).sort(function(a, b) {
@@ -1011,8 +1011,8 @@ export default function FlowReport() {
                     </thead>
                     <tbody>
                       {vendorRows.map(function(r) {
-                        var vNetReceived = (r.received || 0) - (r.returned || 0);
-                        var recPct  = r.ordered     > 0 ? (r.received / r.ordered)   * 100 : 0;
+                        var vNetReceived = Math.max(0, (r.received || 0) - (r.returned || 0));
+                        var recPct  = r.ordered     > 0 ? (Math.max(0, r.received || 0) / r.ordered) * 100 : 0;
                         var soldPct = vNetReceived  > 0 ? (r.sold     / vNetReceived) * 100 : 0;
                         return { ...r, recPct, soldPct };
                       }).sort(function(a, b) {
