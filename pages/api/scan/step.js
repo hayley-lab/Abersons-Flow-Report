@@ -291,10 +291,15 @@ export default async function handler(req, res) {
         while (state._priceFixIdx < state._priceFixPids.length && Date.now() < deadline) {
           const pid = state._priceFixPids[state._priceFixIdx];
           try {
-            const pd = await lsFetch("2.0/products/" + pid);
-            const p = pd.data || pd;
-            const price = parseFloat(p.price_excluding_tax || p.price || p.retail_price || 0);
-            if (price > 0) state.pidToPrice[pid] = price;
+            // Use a direct fetch (no retries) so a 429 skips immediately rather
+            // than burning 30s of backoff and blowing the step deadline.
+            const r = await fetch(`${base}/2.0/products/${pid}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
+            if (r.ok) {
+              const p = await r.json();
+              const pd = p.data || p;
+              const price = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
+              if (price > 0) state.pidToPrice[pid] = price;
+            }
           } catch (e) {}
           state._priceFixIdx++;
           if (state._priceFixIdx % 10 === 0)
@@ -592,8 +597,8 @@ export default async function handler(req, res) {
       if (SMALL_FIELDS.has(k)) small[k] = v; else big[k] = v;
     }
     await Promise.all([
-      kv.set(jobKey, small, { ex: 6 * 3600 }),
-      kv.set(bigKey, big,   { ex: 6 * 3600 }),
+      kv.set(jobKey, small, { ex: 24 * 3600 }),
+      kv.set(bigKey, big,   { ex: 24 * 3600 }),
     ]);
     return res.json({ phase: state.phase, progress: state.progress || "…" });
 
