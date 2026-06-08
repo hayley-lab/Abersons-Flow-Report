@@ -16,11 +16,17 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           echo "Starting nightly scan loop..."
-          for i in $(seq 1 600); do
+          for i in $(seq 1 20); do
             echo "--- Call $i ---"
-            curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
+            RESPONSE=$(curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
               -H "Authorization: Bearer $CRON_SECRET" \
-              -H "Content-Type: application/json" | jq . || true
-            sleep 12
+              -H "Content-Type: application/json")
+            echo "$RESPONSE" | jq . || true
+            ALL_DONE=$(echo "$RESPONSE" | jq -r '.allDone // false')
+            if [ "$ALL_DONE" = "true" ]; then
+              echo "All seasons complete. Done."
+              exit 0
+            fi
+            echo "Seasons still in progress, continuing..."
           done
-          echo "Scan loop complete."
+          echo "Reached iteration limit — scan may still be in progress."
