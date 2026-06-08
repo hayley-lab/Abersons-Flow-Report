@@ -629,23 +629,23 @@ export default function FlowReport() {
     }
   }, [screen, currentVendor, scanData, openVendor]);
 
-  const totalOrdered      = summaryRows.reduce((a, r) => a + r.ordered,             0);
-  const totalOrderedCost  = summaryRows.reduce((a, r) => a + (r.orderedCost || 0), 0);
-  const totalReceived     = summaryRows.reduce((a, r) => a + r.received,            0);
-  const totalReceivedCost = summaryRows.reduce((a, r) => a + (r.cost || 0),        0);
-  const totalReturned     = summaryRows.reduce((a, r) => a + (r.returned || 0),    0);
+  const totalOrdered      = summaryRows.reduce((a, r) => a + (r.ordered      || 0), 0);
+  const totalOrderedCost  = summaryRows.reduce((a, r) => a + (r.orderedCost  || 0), 0);
+  const totalReceived     = summaryRows.reduce((a, r) => a + (r.received     || 0), 0);
+  const totalReceivedCost = summaryRows.reduce((a, r) => a + (r.cost         || 0), 0);
+  const totalReturned     = summaryRows.reduce((a, r) => a + (r.returned     || 0), 0);
   const totalReturnedCost = summaryRows.reduce((a, r) => a + (r.returnedCost || 0), 0);
-  const totalSold         = summaryRows.reduce((a, r) => a + r.sold,               0);
+  const totalSold         = summaryRows.reduce((a, r) => a + (r.sold         || 0), 0);
   const totalNetReceived     = Math.max(0, totalReceived - totalReturned);
   const totalNetReceivedCost = Math.max(0, totalReceivedCost - totalReturnedCost);
   const totalRecPct    = totalOrdered       > 0 ? (Math.max(0, totalReceived) / totalOrdered) * 100 : 0;
   const totalSoldPct   = totalNetReceived   > 0 ? (totalSold / totalNetReceived)               * 100 : 0;
-  const vTotalOrdered      = vendorRows.reduce((a, r) => a + r.ordered,               0);
-  const vTotalOrderedCost  = vendorRows.reduce((a, r) => a + (r.orderedCost  || 0),  0);
-  const vTotalReceived     = vendorRows.reduce((a, r) => a + r.received,              0);
-  const vTotalReceivedCost = vendorRows.reduce((a, r) => a + (r.cost         || 0),  0);
-  const vTotalReturned     = vendorRows.reduce((a, r) => a + (r.returned     || 0),  0);
-  const vTotalSold         = vendorRows.reduce((a, r) => a + r.sold,                 0);
+  const vTotalOrdered      = vendorRows.reduce((a, r) => a + (r.ordered      || 0), 0);
+  const vTotalOrderedCost  = vendorRows.reduce((a, r) => a + (r.orderedCost  || 0), 0);
+  const vTotalReceived     = vendorRows.reduce((a, r) => a + (r.received     || 0), 0);
+  const vTotalReceivedCost = vendorRows.reduce((a, r) => a + (r.cost         || 0), 0);
+  const vTotalReturned     = vendorRows.reduce((a, r) => a + (r.returned     || 0), 0);
+  const vTotalSold         = vendorRows.reduce((a, r) => a + (r.sold         || 0), 0);
 
   const BUCKET_COLORS = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
   const BUCKET_LABELS = { ordered: "ordered", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
