@@ -322,7 +322,20 @@ export default async function handler(req, res) {
                   if (r.ok) {
                     const pd = (await r.json()).data || {};
                     const fetchedPrice = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
-                    if (fetchedPrice > 0) state.pidToPrice[pid] = fetchedPrice;
+                    if (fetchedPrice > 0) {
+                      state.pidToPrice[pid] = fetchedPrice;
+                    } else if (pd.variant_parent_id && !state._priceTried[pd.variant_parent_id]) {
+                      // Variant has no own price — LS stores price on the parent product
+                      state._priceTried[pd.variant_parent_id] = true;
+                      try {
+                        const pr = await fetch(`${base}/2.0/products/${pd.variant_parent_id}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
+                        if (pr.ok) {
+                          const pard = (await pr.json()).data || {};
+                          const parentPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
+                          if (parentPrice > 0) state.pidToPrice[pid] = parentPrice;
+                        }
+                      } catch (e) {}
+                    }
                   }
                 } catch (e) {}
               }
