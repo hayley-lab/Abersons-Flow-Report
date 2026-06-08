@@ -78,7 +78,7 @@ export default async function handler(req, res) {
     if (restartAll) {
       restart = "1";
     } else if (!phase || phase === "done" || phase === "error") {
-      if (!force && msSinceScan < RESCAN_INTERVAL_MS) {
+      if (msSinceScan < RESCAN_INTERVAL_MS) {
         return { season, phase, restart, done: true, action: "skipped" };
       }
       restart = "1";
