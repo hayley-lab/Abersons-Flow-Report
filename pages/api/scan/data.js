@@ -147,8 +147,8 @@ function mergeOverride(data, override) {
         orderedCost:      ls ? (ls.orderedCost  || 0) : 0,
         received:         ls && ls.received > 0 ? ls.received : (ov.received || 0),
         cost:             ls ? (ls.cost         || 0) : 0,
-        returned:         skuReturns ? skuReturns.retVal  : (ls ? (ls.returned     || 0) : 0),
-        returnedCost:     skuReturns ? skuReturns.retCost : (ls ? (ls.returnedCost || 0) : 0),
+        returned:         (skuReturns ? skuReturns.retVal  : 0) + (ls ? (ls.returned     || 0) : 0),
+        returnedCost:     (skuReturns ? skuReturns.retCost : 0) + (ls ? (ls.returnedCost || 0) : 0),
         sold:             ls ? (ls.sold || 0) : (ov.sold || 0),
         overrideProducts: ov.products || [],
       };
