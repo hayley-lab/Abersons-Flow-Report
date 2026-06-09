@@ -52,6 +52,7 @@ function mergeOverride(data, override) {
   // Returns null if no SKUs matched — fall back to LS supplier rollup.
   const skuToPid = data.skuToPid || {};
   const productStats = data.productStats || {};
+  const pidToPrice = data.pidToPrice || {};
   function computeReturnedFromSkus(ovProducts) {
     let retVal = 0, retCost = 0, matched = 0;
     for (const op of (ovProducts || [])) {
@@ -61,9 +62,8 @@ function mergeOverride(data, override) {
       if (pid && productStats[pid]) {
         const ps  = productStats[pid];
         const qty = ps.retQty || 0;
-        // Fall back to override product price × retQty when retVal wasn't computed during scan
-        // (happens for datatail-only products whose LS price wasn't available at scan time)
-        const fallbackPrice = parseFloat(op.price || 0);
+        // Fallback price chain: override product price → pidToPrice from scan
+        const fallbackPrice = parseFloat(op.price || 0) || (pidToPrice[pid] || 0);
         retVal  += ps.retVal  > 0 ? ps.retVal  : (qty > 0 && fallbackPrice > 0 ? fallbackPrice * qty : 0);
         retCost += ps.retCost || 0;
         matched++;

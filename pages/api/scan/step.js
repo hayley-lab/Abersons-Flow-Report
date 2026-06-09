@@ -632,6 +632,7 @@ export default async function handler(req, res) {
         pidToSupplier:   state.pidToSupplier,
         pidToQtyOrdered: state.pidToQtyOrdered,
         skuToPid:        state.skuToPid || {},
+        pidToPrice,
       };
 
       const pidsKey = `scan:pids:${state.season}`;
