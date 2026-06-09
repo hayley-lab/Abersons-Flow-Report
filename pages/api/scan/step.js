@@ -469,6 +469,13 @@ export default async function handler(req, res) {
           if (ps.retVal || ps.retCost) { totalRetVal += ps.retVal || 0; totalRetCost += ps.retCost || 0; retProds++; }
         }
         console.log(`[step] ${season} RETURNS DONE: ${retProds} products with returns, totalRetVal=$${totalRetVal.toFixed(2)}, totalRetCost=$${totalRetCost.toFixed(2)}`);
+        // Log any products with retQty but no retVal so we can diagnose missing prices
+        for (const [pid, ps] of Object.entries(state.productStats)) {
+          if ((ps.retQty || 0) > 0 && !ps.retVal) {
+            const inSeason = seasonPidSet.has(pid);
+            console.log(`[step] ${season} RETURN-NO-PRICE: pid=${pid} retQty=${ps.retQty} inSeason=${inSeason} pidToPrice=${state.pidToPrice?.[pid]} priceTried=${state._priceTried?.[pid]} ordered=${ps.ordered} pidToQtyOrdered=${state.pidToQtyOrdered?.[pid]}`);
+          }
+        }
 
         delete state.returnConsignments;
         state.phase      = "sales";
