@@ -18,7 +18,14 @@ jobs:
           echo "Starting nightly scan loop..."
           for i in $(seq 1 20); do
             echo "--- Call $i ---"
-            RESPONSE=$(curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
+            # First call uses ?restart=1 to force a fresh rescan of all seasons.
+            # Subsequent calls advance in-progress seasons without restarting.
+            if [ "$i" = "1" ]; then
+              QUERY="?restart=1"
+            else
+              QUERY=""
+            fi
+            RESPONSE=$(curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Content-Type: application/json")
             echo "$RESPONSE" | jq . || true
