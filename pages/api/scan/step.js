@@ -320,7 +320,8 @@ export default async function handler(req, res) {
                 try {
                   const r = await fetch(`${base}/2.0/products/${pid}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
                   if (r.ok) {
-                    const pd = (await r.json()).data || {};
+                    const json = await r.json();
+                    const pd = json.data || json;
                     const fetchedPrice = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
                     if (fetchedPrice > 0) {
                       state.pidToPrice[pid] = fetchedPrice;
@@ -330,7 +331,8 @@ export default async function handler(req, res) {
                       try {
                         const pr = await fetch(`${base}/2.0/products/${pd.variant_parent_id}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
                         if (pr.ok) {
-                          const pard = (await pr.json()).data || {};
+                          const pjson = await pr.json();
+                          const pard = pjson.data || pjson;
                           const parentPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
                           if (parentPrice > 0) state.pidToPrice[pid] = parentPrice;
                         }
