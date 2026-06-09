@@ -527,7 +527,7 @@ export default async function handler(req, res) {
         v.orderedCost  += ps.orderedCost  || 0;
         v.received     += ps.received     || 0;
         v.cost         += ps.receivedCost || 0;
-        v.returned     += ps.retVal       || 0;
+        v.returned     += ps.retVal || ((ps.retQty || 0) * (pidToPrice[pid] || 0));
         v.returnedCost += ps.retCost      || 0;
         v.sold         += ps.soldAmt      || 0;
       }
