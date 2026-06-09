@@ -543,6 +543,13 @@ export default async function handler(req, res) {
       const pidToPrice = state.pidToPrice || {};
       delete state.pidToPrice;
 
+      // Patch retVal for any vendor returns where price wasn't available during the returns phase
+      for (const [pid, ps] of Object.entries(state.productStats)) {
+        if ((ps.retQty || 0) > 0 && !ps.retVal && pidToPrice[pid]) {
+          ps.retVal = ps.retQty * pidToPrice[pid];
+        }
+      }
+
       // Roll up productStats → deptVendorData
       const deptVendorData = {};
       for (const [pid, ps] of Object.entries(state.productStats)) {
