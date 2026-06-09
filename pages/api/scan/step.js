@@ -325,18 +325,25 @@ export default async function handler(req, res) {
                     const fetchedPrice = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
                     if (fetchedPrice > 0) {
                       state.pidToPrice[pid] = fetchedPrice;
-                    } else if (pd.variant_parent_id && !state._priceTried[pd.variant_parent_id]) {
-                      // Variant has no own price — LS stores price on the parent product
-                      state._priceTried[pd.variant_parent_id] = true;
-                      try {
-                        const pr = await fetch(`${base}/2.0/products/${pd.variant_parent_id}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
-                        if (pr.ok) {
-                          const pjson = await pr.json();
-                          const pard = pjson.data || pjson;
-                          const parentPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
-                          if (parentPrice > 0) state.pidToPrice[pid] = parentPrice;
-                        }
-                      } catch (e) {}
+                    } else if (pd.variant_parent_id) {
+                      // Variant has no own price — LS stores price on the parent product.
+                      // Check cache first (another sibling may have fetched the parent already).
+                      const cachedParentPrice = state.pidToPrice[pd.variant_parent_id];
+                      if (cachedParentPrice > 0) {
+                        state.pidToPrice[pid] = cachedParentPrice;
+                      } else if (!state._priceTried[pd.variant_parent_id]) {
+                        state._priceTried[pd.variant_parent_id] = true;
+                        try {
+                          const pr = await fetch(`${base}/2.0/products/${pd.variant_parent_id}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
+                          if (pr.ok) {
+                            const pjson = await pr.json();
+                            const pard = pjson.data || pjson;
+                            const parentPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
+                            // Cache under BOTH parent ID and variant ID so siblings can reuse it
+                            if (parentPrice > 0) { state.pidToPrice[pd.variant_parent_id] = parentPrice; state.pidToPrice[pid] = parentPrice; }
+                          }
+                        } catch (e) {}
+                      }
                     }
                   }
                 } catch (e) {}
@@ -428,17 +435,24 @@ export default async function handler(req, res) {
                   const fetchedPrice = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
                   if (fetchedPrice > 0) {
                     state.pidToPrice[pid] = fetchedPrice;
-                  } else if (pd.variant_parent_id && !state._priceTried[pd.variant_parent_id]) {
-                    state._priceTried[pd.variant_parent_id] = true;
-                    try {
-                      const pr = await fetch(`${base}/2.0/products/${pd.variant_parent_id}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
-                      if (pr.ok) {
-                        const pjson = await pr.json();
-                        const pard = pjson.data || pjson;
-                        const parentPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
-                        if (parentPrice > 0) state.pidToPrice[pid] = parentPrice;
-                      }
-                    } catch (e) {}
+                  } else if (pd.variant_parent_id) {
+                    // Variant has no own price — check cache before fetching parent
+                    const cachedParentPrice = state.pidToPrice[pd.variant_parent_id];
+                    if (cachedParentPrice > 0) {
+                      state.pidToPrice[pid] = cachedParentPrice;
+                    } else if (!state._priceTried[pd.variant_parent_id]) {
+                      state._priceTried[pd.variant_parent_id] = true;
+                      try {
+                        const pr = await fetch(`${base}/2.0/products/${pd.variant_parent_id}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
+                        if (pr.ok) {
+                          const pjson = await pr.json();
+                          const pard = pjson.data || pjson;
+                          const parentPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
+                          // Cache under both parent ID and variant ID so siblings can reuse it
+                          if (parentPrice > 0) { state.pidToPrice[pd.variant_parent_id] = parentPrice; state.pidToPrice[pid] = parentPrice; }
+                        }
+                      } catch (e) {}
+                    }
                   }
                 }
               } catch (e) {}
