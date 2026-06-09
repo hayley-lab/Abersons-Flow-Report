@@ -543,10 +543,15 @@ export default async function handler(req, res) {
       const pidToPrice = state.pidToPrice || {};
       delete state.pidToPrice;
 
-      // Patch retVal for any vendor returns where price wasn't available during the returns phase
+      // Patch retVal for any vendor returns where price wasn't available during the returns phase.
+      // Fall back to deriving price from ordered retail ÷ ordered qty when pidToPrice is 0/missing.
       for (const [pid, ps] of Object.entries(state.productStats)) {
-        if ((ps.retQty || 0) > 0 && !ps.retVal && pidToPrice[pid]) {
-          ps.retVal = ps.retQty * pidToPrice[pid];
+        if ((ps.retQty || 0) > 0 && !ps.retVal) {
+          const derivedPrice = pidToPrice[pid] ||
+            ((state.pidToQtyOrdered && (state.pidToQtyOrdered[pid] || 0) > 0)
+              ? (ps.ordered || 0) / state.pidToQtyOrdered[pid]
+              : 0);
+          if (derivedPrice > 0) ps.retVal = ps.retQty * derivedPrice;
         }
       }
 
