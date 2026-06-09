@@ -263,8 +263,13 @@ export default function FlowReport() {
 
   useEffect(() => {
     if (screen === "vendor" && vendorRows.length > 0 && currentVendor) {
-      const vendorExists = vendorRows.some(r => r.id === currentVendor.id || r.name === currentVendor.name);
-      if (!vendorExists) setScreen("dept");
+      const match = vendorRows.find(r => r.id === currentVendor.id || r.name === currentVendor.name);
+      if (!match) {
+        setScreen("dept");
+      } else if (match !== currentVendor) {
+        // Refresh currentVendor with the new season's numbers so the header stays in sync
+        setCurrentVendor(match);
+      }
     }
   }, [vendorRows, screen, currentVendor]);
 
