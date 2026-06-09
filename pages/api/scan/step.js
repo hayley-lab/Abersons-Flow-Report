@@ -414,6 +414,37 @@ export default async function handler(req, res) {
             ? state.pidToSupplier[pid]
             : { i: c.suppId, n: c.suppName };
           if (!sup || sup.i === "__none__") continue;
+
+          // Lazy price fetch for in-season products still missing a price
+          if (inSeason && !state.pidToPrice[pid]) {
+            if (!state._priceTried) state._priceTried = {};
+            if (!state._priceTried[pid]) {
+              state._priceTried[pid] = true;
+              try {
+                const r = await fetch(`${base}/2.0/products/${pid}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
+                if (r.ok) {
+                  const json = await r.json();
+                  const pd = json.data || json;
+                  const fetchedPrice = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
+                  if (fetchedPrice > 0) {
+                    state.pidToPrice[pid] = fetchedPrice;
+                  } else if (pd.variant_parent_id && !state._priceTried[pd.variant_parent_id]) {
+                    state._priceTried[pd.variant_parent_id] = true;
+                    try {
+                      const pr = await fetch(`${base}/2.0/products/${pd.variant_parent_id}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, cache: "no-store" });
+                      if (pr.ok) {
+                        const pjson = await pr.json();
+                        const pard = pjson.data || pjson;
+                        const parentPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
+                        if (parentPrice > 0) state.pidToPrice[pid] = parentPrice;
+                      }
+                    } catch (e) {}
+                  }
+                }
+              } catch (e) {}
+            }
+          }
+
           // Try pidToPrice first, then item's own retail price field as fallback
           const itemRetailPrice = parseFloat(item.price || item.unit_price || item.retail_price || 0);
           const price = (inSeason && state.pidToPrice && state.pidToPrice[pid]) || (inSeason ? itemRetailPrice : 0);
