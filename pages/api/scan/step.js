@@ -52,9 +52,18 @@ import {
   saveConsignmentState,
 } from "../../../lib/consignment-ledger";
 import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
+import {
+  pidsMissingSku,
+  recoverSkuMetadata,
+  selectCostBackfillPids,
+} from "../../../lib/product-metadata";
 
 const CHUNK_MS = 6000;
 const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY === "1";
+// Cost is the only product field we cannot recover by inverting skuToPid — it
+// needs a live LS fetch (supply_price). Backfill it in bounded per-scan chunks
+// so the scan always finalizes; remaining products fill in over later scans.
+const COST_BACKFILL_PER_SCAN = 200;
 
 function registerProduct(state, p) {
   if (!state.parentStore) state.parentStore = {};
@@ -331,6 +340,7 @@ export default async function handler(req, res) {
       state.variantsSeenInScan = false;
       state.variantNeedsFixup = {};
       state.productStats = {};
+      state.costDone = {};
 
       state.phase = "products_seed";
       state.progress = `Loaded ${cats.length} depts — seeding products…`;
@@ -348,6 +358,9 @@ export default async function handler(req, res) {
         state._handleIdx = 0;
         state._metaPids = [];
         state._metaIdx = 0;
+        state._costPids = [];
+        state._costIdx = 0;
+        if (!state.costDone) state.costDone = {};
         const priorPidSet = new Set(state.seasonPids);
 
         // 1. Restore pid maps from lightweight scan:pids key (avoids loading full scan:data blob)
@@ -372,6 +385,7 @@ export default async function handler(req, res) {
               Object.assign(state.pidToName, source.pidToName || {});
               Object.assign(state.pidToSku, source.pidToSku || {});
               Object.assign(state.pidToVariant, source.pidToVariant || {});
+              Object.assign(state.costDone, source.costDone || {});
             }
           }
         } catch (e) {}
@@ -409,14 +423,33 @@ export default async function handler(req, res) {
           state._seedHandles = [...handleSet];
         } catch (e) {}
 
-        state._metaPids = state.seasonPids.filter(
-          (pid) => !state.pidToName?.[pid] || !state.pidToSku?.[pid]
+        // Fast metadata recovery: skuToPid already maps every known product's
+        // SKU → pid. Inverting it fills pidToSku (and a pidToName fallback —
+        // these products' LS name IS the SKU) with zero API calls, so the SKU
+        // and description columns populate even when prior caches predate the
+        // metadata maps.
+        const recoveredFromSku = recoverSkuMetadata({
+          skuToPid: state.skuToPid,
+          pidToSku: state.pidToSku,
+          pidToName: state.pidToName,
+        });
+
+        // Only pids with NO recoverable SKU still need a live metadata fetch —
+        // a small remainder, so the scan finalizes quickly instead of stalling
+        // on thousands of per-product calls.
+        state._metaPids = pidsMissingSku(state.seasonPids, state.pidToSku);
+
+        // Bounded cost backfill: cost is the one field inversion can't recover.
+        state._costPids = selectCostBackfillPids(
+          state.seasonPids,
+          { pidToPrice: state.pidToPrice, costDone: state.costDone },
+          COST_BACKFILL_PER_SCAN
         );
 
         console.warn(
-          `[step] ${season} products_seed: restored ${state.seasonPids.length} prior pids, ${state._seedHandles.length} new handles to fetch, ${state._metaPids.length} missing metadata`
+          `[step] ${season} products_seed: restored ${state.seasonPids.length} prior pids, recovered ${recoveredFromSku} SKUs from skuToPid, ${state._seedHandles.length} new handles, ${state._metaPids.length} missing SKU, ${state._costPids.length} cost backfill`
         );
-        state.progress = `Seeding products (${state.seasonPids.length} from prior scan, ${state._seedHandles.length} new from datatail, ${state._metaPids.length} missing metadata)…`;
+        state.progress = `Seeding products (${state.seasonPids.length} from prior scan, ${state._seedHandles.length} new from datatail, ${state._costPids.length} cost lookups)…`;
       }
 
       const pidSet = new Set(state.seasonPids);
@@ -459,15 +492,39 @@ export default async function handler(req, res) {
         state.progress = `Backfilling product metadata (${state._metaIdx}/${state._metaPids.length})…`;
       }
 
+      // Bounded cost backfill — runs only after SKU metadata is settled. Capped
+      // per scan so finalize is never blocked; costDone marks every attempted
+      // pid (even when LS reports $0) so it isn't re-fetched on the next scan.
+      while (
+        state._handleIdx >= state._seedHandles.length &&
+        state._metaIdx >= state._metaPids.length &&
+        state._costIdx < state._costPids.length &&
+        Date.now() < deadline - 1500
+      ) {
+        const pid = state._costPids[state._costIdx];
+        const product = await fetchProduct(pid, 1).catch(() => null);
+        if (product?.id) {
+          registerProduct(state, product);
+          const c = productCost(product);
+          if (c > 0) state.pidToCost[pid] = c;
+        }
+        state.costDone[pid] = 1;
+        state._costIdx++;
+        state.progress = `Backfilling product cost (${state._costIdx}/${state._costPids.length})…`;
+      }
+
       if (
         state._handleIdx >= state._seedHandles.length &&
-        state._metaIdx >= state._metaPids.length
+        state._metaIdx >= state._metaPids.length &&
+        state._costIdx >= state._costPids.length
       ) {
         delete state._seedReady;
         delete state._seedHandles;
         delete state._handleIdx;
         delete state._metaPids;
         delete state._metaIdx;
+        delete state._costPids;
+        delete state._costIdx;
         console.warn(
           `[step] ${season} products_seed done: ${state.seasonPids.length} products found`
         );
@@ -909,6 +966,7 @@ export default async function handler(req, res) {
         pidToName: state.pidToName || {},
         pidToSku: state.pidToSku || {},
         pidToVariant: state.pidToVariant || {},
+        costDone: state.costDone || {},
         salesState: state.salesState
           ? { maxVersion: state.salesState.maxVersion, ts: state.salesState.ts }
           : null,
@@ -930,6 +988,7 @@ export default async function handler(req, res) {
             pidToName: state.pidToName || {},
             pidToSku: state.pidToSku || {},
             pidToVariant: state.pidToVariant || {},
+            costDone: state.costDone || {},
           },
           { ex: 48 * 3600 }
         ),
@@ -980,6 +1039,7 @@ export default async function handler(req, res) {
       "_priorIdx",
       "_handleIdx",
       "_metaIdx",
+      "_costIdx",
       "_consignReady",
       "_returnReady",
     ]);
