@@ -86,55 +86,6 @@ const TD = ({ children, right, mono, style: extraStyle }) => (
 import { SEASONS } from "../lib/seasons";
 
 
-// ── LS API proxy helper (still used for per-product fetches in vendor drilldown)
-
-async function apiFetch(path, attempt) {
-  if (!attempt) attempt = 0;
-  var res;
-  try {
-    res = await fetch("/api/ls/" + path);
-  } catch (netErr) {
-    if (attempt < 4) {
-      await new Promise(function(r) { setTimeout(r, 1500 * (attempt + 1)); });
-      return apiFetch(path, attempt + 1);
-    }
-    throw netErr;
-  }
-  if (res.status === 429 && attempt < 6) {
-    await new Promise(function(r) { setTimeout(r, 3000 * Math.pow(2, attempt)); });
-    return apiFetch(path, attempt + 1);
-  }
-  if (!res.ok) {
-    var err = await res.json().catch(function() { return {}; });
-    throw new Error(err.message || err.error || "HTTP " + res.status);
-  }
-  try {
-    return await res.json();
-  } catch (parseErr) {
-    if (attempt < 4) {
-      await new Promise(function(r) { setTimeout(r, 1500 * (attempt + 1)); });
-      return apiFetch(path, attempt + 1);
-    }
-    throw parseErr;
-  }
-}
-
-async function withConcurrency(tasks, limit) {
-  var results = new Array(tasks.length).fill(null);
-  var nextIdx = 0;
-  async function worker() {
-    while (true) {
-      var i = nextIdx++;
-      if (i >= tasks.length) break;
-      results[i] = await tasks[i]();
-    }
-  }
-  var workers = [];
-  for (var w = 0; w < Math.min(limit, tasks.length); w++) workers.push(worker());
-  await Promise.all(workers);
-  return results;
-}
-
 // ── main component ────────────────────────────────────────────────────────────
 
 export default function FlowReport() {
@@ -232,7 +183,7 @@ export default function FlowReport() {
       }
       const { data, job, hasOverride: ov } = await r.json();
       setHasOverride(!!ov);
-      const activePhases = new Set(["init","products","products_slow","products_slow_done","products_fix","products_variants","consignments","sales","finalizing"]);
+      const activePhases = new Set(["init","products_seed","products","products_slow","products_slow_done","products_fix","products_variants","consignments","returns","inventory","sales","finalizing"]);
       setScanInterrupted(!!(job && activePhases.has(job.phase)));
       if (data) {
         setScanData(data);
@@ -390,11 +341,12 @@ export default function FlowReport() {
     rows.forEach(function(p) {
       var price = p.price || 0, c = p.cost || 0;
       var ret = p.returned || 0;
-      t.ordered     += (p.qtyOrdered || 0) * price;
-      t.orderedCost += (p.qtyOrdered || 0) * c;
-      // gross received (includes returned so dept header's "received - returned" is correct)
-      t.received     += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + ret) * price;
-      t.cost         += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + ret) * c;
+      var rawOrdered = p.orderedRaw != null ? p.orderedRaw : (p.qtyOrdered || 0);
+      var rawReceived = p.receivedRaw != null ? p.receivedRaw : ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + ret);
+      t.ordered     += Math.max(0, rawOrdered - ret) * price;
+      t.orderedCost += Math.max(0, rawOrdered - ret) * c;
+      t.received    += Math.max(0, rawReceived - ret) * price;
+      t.cost        += Math.max(0, rawReceived - ret) * c;
       t.returned     += ret * price;
       t.returnedCost += ret * c;
       t.sold         += (p.sold || 0) * price;
@@ -406,6 +358,47 @@ export default function FlowReport() {
           : r;
       });
     });
+  }
+
+  function productRowFromPid(pid, fallback) {
+    fallback = fallback || {};
+    const productStats = (scanData && scanData.productStats) || {};
+    const stats = productStats[pid] || {};
+    const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
+    const pidToQtyReceived = (scanData && scanData.pidToQtyReceived) || {};
+    const pidToQtyReturned = (scanData && scanData.pidToQtyReturned) || {};
+    const pidToPrice = (scanData && scanData.pidToPrice) || {};
+    const pidToCost = (scanData && scanData.pidToCost) || {};
+    const pidToName = (scanData && scanData.pidToName) || {};
+    const pidToSku = (scanData && scanData.pidToSku) || {};
+    const pidToVariant = (scanData && scanData.pidToVariant) || {};
+    const orderedRaw = stats.qtyOrdered != null ? stats.qtyOrdered
+      : (pid && pidToQtyOrdered[pid] != null ? pidToQtyOrdered[pid] : (fallback.qtyOrdered || 0));
+    const receivedRaw = stats.qtyReceived != null ? stats.qtyReceived
+      : (pid && pidToQtyReceived[pid] != null ? pidToQtyReceived[pid] : (fallback.qtyReceived || fallback.qtyStock || 0));
+    const returned = stats.retQty != null ? stats.retQty
+      : (pid && pidToQtyReturned[pid] != null ? pidToQtyReturned[pid] : (fallback.qtyReturned || 0));
+    const sold = stats.sold != null ? stats.sold : (fallback.qtySold || 0);
+    const onSale = stats.onSale != null ? stats.onSale : (fallback.qtySale || 0);
+    const onHand = Math.max(0, receivedRaw - sold - onSale - returned);
+    const onOrder = Math.max(0, orderedRaw - receivedRaw);
+    return {
+      name:       pidToName[pid] || fallback.description || "",
+      sku:        pidToSku[pid] || fallback.style || "",
+      variant:    pidToVariant[pid] || [fallback.color, fallback.fabric, fallback.size].filter(Boolean).join(" / "),
+      cost:       pidToCost[pid] != null ? pidToCost[pid] : (fallback.cost || 0),
+      price:      pidToPrice[pid] != null ? pidToPrice[pid] : (fallback.price || 0),
+      qtyOrdered: onOrder,
+      orderedRaw,
+      receivedRaw,
+      onHand,
+      sold,
+      onSale,
+      returned,
+      saleAmt:    stats.saleAmt || 0,
+      inventoryMismatch: stats.inventoryMismatch || false,
+      liveOnHand: stats.liveOnHand,
+    };
   }
 
   const openVendor = useCallback(async function(vendor) {
@@ -435,45 +428,9 @@ export default function FlowReport() {
       if (vendor.overrideProducts && targetIds.length === 0) {
         const skuToPid = (scanData && scanData.skuToPid) || {};
 
-        // Collect unique LS PIDs for these products
-        const pidSet = new Set(
-          vendor.overrideProducts.map(p => skuToPid[(p.style || "").toLowerCase().trim()]).filter(Boolean)
-        );
-
-        // Fetch current inventory for all matched PIDs concurrently
-        const invMap = {};
-        if (pidSet.size > 0) {
-          await withConcurrency(
-            Array.from(pidSet).map(pid => async function() {
-              const inv = await apiFetch("2.0/products/" + pid + "/inventory").catch(() => null);
-              if (inv) {
-                const d = inv.data || inv;
-                invMap[pid] = Array.isArray(d)
-                  ? d.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
-                  : (d.current_amount != null ? d.current_amount : (d.count != null ? d.count : null));
-              }
-            }),
-            8
-          );
-        }
-
         var overrideRows = vendor.overrideProducts.map(function(p) {
           const pid    = skuToPid[(p.style || "").toLowerCase().trim()];
-          const stats  = pid ? (productStats[pid] || {}) : {};
-          const onHand = pid && invMap[pid] != null ? invMap[pid] : (p.qtyStock || 0);
-          return {
-            name:       p.description || "",
-            sku:        p.style       || "",
-            variant:    [p.color, p.fabric, p.size].filter(Boolean).join(" / "),
-            cost:       p.cost        || 0,
-            price:      p.price       || 0,
-            qtyOrdered: pid && pidToQtyOrdered[pid] != null ? pidToQtyOrdered[pid] : (p.qtyOrdered || 0),
-            onHand,
-            sold:       stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
-            onSale:     stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
-            returned:   stats.retQty   != null ? stats.retQty   : (p.qtyReturned || 0),
-            saleAmt:    stats.saleAmt  || 0,
-          };
+          return productRowFromPid(pid, p);
         });
         setProductRows(overrideRows);
         flowUpVendorTotals(vendor, overrideRows);
@@ -481,47 +438,7 @@ export default function FlowReport() {
         return;
       }
 
-      // Fetch full product details (name, SKU, inventory) from LS
-      var products = [];
-      if (targetIds.length > 0) {
-        var fetched = await withConcurrency(
-          targetIds.map(function(id) {
-            return async function() {
-              var [pd, inv] = await Promise.all([
-                apiFetch("2.0/products/" + id),
-                apiFetch("2.0/products/" + id + "/inventory").catch(() => null),
-              ]);
-              var p = pd.data || pd;
-              if (p && inv) {
-                var invData = inv.data || inv;
-                p._onHand = Array.isArray(invData)
-                  ? invData.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
-                  : (invData.current_amount ?? invData.count ?? null);
-              }
-              return p;
-            };
-          }),
-          8
-        );
-        products = fetched.filter(Boolean);
-      }
-
-      var lsRows = products.map(function(p) {
-        const stats = productStats[p.id] || {};
-        return {
-          name:     (p.description ? p.description.replace(/<[^>]*>/g, "").trim() : "") || p.name,
-          sku:      p.sku || "",
-          variant:  p.variant_option_one_value || p.variant_name || "",
-          cost:     parseFloat(p.supply_price        || 0),
-          price:    parseFloat(p.price_excluding_tax || 0),
-          qtyOrdered: pidToQtyOrdered[p.id] || 0,
-          onHand:     p._onHand != null ? p._onHand : (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
-          sold:       stats.sold     || 0,
-          onSale:     stats.onSale   || 0,
-          returned:   stats.retQty || stats.returned || 0,
-          saleAmt:    stats.saleAmt  || 0,
-        };
-      });
+      var lsRows = targetIds.map(function(pid) { return productRowFromPid(pid); });
       setProductRows(lsRows);
       flowUpVendorTotals(vendor, lsRows);
     } catch (e) {
@@ -572,78 +489,15 @@ export default function FlowReport() {
       // (historical seasons where products aren't in LS scan results)
       const overrideProducts = allEntries.flatMap(function(v) { return v.overrideProducts || []; });
       if (overrideProducts.length > 0 && targetIds.length === 0) {
-        const pidSet = new Set(
-          overrideProducts.map(p => skuToPid[(p.style || "").toLowerCase().trim()]).filter(Boolean)
-        );
-        const invMap = {};
-        if (pidSet.size > 0) {
-          await withConcurrency(Array.from(pidSet).map(pid => async function() {
-            const inv = await apiFetch("2.0/products/" + pid + "/inventory").catch(() => null);
-            if (inv) {
-              const d = inv.data || inv;
-              invMap[pid] = Array.isArray(d)
-                ? d.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
-                : (d.current_amount != null ? d.current_amount : (d.count != null ? d.count : null));
-            }
-          }), 8);
-        }
         setProductRows(overrideProducts.map(function(p) {
           const pid    = skuToPid[(p.style || "").toLowerCase().trim()];
-          const stats  = pid ? (productStats[pid] || {}) : {};
-          const onHand = pid && invMap[pid] != null ? invMap[pid] : (p.qtyStock || 0);
-          return {
-            name: p.description || "", sku: p.style || "",
-            variant:    [p.color, p.fabric, p.size].filter(Boolean).join(" / "),
-            cost: p.cost || 0, price: p.price || 0,
-            qtyOrdered: pid && pidToQtyOrdered[pid] != null ? pidToQtyOrdered[pid] : (p.qtyOrdered || 0), onHand,
-            sold:     stats.sold     != null ? stats.sold     : (p.qtySold     || 0),
-            onSale:   stats.onSale   != null ? stats.onSale   : (p.qtySale     || 0),
-            returned: stats.retQty   != null ? stats.retQty   : (p.qtyReturned || 0),
-            saleAmt:  stats.saleAmt  || 0,
-          };
+          return productRowFromPid(pid, p);
         }));
         setProductLoading(false);
         return;
       }
 
-      // LS scan path — use targetIds already computed above
-      var products = [];
-      if (targetIds.length > 0) {
-        var fetched = await withConcurrency(targetIds.map(function(id) {
-          return async function() {
-            var [pd, inv] = await Promise.all([
-              apiFetch("2.0/products/" + id),
-              apiFetch("2.0/products/" + id + "/inventory").catch(() => null),
-            ]);
-            var p = pd.data || pd;
-            if (p && inv) {
-              var invData = inv.data || inv;
-              p._onHand = Array.isArray(invData)
-                ? invData.reduce(function(s, r) { return s + (r.current_amount || 0); }, 0)
-                : (invData.current_amount ?? invData.count ?? null);
-            }
-            return p;
-          };
-        }), 8);
-        products = fetched.filter(Boolean);
-      }
-
-      setProductRows(products.map(function(p) {
-        const stats = productStats[p.id] || {};
-        return {
-          name:     (p.description ? p.description.replace(/<[^>]*>/g, "").trim() : "") || p.name,
-          sku:      p.sku || "",
-          variant:  p.variant_option_one_value || p.variant_name || "",
-          cost:     parseFloat(p.supply_price        || 0),
-          price:    parseFloat(p.price_excluding_tax || 0),
-          qtyOrdered: pidToQtyOrdered[p.id] || 0,
-          onHand:     p._onHand != null ? p._onHand : (p.inventory_count || 0),
-          sold:       stats.sold     || 0,
-          onSale:     stats.onSale   || 0,
-          returned:   stats.returned || 0,
-          saleAmt:    stats.saleAmt  || 0,
-        };
-      }));
+      setProductRows(targetIds.map(function(pid) { return productRowFromPid(pid); }));
     } catch (e) {
       setProductError(e.message);
     }
@@ -665,18 +519,15 @@ export default function FlowReport() {
   const totalOrderedCost  = summaryRows.reduce((a, r) => a + (r.orderedCost  || 0), 0);
   const totalReceived     = summaryRows.reduce((a, r) => a + (r.received     || 0), 0);
   const totalReceivedCost = summaryRows.reduce((a, r) => a + (r.cost         || 0), 0);
-  const totalReturned     = summaryRows.reduce((a, r) => a + (r.returned     || 0), 0);
-  const totalReturnedCost = summaryRows.reduce((a, r) => a + (r.returnedCost || 0), 0);
   const totalSold         = summaryRows.reduce((a, r) => a + (r.sold         || 0), 0);
-  const totalNetReceived     = Math.max(0, totalReceived - totalReturned);
-  const totalNetReceivedCost = Math.max(0, totalReceivedCost - totalReturnedCost);
-  const totalRecPct    = totalOrdered       > 0 ? (Math.max(0, totalReceived) / totalOrdered) * 100 : 0;
-  const totalSoldPct   = totalNetReceived   > 0 ? (totalSold / totalNetReceived)               * 100 : 0;
+  const totalNetReceived     = totalReceived;
+  const totalNetReceivedCost = totalReceivedCost;
+  const totalRecPct    = totalOrdered       > 0 ? (totalReceived / totalOrdered) * 100 : 0;
+  const totalSoldPct   = totalReceived      > 0 ? (totalSold / totalReceived)    * 100 : 0;
   const vTotalOrdered      = vendorRows.reduce((a, r) => a + (r.ordered      || 0), 0);
   const vTotalOrderedCost  = vendorRows.reduce((a, r) => a + (r.orderedCost  || 0), 0);
   const vTotalReceived     = vendorRows.reduce((a, r) => a + (r.received     || 0), 0);
   const vTotalReceivedCost = vendorRows.reduce((a, r) => a + (r.cost         || 0), 0);
-  const vTotalReturned     = vendorRows.reduce((a, r) => a + (r.returned     || 0), 0);
   const vTotalSold         = vendorRows.reduce((a, r) => a + (r.sold         || 0), 0);
 
   const BUCKET_COLORS = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
@@ -686,7 +537,7 @@ export default function FlowReport() {
     productRows.forEach(function(p) {
       var price = p.price || 0;
       // sold and onSale are now mutually exclusive buckets (onSale items not in sold)
-      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.onSale || 0) - (p.returned || 0));
+      var notReceived = p.qtyOrdered || 0;
       if (p.sold     > 0) { b.sold.n++;     b.sold.v     += price * p.sold; }
       if (p.onSale   > 0) { b.sale.n++;     b.sale.v     += (p.saleAmt || price * p.onSale); }
       if (p.onHand   > 0) { b.stock.n++;    b.stock.v    += price * p.onHand; }
@@ -703,11 +554,12 @@ export default function FlowReport() {
     productRows.forEach(function(p) {
       var price = p.price || 0;
       var cost  = p.cost  || 0;
-      t.orderedRetail  += (p.qtyOrdered || 0) * price;
-      t.orderedCost    += (p.qtyOrdered || 0) * cost;
-      // Received = in stock + sold + on sale (net of vendor returns — returned items are not in these buckets)
-      t.receivedRetail += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0)) * price;
-      t.receivedCost   += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0)) * cost - (p.returned || 0) * cost;
+      var rawOrdered = p.orderedRaw != null ? p.orderedRaw : (p.qtyOrdered || 0);
+      var rawReceived = p.receivedRaw != null ? p.receivedRaw : ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + (p.returned || 0));
+      t.orderedRetail  += Math.max(0, rawOrdered - (p.returned || 0)) * price;
+      t.orderedCost    += Math.max(0, rawOrdered - (p.returned || 0)) * cost;
+      t.receivedRetail += Math.max(0, rawReceived - (p.returned || 0)) * price;
+      t.receivedCost   += Math.max(0, rawReceived - (p.returned || 0)) * cost;
       t.returnedRetail += (p.returned || 0) * price;
       t.returnedCost   += (p.returned || 0) * cost;
       t.soldRetail     += (p.sold || 0) * price;
@@ -736,7 +588,7 @@ export default function FlowReport() {
     demoBadge:  { background: "#fef3e2", color: "#92600a", border: "1px solid #f5d9a0", borderRadius: 20, fontSize: 11, fontWeight: 600, padding: "3px 10px", letterSpacing: "0.04em" },
     statusDots: function(p) {
       var C = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
-      var notReceived = Math.max(0, (p.qtyOrdered || 0) - (p.onHand || 0) - (p.sold || 0) - (p.onSale || 0) - (p.returned || 0));
+      var notReceived = p.qtyOrdered || 0;
       var marks = [
         { color: C.sold,     n: p.sold || 0 },
         { color: C.sale,     n: p.onSale    || 0 },
@@ -912,8 +764,8 @@ export default function FlowReport() {
                       </thead>
                       <tbody>
                         {summaryRows.filter(r => r.ordered > 0 || r.received > 0 || r.sold > 0).map(function(r) {
-                          var netReceived = Math.max(0, (r.received || 0) - (r.returned || 0));
-                          var recPct  = r.ordered    > 0 ? (Math.max(0, r.received || 0) / r.ordered) * 100 : 0;
+                          var netReceived = r.received || 0;
+                          var recPct  = r.ordered    > 0 ? (netReceived / r.ordered) * 100 : 0;
                           var soldPct = netReceived  > 0 ? (r.sold     / netReceived) * 100 : 0;
                           return { ...r, recPct, soldPct };
                         }).sort(function(a, b) {
@@ -1037,10 +889,9 @@ export default function FlowReport() {
                 <KpiRow items={[
                   { label: "Ordered (retail)",   value: fmt(vTotalOrdered) },
                   { label: "Ordered (cost)",     value: fmt(vTotalOrderedCost) },
-                  { label: "Received (retail)",  value: fmt(vTotalReceived - vTotalReturned),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
-                  { label: "Received (cost)",    value: fmt(Math.max(0, vTotalReceivedCost - vendorRows.reduce((a, r) => a + (r.returnedCost || 0), 0))) },
-                  { label: "Returned (retail)",  value: fmt(vTotalReturned) },
-                  { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: (vTotalReceived - vTotalReturned) > 0 ? ((vTotalSold / (vTotalReceived - vTotalReturned)) * 100).toFixed(1) + "% of received" : "0.0% of received" },
+                  { label: "Received (retail)",  value: fmt(vTotalReceived),   sub: vTotalOrdered > 0 ? ((vTotalReceived / vTotalOrdered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
+                  { label: "Received (cost)",    value: fmt(vTotalReceivedCost) },
+                  { label: "Sold (retail)",      value: fmt(vTotalSold),       sub: vTotalReceived > 0 ? ((vTotalSold / vTotalReceived) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                   { label: "Vendors",            value: vendorRows.filter(r => r.ordered > 0 || r.sold > 0).length },
                 ]} />
                 <TableWrap title={(currentDept ? currentDept.name : "") + " — by Vendor"}>
@@ -1054,7 +905,6 @@ export default function FlowReport() {
                         <SortTH col="orderedCost"  sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Ordered (cost)</SortTH>
                         <SortTH col="received"     sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Received (retail)</SortTH>
                         <SortTH col="cost"         sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Received (cost)</SortTH>
-                        <SortTH col="returned"     sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Returned (retail)</SortTH>
                         <SortTH col="sold"         sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Sold (retail)</SortTH>
                         <SortTH col="recPct"       sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Received %</SortTH>
                         <SortTH col="soldPct"      sort={vendorSort} onSort={function(c) { setVendorSort(function(p) { return p.col===c?{col:c,dir:p.dir*-1}:{col:c,dir:-1}; }); }} right>Sold %</SortTH>
@@ -1062,8 +912,8 @@ export default function FlowReport() {
                     </thead>
                     <tbody>
                       {vendorRows.map(function(r) {
-                        var vNetReceived = Math.max(0, (r.received || 0) - (r.returned || 0));
-                        var recPct  = r.ordered     > 0 ? (Math.max(0, r.received || 0) / r.ordered) * 100 : 0;
+                        var vNetReceived = r.received || 0;
+                        var recPct  = r.ordered     > 0 ? (vNetReceived / r.ordered) * 100 : 0;
                         var soldPct = vNetReceived  > 0 ? (r.sold     / vNetReceived) * 100 : 0;
                         return { ...r, recPct, soldPct };
                       }).sort(function(a, b) {
@@ -1081,7 +931,6 @@ export default function FlowReport() {
                             <TD right>{r.orderedCost > 0 ? fmt(r.orderedCost)       : ""}</TD>
                             <TD right>{r.received > 0 ? fmt(r.received)             : ""}</TD>
                             <TD right>{r.cost     > 0 ? fmt(r.cost)                 : ""}</TD>
-                            <TD right>{r.returned > 0 ? fmt(r.returned)             : ""}</TD>
                             <TD right>{r.sold     > 0 ? fmt(r.sold)                 : ""}</TD>
                             <TD right><PctBadge pct={r.recPct}  zero={zero} /></TD>
                             <TD right><PctBadge pct={r.soldPct} zero={zero} /></TD>
@@ -1204,7 +1053,12 @@ export default function FlowReport() {
                                 <TD right>{p.cost       > 0 ? fmt(p.cost)  : ""}</TD>
                                 <TD right>{p.price      > 0 ? fmt(p.price) : ""}</TD>
                                 <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : ""}</TD>
-                                <TD right>{p.onHand     > 0 ? p.onHand     : ""}</TD>
+                                <TD right>
+                                  {p.onHand > 0 ? p.onHand : ""}
+                                  {p.inventoryMismatch && (
+                                    <span title={"LS inventory: " + (p.liveOnHand ?? "unknown") + " (derived flow stock differs)"} style={{ color: "#92600a", marginLeft: 4, fontWeight: 700 }}>!=</span>
+                                  )}
+                                </TD>
                                 <TD right>{p.sold       > 0 ? p.sold       : ""}</TD>
                                 <TD right style={{ color: "#6c3483" }}>{p.onSale    > 0 ? p.onSale    : ""}</TD>
                                 <TD right style={{ color: "#000000" }}>{p.returned  > 0 ? p.returned  : ""}</TD>

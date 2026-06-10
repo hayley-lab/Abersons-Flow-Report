@@ -84,15 +84,16 @@ function mergeOverride(data, override) {
     (vendors || []).forEach(v => { lsVendorByDeptAndName[dk][normName(v.name)] = v; });
   });
 
-  // Build summaryRows from override as primary, supplement with LS sold amounts
+  // Hard-pull ordered/received values represent old RMH POs that never made it
+  // into LS. They add to LS, they do not lose to LS when both exist.
   const summaryRows = Object.values(override.stores).map(ov => {
     const ls = lsDeptByName[normName(ov.name)];
     return {
       id:           ls ? ls.id : ov.id,
       name:         ls ? ls.name : decodeHtml(ov.name),
-      ordered:      ls && ls.ordered  > 0 ? ls.ordered  : (ov.ordered  || 0),
+      ordered:      (ls ? (ls.ordered || 0) : 0) + (ov.ordered || 0),
       orderedCost:  ls ? (ls.orderedCost  || 0) : 0,
-      received:     ls && ls.received > 0 ? ls.received : (ov.received || 0),
+      received:     (ls ? (ls.received || 0) : 0) + (ov.received || 0),
       cost:         ls ? (ls.cost         || 0) : 0,
       returned:     ls ? (ls.returned     || 0) : 0,
       returnedCost: ls ? (ls.returnedCost || 0) : 0,
@@ -143,9 +144,9 @@ function mergeOverride(data, override) {
       return {
         id:               ls ? ls.id : ov.vendorId,
         name:             ls ? ls.name : decodeHtml(ov.vendorName),
-        ordered:          ls && ls.ordered  > 0 ? ls.ordered  : (ov.ordered  || 0),
+        ordered:          (ls ? (ls.ordered || 0) : 0) + (ov.ordered || 0),
         orderedCost:      ls ? (ls.orderedCost  || 0) : 0,
-        received:         ls && ls.received > 0 ? ls.received : (ov.received || 0),
+        received:         (ls ? (ls.received || 0) : 0) + (ov.received || 0),
         cost:             ls ? (ls.cost         || 0) : 0,
         returned:         (skuReturns ? skuReturns.retVal  : 0) + (ls ? (ls.returned     || 0) : 0),
         returnedCost:     (skuReturns ? skuReturns.retCost : 0) + (ls ? (ls.returnedCost || 0) : 0),
