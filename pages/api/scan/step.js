@@ -567,12 +567,13 @@ export default async function handler(req, res) {
       // Patch retVal for any vendor returns where price wasn't available during the returns phase.
       // Fall back to deriving price from ordered retail ÷ ordered qty when pidToPrice is 0/missing.
       for (const [pid, ps] of Object.entries(state.productStats)) {
-        if ((ps.retQty || 0) > 0 && !ps.retVal) {
+        if ((ps.retQty || 0) > 0) {
           const derivedPrice = pidToPrice[pid] ||
             ((state.pidToQtyOrdered && (state.pidToQtyOrdered[pid] || 0) > 0)
               ? (ps.ordered || 0) / state.pidToQtyOrdered[pid]
               : 0);
-          if (derivedPrice > 0) ps.retVal = ps.retQty * derivedPrice;
+          console.log(`[step] ${season} FINALIZING-RET: pid=${pid} retQty=${ps.retQty} retVal=${ps.retVal} pidToPrice=${pidToPrice[pid]} ordered=${ps.ordered} qtyOrdered=${state.pidToQtyOrdered?.[pid]} derivedPrice=${derivedPrice} sup=${JSON.stringify(state.pidToSupplier[pid])}`);
+          if (!ps.retVal && derivedPrice > 0) ps.retVal = ps.retQty * derivedPrice;
         }
       }
 

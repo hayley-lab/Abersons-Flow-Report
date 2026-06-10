@@ -262,14 +262,10 @@ export default function FlowReport() {
   }, [summaryRows, screen, currentDept]);
 
   useEffect(() => {
-    if (screen === "vendor" && vendorRows.length > 0 && currentVendor) {
+    if (screen === "vendors" && vendorRows.length > 0 && currentVendor) {
       const match = vendorRows.find(r => r.id === currentVendor.id || r.name === currentVendor.name);
-      if (!match) {
-        setScreen("dept");
-      } else if (match !== currentVendor) {
-        // Refresh currentVendor with the new season's numbers so the header stays in sync
-        setCurrentVendor(match);
-      }
+      if (!match) setScreen("dept");
+
     }
   }, [vendorRows, screen, currentVendor]);
 
@@ -630,9 +626,11 @@ export default function FlowReport() {
   useEffect(() => {
     if (screen === "products" && currentVendor && scanData && scanData !== prevScanDataRef.current) {
       prevScanDataRef.current = scanData;
-      openVendor(currentVendor);
+      // Use fresh vendor data from new season so header stats update on season change
+      const freshVendor = vendorRows.find(r => r.id === currentVendor.id || r.name === currentVendor.name) || currentVendor;
+      openVendor(freshVendor);
     }
-  }, [screen, currentVendor, scanData, openVendor]);
+  }, [screen, currentVendor, scanData, openVendor, vendorRows]);
 
   const totalOrdered      = summaryRows.reduce((a, r) => a + (r.ordered      || 0), 0);
   const totalOrderedCost  = summaryRows.reduce((a, r) => a + (r.orderedCost  || 0), 0);
