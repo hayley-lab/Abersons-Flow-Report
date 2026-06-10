@@ -22,6 +22,7 @@ import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sale
 import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
+const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY === "1";
 
 function getCursor(data, items) {
   const vfr = data.version && typeof data.version === "object" ? data.version.max : null;
@@ -154,14 +155,22 @@ export default async function handler(req, res) {
     await saveSalesState(kv, season, salesState, seasonPidSet);
     applySalesTotals(productStats, salesState.perPid);
 
-    try {
-      const inventoryResult = await syncInventoryCache(kv, season, lsFetch, { deadline });
-      for (const pid of existing.seasonPids || []) {
-        const live = liveOnHandFromCache(inventoryResult.cache, pid);
-        if (live != null && productStats[pid]) productStats[pid].liveOnHand = live;
+    if (ENABLE_BULK_INVENTORY) {
+      try {
+        const inventoryResult = await syncInventoryCache(kv, season, lsFetch, { deadline });
+        for (const pid of existing.seasonPids || []) {
+          const live = liveOnHandFromCache(inventoryResult.cache, pid);
+          if (live != null && productStats[pid]) productStats[pid].liveOnHand = live;
+        }
+      } catch (e) {
+        console.warn(`[delta] ${season} bulk inventory sync failed, falling back:`, e.message);
+        await refreshTouchedInventory();
       }
-    } catch (e) {
-      console.warn(`[delta] ${season} bulk inventory sync failed, falling back:`, e.message);
+    } else {
+      await refreshTouchedInventory();
+    }
+
+    async function refreshTouchedInventory() {
       const changedPids = Array.from(touchedPids).filter((pid) => productStats[pid]);
       for (let i = 0; i < changedPids.length && Date.now() < deadline; i += 5) {
         const batch = changedPids.slice(i, i + 5);

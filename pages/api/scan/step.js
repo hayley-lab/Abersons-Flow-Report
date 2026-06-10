@@ -52,6 +52,7 @@ import {
 import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
 
 const CHUNK_MS = 6000;
+const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY === "1";
 
 function getCursor(data, items) {
   const vfr = data.version && typeof data.version === "object" ? data.version.max : null;
@@ -591,7 +592,12 @@ export default async function handler(req, res) {
     // ── INVENTORY: scan-time live inventory reconciliation (not used as primary)
     if (state.phase === "inventory" && Date.now() < deadline) {
       if (!state.inventorySynced) {
-        if (!state.inventoryBulkFailed) {
+        if (!ENABLE_BULK_INVENTORY) {
+          state.inventoryBulkFailed = true;
+          state.inventoryIdx = state.inventoryIdx || 0;
+        }
+
+        if (ENABLE_BULK_INVENTORY && !state.inventoryBulkFailed) {
           try {
             const result = await syncInventoryCache(kv, season, lsFetch, {
               reset: fullRebuild() && !state.inventoryResetDone,
