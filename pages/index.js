@@ -1,5 +1,6 @@
 // pages/index.js
 import { useState, useEffect, useCallback, useRef } from "react";
+import { derivedOnHand, displayOnHand, netReceivedCost, netReceivedRetail } from "../lib/flow-math";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", {
@@ -396,9 +397,11 @@ export default function FlowReport() {
     const id = setInterval(async () => {
       if (scanning) return; // don't poll while user-driven scan is in progress
       try {
-        const r = await fetch(`/api/scan/data?season=${encodeURIComponent(season)}`);
+        const sinceParam = dataTs ? `&since=${encodeURIComponent(dataTs)}` : "";
+        const r = await fetch(`/api/scan/data?season=${encodeURIComponent(season)}${sinceParam}`);
         if (!r.ok) return;
-        const { data } = await r.json();
+        const { data, notModified } = await r.json();
+        if (notModified) return;
         if (data && data.ts && data.ts !== dataTs) {
           setScanData(data);
           setSummaryRows(data.summaryRows || []);
@@ -527,14 +530,18 @@ export default function FlowReport() {
         c = p.cost || 0;
       const ret = p.returned || 0;
       const rawOrdered = p.orderedRaw != null ? p.orderedRaw : p.qtyOrdered || 0;
-      const rawReceived =
-        p.receivedRaw != null
-          ? p.receivedRaw
-          : (p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + ret;
+      const rowStats = {
+        qtyReceived: p.receivedRaw || 0,
+        liveOnHand: p.liveOnHand,
+        onHand: p.onHand || 0,
+        sold: p.sold || 0,
+        onSale: p.onSale || 0,
+        retQty: ret,
+      };
       t.ordered += Math.max(0, rawOrdered - ret) * price;
       t.orderedCost += Math.max(0, rawOrdered - ret) * c;
-      t.received += Math.max(0, rawReceived - ret) * price;
-      t.cost += Math.max(0, rawReceived - ret) * c;
+      t.received += netReceivedRetail(rowStats, price);
+      t.cost += netReceivedCost(rowStats, c);
       t.returned += ret * price;
       t.returnedCost += ret * c;
       t.sold += (p.sold || 0) * price;
@@ -579,7 +586,15 @@ export default function FlowReport() {
             : fallback.qtyReturned || 0;
       const sold = stats.sold != null ? stats.sold : fallback.qtySold || 0;
       const onSale = stats.onSale != null ? stats.onSale : fallback.qtySale || 0;
-      const onHand = Math.max(0, receivedRaw - sold - onSale - returned);
+      const rowStats = {
+        qtyReceived: receivedRaw,
+        sold,
+        onSale,
+        retQty: returned,
+        liveOnHand: stats.liveOnHand,
+      };
+      const derivedStock = derivedOnHand(rowStats);
+      const onHand = displayOnHand(rowStats);
       const onOrder = Math.max(0, orderedRaw - receivedRaw);
       return {
         name: pidToName[pid] || fallback.description || "",
@@ -597,7 +612,9 @@ export default function FlowReport() {
         onSale,
         returned,
         saleAmt: stats.saleAmt || 0,
-        inventoryMismatch: stats.inventoryMismatch || false,
+        inventoryMismatch:
+          stats.inventoryMismatch ||
+          (stats.liveOnHand != null && stats.liveOnHand !== derivedStock),
         liveOnHand: stats.liveOnHand,
       };
     },
@@ -626,26 +643,31 @@ export default function FlowReport() {
           );
         });
 
-        // For historical import seasons, products are stored in the vendor object directly.
-        // Only use override products when the LS scan has no products for this vendor+dept.
-        if (vendor.overrideProducts && targetIds.length === 0) {
-          const skuToPid = (scanData && scanData.skuToPid) || {};
-
-          const overrideRows = vendor.overrideProducts.map(function (p) {
-            const pid = skuToPid[(p.style || "").toLowerCase().trim()];
-            return productRowFromPid(pid, p);
-          });
-          setProductRows(overrideRows);
-          flowUpVendorTotals(vendor, overrideRows);
-          setProductLoading(false);
-          return;
-        }
-
+        const skuToPid = (scanData && scanData.skuToPid) || {};
         const lsRows = targetIds.map(function (pid) {
           return productRowFromPid(pid);
         });
-        setProductRows(lsRows);
-        flowUpVendorTotals(vendor, lsRows);
+        const seen = new Set(
+          lsRows
+            .map((row) =>
+              String(row.sku || "")
+                .toLowerCase()
+                .trim()
+            )
+            .filter(Boolean)
+        );
+        const overrideRows = (vendor.overrideProducts || [])
+          .map(function (p) {
+            const sku = (p.style || "").toLowerCase().trim();
+            if (sku && seen.has(sku)) return null;
+            if (sku) seen.add(sku);
+            const pid = skuToPid[sku];
+            return productRowFromPid(pid, p);
+          })
+          .filter(Boolean);
+        const rows = lsRows.concat(overrideRows);
+        setProductRows(rows);
+        flowUpVendorTotals(vendor, rows);
       } catch (e) {
         setProductError(e.message);
       }
@@ -690,27 +712,31 @@ export default function FlowReport() {
           return sup && (sup.i || sup.id) === vendorInfo.id;
         });
 
-        // Override products path — only use when LS scan has no products for this vendor
-        // (historical seasons where products aren't in LS scan results)
         const overrideProducts = allEntries.flatMap(function (v) {
           return v.overrideProducts || [];
         });
-        if (overrideProducts.length > 0 && targetIds.length === 0) {
-          setProductRows(
-            overrideProducts.map(function (p) {
-              const pid = skuToPid[(p.style || "").toLowerCase().trim()];
-              return productRowFromPid(pid, p);
-            })
-          );
-          setProductLoading(false);
-          return;
-        }
-
-        setProductRows(
-          targetIds.map(function (pid) {
-            return productRowFromPid(pid);
-          })
+        const lsRows = targetIds.map(function (pid) {
+          return productRowFromPid(pid);
+        });
+        const seen = new Set(
+          lsRows
+            .map((row) =>
+              String(row.sku || "")
+                .toLowerCase()
+                .trim()
+            )
+            .filter(Boolean)
         );
+        const overrideRows = overrideProducts
+          .map(function (p) {
+            const sku = (p.style || "").toLowerCase().trim();
+            if (sku && seen.has(sku)) return null;
+            if (sku) seen.add(sku);
+            const pid = skuToPid[sku];
+            return productRowFromPid(pid, p);
+          })
+          .filter(Boolean);
+        setProductRows(lsRows.concat(overrideRows));
       } catch (e) {
         setProductError(e.message);
       }
@@ -818,14 +844,17 @@ export default function FlowReport() {
       const price = p.price || 0;
       const cost = p.cost || 0;
       const rawOrdered = p.orderedRaw != null ? p.orderedRaw : p.qtyOrdered || 0;
-      const rawReceived =
-        p.receivedRaw != null
-          ? p.receivedRaw
-          : (p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + (p.returned || 0);
+      const rowStats = {
+        qtyReceived: p.receivedRaw || 0,
+        liveOnHand: p.liveOnHand,
+        sold: p.sold || 0,
+        onSale: p.onSale || 0,
+        retQty: p.returned || 0,
+      };
       t.orderedRetail += Math.max(0, rawOrdered - (p.returned || 0)) * price;
       t.orderedCost += Math.max(0, rawOrdered - (p.returned || 0)) * cost;
-      t.receivedRetail += Math.max(0, rawReceived - (p.returned || 0)) * price;
-      t.receivedCost += Math.max(0, rawReceived - (p.returned || 0)) * cost;
+      t.receivedRetail += netReceivedRetail(rowStats, price);
+      t.receivedCost += netReceivedCost(rowStats, cost);
       t.returnedRetail += (p.returned || 0) * price;
       t.returnedCost += (p.returned || 0) * cost;
       t.soldRetail += (p.sold || 0) * price;
