@@ -269,3 +269,40 @@ The key files and their roles:
 - Do not assume all POs are in LS — some came from the datatail import
 - Do not use supplier ID for brand matching — multiple brands share one LS supplier ID; match by SKU
 - Do not show negative Received (cost) — cap at $0 for consignment vendors
+
+## Code Quality & Style Guidelines (AI MUST follow)
+These rules apply to ALL code the AI writes or edits in this repo. They are enforced (with warnings today, tightening over time) by ESLint + Prettier — see `.eslintrc.json` and `.prettierrc.json`.
+
+### Tooling
+- **Formatting:** Prettier owns formatting. Run `npm run format` before committing; never hand-format. Config: 2-space indent, double quotes, semicolons, 100-char width, trailing commas (es5).
+- **Linting:** `npm run lint` (`next lint`). It MUST pass with zero ESLint **errors** before pushing. Warnings should trend toward zero — never add new warnings in code you touch.
+- Do NOT add a root `babel.config.js` — it disables Next's SWC compiler. Jest transforms come from `next/jest` in `jest.config.js`.
+
+### Style rules
+- **`const`/`let` only — never `var`.** Prefer `const`; use `let` only when reassignment is required. (Legacy `var` in `pages/index.js` is grandfathered as warnings; convert opportunistically when editing nearby code, but do NOT do a giant unrelated reformat that collides with the other agent.)
+- Use `===`/`!==` (smart `eqeqeq`) — avoid loose equality except the `== null` null/undefined check.
+- No leftover `console.log` (`console.warn`/`console.error` are allowed for genuine diagnostics).
+- No unused variables. Prefix intentionally-unused args/vars with `_`.
+- Keep functions small and pure where possible. Pull pure logic into `lib/` modules (like `lib/flow-math.js`, `lib/seasons.js`) so it is unit-testable in isolation.
+- Comments explain non-obvious intent, trade-offs, or domain constraints (e.g. the LS/datatail netting rules) — not what the code literally does.
+- Respect the existing architecture and the "What NOT To Do" list above. Style cleanups must never change behavior.
+
+## Testing Policy (AI MUST follow)
+Unit tests are a default deliverable, not an afterthought.
+
+### Write tests by DEFAULT for everything
+- For **every** new function, bug fix, or behavior change, the AI MUST add or update unit tests in the same change. "Done" means code **and** its tests.
+- Prefer extracting business logic into pure functions under `lib/` and testing it directly. This is how the flow-report math (ordering, receiving, vendor returns, sales/on-sale netting, on-hand) should be verified — at the individual-SKU / product level, matching the bottom-up data flow described above.
+- Each bug fix gets a regression test that fails before the fix and passes after.
+- Test the real domain rules, not trivial getters. Good targets: season/SKU matching, sale-vs-on-sale classification, customer-return handling, netting of received/returned totals, header total formulas.
+- Tests live in `__tests__/` folders next to the code (e.g. `lib/__tests__/seasons.test.js`) or as `*.test.js`. Use `next/jest` (already configured). Default env is `node`; add a `@jest-environment jsdom` docblock for React component tests.
+- Mock external I/O (Vercel KV, the Lightspeed API, `fetch`). Never hit live LS or KV from a unit test.
+
+### Run tests BEFORE pushing
+- The AI MUST run `npm test` and confirm it is green **before every push**. Do not push with failing or skipped tests.
+- Required pre-push gate (all must pass): `npm test` → `npm run lint` (zero errors) → `npm run build` for changes that affect the build.
+- If a test is intentionally pending, mark it `it.todo(...)` or `test.skip` with a comment explaining why — never leave silently broken tests.
+- CI/local equivalent: `npm run test:ci`.
+
+### Note for parallel work
+This testing/lint scaffold was bootstrapped on branch `claude/test-lint-setup` in a separate worktree to stay out of the way of in-flight logic changes. Keep new tests small and focused on stable, pure modules until the logic the other agent is editing settles, then expand coverage of `lib/flow-math.js` and the scan pipeline.
