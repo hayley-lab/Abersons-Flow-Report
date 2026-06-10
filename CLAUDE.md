@@ -304,5 +304,5 @@ Unit tests are a default deliverable, not an afterthought.
 - If a test is intentionally pending, mark it `it.todo(...)` or `test.skip` with a comment explaining why — never leave silently broken tests.
 - CI/local equivalent: `npm run test:ci`.
 
-### Note for parallel work
-This testing/lint scaffold was bootstrapped on branch `claude/test-lint-setup` in a separate worktree to stay out of the way of in-flight logic changes. Keep new tests small and focused on stable, pure modules until the logic the other agent is editing settles, then expand coverage of `lib/flow-math.js` and the scan pipeline.
+### Expanding test coverage
+The lint/test scaffold is on `main`. Keep new tests focused on stable, pure modules under `lib/` (e.g. `lib/flow-math.js`, season/SKU matching, sale-vs-on-sale classification) and add regression tests as scan pipeline logic settles.
