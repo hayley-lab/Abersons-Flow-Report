@@ -3,6 +3,60 @@
 ## Git Workflow
 All commits go to branch `claude/determined-brown-C3xNA`. **Always work on this branch directly** — never commit to local `main`. Use `git push origin claude/determined-brown-C3xNA`. Before first commit in a session, run `git config user.email noreply@anthropic.com && git config user.name Claude`.
 
+### Conventional Commits (AI MUST follow)
+Every commit message MUST use [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>(<optional scope>): <short description>
+
+[optional body — explain why, not what; wrap at ~72 chars]
+
+[optional footer — e.g. Fixes #123]
+```
+
+**Rules:**
+- **Subject line is mandatory** and MUST match `<type>(<scope>): <description>`.
+- Use **imperative mood** in the subject (`fix scan totals`, not `fixed` / `fixes`).
+- Keep the subject **≤ 72 characters**. No trailing period.
+- **Scope** is optional but encouraged for multi-area repos (`scan`, `ui`, `lib`, `auth`, `cron`, `docs`).
+- Use a **body** when the change needs context beyond the subject (bug root cause, trade-off, migration note).
+- **One logical change per commit** — do not bundle unrelated fixes.
+
+**Allowed types:**
+
+| Type | When to use |
+|------|-------------|
+| `feat` | New user-facing behavior or capability |
+| `fix` | Bug fix |
+| `docs` | Documentation only (`CLAUDE.md`, README, comments that document behavior) |
+| `test` | Adding or updating tests only |
+| `refactor` | Code change that neither fixes a bug nor adds a feature |
+| `perf` | Performance improvement |
+| `style` | Formatting, whitespace, semicolons — no logic change |
+| `build` | Build system or external dependencies |
+| `ci` | CI/CD configuration |
+| `chore` | Maintenance that doesn't fit above (deps bump, tooling) |
+
+**Examples (good):**
+```
+fix(scan): record vendor returns using SUPPLIER_RETURN type
+feat(ui): auto-refresh when delta sync completes
+docs: add conventional commit guidelines to CLAUDE.md
+test(lib): add regression tests for sale-vs-on-sale classification
+refactor(scan): extract flow math into lib/flow-math.js
+```
+
+**Examples (bad — never use):**
+```
+Fixed bug
+Update files
+WIP
+Merge stuff
+f8a5ef5 Fix flow report accuracy with shared math...
+```
+
+**Before committing:** run `npm test` and `npm run lint` when the repo has those scripts and your change touches code (see Testing Policy when present).
+
 ## Background
 Abersons switched POS systems from RMH (old) to Lightspeed Retail / LS (new). The old flow report was connected to RMH. This new app connects to LS and replaces it. Sales history was transferred into LS, but not all POs were — some older POs were hard-pulled from the old flow report.
 
