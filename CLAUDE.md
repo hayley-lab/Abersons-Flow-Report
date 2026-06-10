@@ -50,7 +50,7 @@ Vendor returns reduce received inventory and go into the Returned column.
 
 ### ⚠️ RETURNED Column — Vendor Returns ONLY
 **The RETURNED column has absolutely nothing to do with customer returns.**
-- RETURNED column = items physically sent back to the vendor (vendor returns, type=RETURN consignments in LS)
+- RETURNED column = items physically sent back to the vendor (vendor returns, type=SUPPLIER_RETURN consignments in LS)
 - Tracked in `ps.retQty` (quantity) and `ps.retVal` / `ps.retCost` (dollars)
 - Customer returns ONLY affect the Sold or On Sale column (subtracting from whichever the item sold from) and On Hand (LS updates automatically). They do NOT touch the Returned column at all.
 - `ps.returned` in productStats is kept only for potential future use (on-hand reconciliation indicator). It must NEVER be displayed in the Returned column or used in any Returned column calculation.
