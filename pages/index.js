@@ -518,7 +518,7 @@ export default function FlowReport() {
           onHand:     p._onHand != null ? p._onHand : (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
           sold:       stats.sold     || 0,
           onSale:     stats.onSale   || 0,
-          returned:   stats.retQty   || 0,
+          returned:   stats.retQty || stats.returned || 0,
           saleAmt:    stats.saleAmt  || 0,
         };
       });
