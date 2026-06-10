@@ -1067,9 +1067,9 @@ export default function FlowReport() {
               {[
                 { label: "Ordered (retail)",  value: fmt(currentVendor ? currentVendor.ordered      : 0) },
                 { label: "Ordered (cost)",    value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
-                { label: "Received (retail)", value: fmt(currentVendor ? (currentVendor.received - (currentVendor.returned || 0)) : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
+                { label: "Received (retail)", value: fmt(currentVendor ? (currentVendor.received - productBuckets.returned.v) : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
                 { label: "Received (cost)",   value: fmt(currentVendor ? Math.max(0, (currentVendor.cost || 0) - (currentVendor.returnedCost || 0)) : 0) },
-                { label: "Returned (retail)", value: fmt(currentVendor ? (currentVendor.returned || 0) : 0) },
+                { label: "Returned (retail)", value: fmt(productBuckets.returned.v) },
                 { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: (currentVendor && (currentVendor.received - (currentVendor.returned || 0)) > 0) ? ((currentVendor.sold / (currentVendor.received - (currentVendor.returned || 0))) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                 { label: "SKUs",              value: productRows.length },
               ].map(function(kv) {
