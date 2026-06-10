@@ -623,6 +623,10 @@ export default function FlowReport() {
 
   const openVendor = useCallback(
     async function (vendor) {
+      if (!currentDept) {
+        setProductError("Select a department before opening a department vendor.");
+        return;
+      }
       setCurrentVendor(vendor);
       setProductRows([]);
       setProductLoading(true);
@@ -756,12 +760,16 @@ export default function FlowReport() {
     ) {
       prevScanDataRef.current = scanData;
       // Use fresh vendor data from new season so header stats update on season change
+      if (currentVendor.allDepts) {
+        openVendorProducts(currentVendor);
+        return;
+      }
       const freshVendor =
         vendorRows.find((r) => r.id === currentVendor.id || r.name === currentVendor.name) ||
         currentVendor;
       openVendor(freshVendor);
     }
-  }, [screen, currentVendor, scanData, openVendor, vendorRows]);
+  }, [screen, currentVendor, scanData, openVendor, openVendorProducts, vendorRows]);
 
   const totalOrdered = summaryRows.reduce((a, r) => a + (r.ordered || 0), 0);
   const totalOrderedCost = summaryRows.reduce((a, r) => a + (r.orderedCost || 0), 0);
