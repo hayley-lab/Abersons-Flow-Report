@@ -1,5 +1,6 @@
 // pages/index.js
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useRouter } from "next/router";
 import { derivedOnHand, displayOnHand, netReceivedCost, netReceivedRetail } from "../lib/flow-math";
 
 const fmt = (n) =>
@@ -232,9 +233,54 @@ const TD = ({ children, right, mono, style: extraStyle }) => (
 
 import { SEASONS } from "../lib/seasons";
 
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function routePartsFromQuery(path) {
+  if (!path) return [];
+  return Array.isArray(path) ? path : [path];
+}
+
+function seasonExists(id) {
+  return SEASONS.some((s) => s.id === id);
+}
+
+function summaryRoute(seasonId) {
+  return `/${seasonId}`;
+}
+
+function deptRoute(seasonId, dept) {
+  return `/${seasonId}/categories/${slugify(dept?.name || dept?.id)}`;
+}
+
+function vendorRoute(seasonId, dept, vendor) {
+  return `${deptRoute(seasonId, dept)}/vendors/${slugify(vendor?.name || vendor?.id)}`;
+}
+
+function allVendorRoute(seasonId, vendor) {
+  return `/${seasonId}/vendors/${slugify(vendor?.name || vendor?.id)}`;
+}
+
+function findBySlug(items, slug) {
+  return (items || []).find((item) => {
+    return slugify(item.name) === slug || slugify(item.id) === slug || String(item.id) === slug;
+  });
+}
+
 // ── main component ────────────────────────────────────────────────────────────
 
 export default function FlowReport() {
+  const router = useRouter();
+  const routeParts = routePartsFromQuery(router.query.path);
+  const routePath = routeParts.join("/");
+  const routeSeason = routeParts[0];
+  const appliedRouteRef = useRef(null);
   const [mounted, setMounted] = useState(false);
   const [authed, setAuthed] = useState(null);
   const [password, setPassword] = useState("");
@@ -243,14 +289,6 @@ export default function FlowReport() {
 
   const [screen, setScreen] = useState("summary");
   const [season, setSeason] = useState(SEASONS[0].id);
-
-  // Persist season selection to localStorage
-  const setSeasonAndSave = useCallback(function (id) {
-    setSeason(id);
-    try {
-      localStorage.setItem("flow_season", id);
-    } catch (e) {}
-  }, []);
 
   const [summaryRows, setSummaryRows] = useState([]);
   const [scanData, setScanData] = useState(null); // full KV data for current season
@@ -278,13 +316,55 @@ export default function FlowReport() {
   const [vendorSort, setVendorSort] = useState({ col: "name", dir: 1 });
   const [summarySort, setSummarySort] = useState({ col: "name", dir: 1 });
 
+  const routeForSeason = useCallback(
+    function (seasonId) {
+      if (screen === "products" && currentVendor?.allDepts) {
+        return allVendorRoute(seasonId, currentVendor);
+      }
+      if (screen === "products" && currentDept && currentVendor) {
+        return vendorRoute(seasonId, currentDept, currentVendor);
+      }
+      if (screen === "vendors" && currentDept) {
+        return deptRoute(seasonId, currentDept);
+      }
+      return summaryRoute(seasonId);
+    },
+    [currentDept, currentVendor, screen]
+  );
+
+  const pushRoute = useCallback(
+    function (path, replace = false) {
+      if (!router.isReady || router.asPath === path) return;
+      const method = replace ? router.replace : router.push;
+      method.call(router, path, undefined, { shallow: true });
+    },
+    [router]
+  );
+
+  // Persist season selection to localStorage
+  const setSeasonAndSave = useCallback(
+    function (id) {
+      setSeason(id);
+      try {
+        localStorage.setItem("flow_season", id);
+      } catch (e) {}
+      pushRoute(routeForSeason(id));
+    },
+    [pushRoute, routeForSeason]
+  );
+
   useEffect(() => {
+    if (!router.isReady) return;
     setMounted(true);
+    if (seasonExists(routeSeason)) {
+      setSeason(routeSeason);
+      return;
+    }
     try {
       const saved = localStorage.getItem("flow_season");
       if (saved && SEASONS.some((s) => s.id === saved)) setSeason(saved);
     } catch (e) {}
-  }, []);
+  }, [router.isReady, routeSeason]);
 
   // ── auth check ─────────────────────────────────────────────────────────────
 
@@ -374,9 +454,12 @@ export default function FlowReport() {
       const deptExists = summaryRows.some(
         (r) => r.id === currentDept.id || r.name === currentDept.name
       );
-      if (!deptExists) setScreen("summary");
+      if (!deptExists) {
+        setScreen("summary");
+        pushRoute(summaryRoute(season));
+      }
     }
-  }, [summaryRows, screen, currentDept]);
+  }, [summaryRows, screen, currentDept, pushRoute, season]);
 
   useEffect(() => {
     if (screen === "vendors" && vendorRows.length > 0 && currentVendor) {
@@ -493,12 +576,13 @@ export default function FlowReport() {
   // ── department drilldown ───────────────────────────────────────────────────
 
   const openDept = useCallback(
-    function (dept) {
+    function (dept, options = {}) {
       setCurrentDept(dept);
       setVendorRows([]);
       setVendorError(null);
       setVendorLoading(true);
       setScreen("vendors");
+      if (!options.skipRoute) pushRoute(deptRoute(season, dept));
 
       try {
         const vendors = (scanData && scanData.deptVendors && scanData.deptVendors[dept.id]) || [];
@@ -508,7 +592,7 @@ export default function FlowReport() {
       }
       setVendorLoading(false);
     },
-    [scanData]
+    [pushRoute, scanData, season]
   );
 
   // ── vendor drilldown ───────────────────────────────────────────────────────
@@ -622,16 +706,23 @@ export default function FlowReport() {
   );
 
   const openVendor = useCallback(
-    async function (vendor) {
-      if (!currentDept) {
+    async function (vendor, options = {}) {
+      const dept = options.dept || currentDept;
+      if (!dept) {
         setProductError("Select a department before opening a department vendor.");
         return;
       }
+      if (options.dept) {
+        const vendors = (scanData && scanData.deptVendors && scanData.deptVendors[dept.id]) || [];
+        setVendorRows(vendors.slice().sort((a, b) => b.ordered - a.ordered));
+      }
       setCurrentVendor(vendor);
+      setCurrentDept(dept);
       setProductRows([]);
       setProductLoading(true);
       setProductError(null);
       setScreen("products");
+      if (!options.skipRoute) pushRoute(vendorRoute(season, dept, vendor));
 
       try {
         // Find this vendor's product IDs in this dept from the pre-scanned data
@@ -642,9 +733,7 @@ export default function FlowReport() {
         const targetIds = seasonPids.filter(function (id) {
           const sup = pidToSupplier[id];
           const typ = pidToType[id];
-          return (
-            sup && (sup.i || sup.id) === vendor.id && (typ === currentDept.id || typ === "__none__")
-          );
+          return sup && (sup.i || sup.id) === vendor.id && (typ === dept.id || typ === "__none__");
         });
 
         const skuToPid = (scanData && scanData.skuToPid) || {};
@@ -677,19 +766,20 @@ export default function FlowReport() {
       }
       setProductLoading(false);
     },
-    [currentDept, flowUpVendorTotals, productRowFromPid, scanData]
+    [currentDept, flowUpVendorTotals, productRowFromPid, pushRoute, scanData, season]
   );
 
   // ── vendor all-departments drilldown (from summary vendor list) ──────────────
 
   const openVendorProducts = useCallback(
-    async function (vendorInfo) {
+    async function (vendorInfo, options = {}) {
       setCurrentVendor({ ...vendorInfo, allDepts: true });
       setCurrentDept(null);
       setProductRows([]);
       setProductLoading(true);
       setProductError(null);
       setScreen("products");
+      if (!options.skipRoute) pushRoute(allVendorRoute(season, vendorInfo));
 
       try {
         const skuToPid = (scanData && scanData.skuToPid) || {};
@@ -746,8 +836,67 @@ export default function FlowReport() {
       }
       setProductLoading(false);
     },
-    [productRowFromPid, scanData]
+    [productRowFromPid, pushRoute, scanData, season]
   );
+
+  useEffect(() => {
+    if (!router.isReady || authed !== true || !routePath) return;
+    const parts = routePath.split("/");
+    const [routeSeasonId, section, deptSlug, vendorSection, vendorSlug] = parts;
+    if (!seasonExists(routeSeasonId)) return;
+    if (routeSeasonId !== season) {
+      setSeason(routeSeasonId);
+      try {
+        localStorage.setItem("flow_season", routeSeasonId);
+      } catch (e) {}
+      return;
+    }
+    if (!scanData || dataLoading) return;
+
+    const routeKey = `${routePath}:${scanData.ts || ""}`;
+    if (appliedRouteRef.current === routeKey) return;
+    appliedRouteRef.current = routeKey;
+
+    if (!section) {
+      setCurrentDept(null);
+      setCurrentVendor(null);
+      setScreen("summary");
+      return;
+    }
+
+    if (section === "categories" && deptSlug) {
+      const dept = findBySlug(summaryRows, deptSlug);
+      if (!dept) return;
+      const vendors = (scanData.deptVendors && scanData.deptVendors[dept.id]) || [];
+      if (vendorSection === "vendors" && vendorSlug) {
+        const vendor = findBySlug(vendors, vendorSlug);
+        if (vendor) {
+          openVendor(vendor, { dept, skipRoute: true });
+          return;
+        }
+      }
+      openDept(dept, { skipRoute: true });
+      return;
+    }
+
+    if (section === "vendors" && deptSlug) {
+      const deptVendors = scanData.deptVendors || {};
+      const allVendors = Object.values(deptVendors).flat();
+      const vendor = findBySlug(allVendors, deptSlug);
+      if (vendor) openVendorProducts(vendor, { skipRoute: true });
+    }
+  }, [
+    authed,
+    dataLoading,
+    openDept,
+    openVendor,
+    openVendorProducts,
+    routePath,
+    router.isReady,
+    scanData,
+    season,
+    summaryRows,
+  ]);
 
   // Re-run openVendor if scanData refreshes while we're already on the products screen
   const prevScanDataRef = useRef(null);
@@ -879,6 +1028,13 @@ export default function FlowReport() {
   }
   if (!seasonLabel) seasonLabel = season;
 
+  const goToSummary = useCallback(() => {
+    setCurrentDept(null);
+    setCurrentVendor(null);
+    setScreen("summary");
+    pushRoute(summaryRoute(season));
+  }, [pushRoute, season]);
+
   // ── styles ─────────────────────────────────────────────────────────────────
 
   const s = {
@@ -901,10 +1057,21 @@ export default function FlowReport() {
       zIndex: 100,
     },
     logo: {
-      fontFamily: "'DM Serif Display',serif",
-      fontSize: 22,
-      color: "#1a1816",
-      letterSpacing: -0.5,
+      background: "none",
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+    },
+    logoImg: {
+      width: 126,
+      height: 24,
+      display: "block",
+      backgroundImage: "url('/images/logo-h.svg')",
+      backgroundRepeat: "no-repeat",
+      backgroundSize: "contain",
+      backgroundPosition: "center",
     },
     nav: { display: "flex", gap: 4 },
     navBtn: function (active) {
@@ -999,7 +1166,9 @@ export default function FlowReport() {
       <div style={s.app}>
         <style>{fontLink}</style>
         <header style={s.header}>
-          <div style={s.logo}>abersons</div>
+          <button type="button" style={s.logo} onClick={goToSummary} aria-label="Store Summary">
+            <span style={s.logoImg} aria-hidden="true" />
+          </button>
         </header>
         <div
           style={{
@@ -1019,7 +1188,9 @@ export default function FlowReport() {
       <div style={s.app}>
         <style>{fontLink}</style>
         <header style={s.header}>
-          <div style={s.logo}>abersons</div>
+          <button type="button" style={s.logo} onClick={goToSummary} aria-label="Store Summary">
+            <span style={s.logoImg} aria-hidden="true" />
+          </button>
         </header>
         <div
           style={{
@@ -1147,7 +1318,9 @@ export default function FlowReport() {
       <style>{fontLink}</style>
 
       <header style={s.header}>
-        <div style={s.logo}>abersons</div>
+        <button type="button" style={s.logo} onClick={goToSummary} aria-label="Store Summary">
+          <span style={s.logoImg} aria-hidden="true" />
+        </button>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={s.seasonPill}>
             {(function () {
@@ -1663,7 +1836,7 @@ export default function FlowReport() {
             <button
               style={s.backBtn}
               onClick={function () {
-                setScreen("summary");
+                goToSummary();
               }}
             >
               ← Store Summary
@@ -1671,7 +1844,7 @@ export default function FlowReport() {
             <div style={{ color: "#9e9892", fontSize: 13, marginBottom: "1rem" }}>
               <button
                 onClick={function () {
-                  setScreen("summary");
+                  goToSummary();
                 }}
                 style={{
                   background: "none",
@@ -1935,7 +2108,12 @@ export default function FlowReport() {
             <button
               style={s.backBtn}
               onClick={function () {
-                setScreen(currentVendor && currentVendor.allDepts ? "summary" : "vendors");
+                if (currentVendor && currentVendor.allDepts) {
+                  goToSummary();
+                } else {
+                  setScreen("vendors");
+                  if (currentDept) pushRoute(deptRoute(season, currentDept));
+                }
               }}
             >
               ←{" "}
@@ -1948,7 +2126,7 @@ export default function FlowReport() {
             <div style={{ color: "#9e9892", fontSize: 13, marginBottom: "1.25rem" }}>
               <button
                 onClick={function () {
-                  setScreen("summary");
+                  goToSummary();
                 }}
                 style={{
                   background: "none",
@@ -1970,6 +2148,7 @@ export default function FlowReport() {
                   <button
                     onClick={function () {
                       setScreen("vendors");
+                      if (currentDept) pushRoute(deptRoute(season, currentDept));
                     }}
                     style={{
                       background: "none",
