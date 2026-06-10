@@ -12,6 +12,8 @@
 //   KV_REST_API_TOKEN
 import { kv } from "@vercel/kv";
 import { getLsToken, lsBase } from "../../../lib/ls-auth";
+import { makeLsFetch } from "../../../lib/ls-fetch";
+import { fetchSalesPages, getCursor } from "../../../lib/ls-sales-pagination";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import {
@@ -53,12 +55,6 @@ import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-
 
 const CHUNK_MS = 6000;
 const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY === "1";
-
-function getCursor(data, items) {
-  const vfr = data.version && typeof data.version === "object" ? data.version.max : null;
-  const vfi = items.reduce((mx, i) => Math.max(mx, i.version || 0), 0);
-  return (vfr !== null ? vfr : vfi) || null;
-}
 
 function registerProduct(state, p) {
   if (!state.parentStore) state.parentStore = {};
@@ -185,24 +181,7 @@ export default async function handler(req, res) {
   const base = lsBase();
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
   const deadline = Date.now() + CHUNK_MS;
-
-  async function lsFetch(path, retries = 4) {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      const r = await fetch(`${base}/${path}`, { headers, cache: "no-store" });
-      if (r.status === 429 || r.status === 503) {
-        if (attempt < retries) {
-          const wait = Math.min(2000 * Math.pow(2, attempt), 16000);
-          await new Promise((resolve) => setTimeout(resolve, wait));
-          continue;
-        }
-      }
-      if (!r.ok) {
-        const txt = await r.text().catch(() => "");
-        throw new Error(`LS ${r.status} /${path.split("?")[0]}: ${txt.slice(0, 120)}`);
-      }
-      return r.json();
-    }
-  }
+  const lsFetch = makeLsFetch({ base, headers });
 
   async function lsFetchAll(path) {
     const results = [];
@@ -729,55 +708,47 @@ export default async function handler(req, res) {
         state.salesLedgerCleared = true;
       }
 
-      while (Date.now() < deadline) {
-        const dateParam = state.salesDateFrom ? "&date_from=" + state.salesDateFrom : "";
-        const path =
-          "2.0/sales?page_size=500" +
-          dateParam +
-          (state.saleCursor ? "&after=" + state.saleCursor : "");
-        const data = await lsFetch(path);
-        const saleItems = data.data || [];
-        state.salesPages++;
+      const salesResult = await fetchSalesPages({
+        lsFetch,
+        deadline,
+        initialCursor: state.saleCursor,
+        dateFrom: state.salesDateFrom,
+        onPage: async (saleItems) => {
+          state.salesPages++;
 
-        if (state.salesBackfill) {
-          // Batched rebuild — no per-sale KV reads, one hset per page.
-          await backfillSales(
-            kv,
-            season,
-            state.salesState,
-            saleItems,
-            seasonPidSet,
-            state.pidToPrice || {}
-          );
-        } else {
-          // Incremental — small number of changed sales, read-modify-write each.
-          for (const sale of saleItems) {
-            await reconcileSale(
+          if (state.salesBackfill) {
+            // Batched rebuild — no per-sale KV reads, one hset per page.
+            await backfillSales(
               kv,
               season,
               state.salesState,
-              sale,
+              saleItems,
               seasonPidSet,
               state.pidToPrice || {}
             );
+          } else {
+            // Incremental — small number of changed sales, read-modify-write each.
+            for (const sale of saleItems) {
+              await reconcileSale(
+                kv,
+                season,
+                state.salesState,
+                sale,
+                seasonPidSet,
+                state.pidToPrice || {}
+              );
+            }
           }
-        }
 
-        if (saleItems.length < 500) {
-          await saveSalesState(kv, season, state.salesState, seasonPidSet);
-          applySalesTotals(state.productStats, state.salesState.perPid);
-          state.phase = "finalizing";
-          break;
-        }
-        const cursor = getCursor(data, saleItems);
-        if (!cursor) {
-          await saveSalesState(kv, season, state.salesState, seasonPidSet);
-          applySalesTotals(state.productStats, state.salesState.perPid);
-          state.phase = "finalizing";
-          break;
-        }
-        state.saleCursor = cursor;
-        state.progress = `${state.salesBackfill ? "Backfilling" : "Loading"} sales… (page ${state.salesPages})`;
+          state.progress = `${state.salesBackfill ? "Backfilling" : "Loading"} sales… (page ${state.salesPages})`;
+        },
+      });
+
+      state.saleCursor = salesResult.cursor;
+      if (salesResult.done) {
+        await saveSalesState(kv, season, state.salesState, seasonPidSet);
+        applySalesTotals(state.productStats, state.salesState.perPid);
+        state.phase = "finalizing";
       }
 
       await saveSalesState(kv, season, state.salesState, seasonPidSet);

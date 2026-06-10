@@ -6,6 +6,8 @@
 // an error so the caller knows to run a full scan first.
 import { kv } from "@vercel/kv";
 import { getLsToken, lsBase } from "../../../lib/ls-auth";
+import { makeLsFetch } from "../../../lib/ls-fetch";
+import { fetchSalesPages } from "../../../lib/ls-sales-pagination";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import {
@@ -23,12 +25,6 @@ import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
 const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY === "1";
-
-function getCursor(data, items) {
-  const vfr = data.version && typeof data.version === "object" ? data.version.max : null;
-  const vfi = items.reduce((mx, i) => Math.max(mx, i.version || 0), 0);
-  return (vfr !== null ? vfr : vfi) || null;
-}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
@@ -59,22 +55,7 @@ export default async function handler(req, res) {
   const base = lsBase();
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
   const deadline = Date.now() + MAX_DURATION_MS;
-
-  async function lsFetch(path, retries = 4) {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      const r = await fetch(`${base}/${path}`, { headers });
-      if ((r.status === 429 || r.status === 503) && attempt < retries) {
-        const wait = Math.min(2000 * Math.pow(2, attempt), 16000);
-        await new Promise((resolve) => setTimeout(resolve, wait));
-        continue;
-      }
-      if (!r.ok) {
-        const txt = await r.text().catch(() => "");
-        throw new Error(`LS ${r.status} /${path.split("?")[0]}: ${txt.slice(0, 120)}`);
-      }
-      return r.json();
-    }
-  }
+  const lsFetch = makeLsFetch({ base, headers });
 
   async function fetchLiveOnHand(pid) {
     const inv = await lsFetch(`2.0/products/${pid}/inventory`);
@@ -129,28 +110,24 @@ export default async function handler(req, res) {
       return res.status(409).json({ error: "No sales ledger found. Run a full scan first." });
     }
 
-    let saleCursor = salesState.maxVersion;
     let pages = 0;
     const touchedPids = new Set();
 
-    while (Date.now() < deadline) {
-      const path = "2.0/sales?page_size=500" + (saleCursor ? "&after=" + saleCursor : "");
-      const data = await lsFetch(path);
-      const saleItems = data.data || [];
-      pages++;
+    await fetchSalesPages({
+      lsFetch,
+      deadline,
+      initialCursor: salesState.maxVersion,
+      onPage: async (saleItems) => {
+        pages++;
 
-      for (const sale of saleItems) {
-        await reconcileSale(kv, season, salesState, sale, seasonPidSet, pidToPrice);
-        for (const li of sale.line_items || []) {
-          if (li?.product_id && seasonPidSet.has(li.product_id)) touchedPids.add(li.product_id);
+        for (const sale of saleItems) {
+          await reconcileSale(kv, season, salesState, sale, seasonPidSet, pidToPrice);
+          for (const li of sale.line_items || []) {
+            if (li?.product_id && seasonPidSet.has(li.product_id)) touchedPids.add(li.product_id);
+          }
         }
-      }
-
-      if (saleItems.length < 500) break;
-      const cursor = getCursor(data, saleItems);
-      if (!cursor) break;
-      saleCursor = cursor;
-    }
+      },
+    });
 
     await saveSalesState(kv, season, salesState, seasonPidSet);
     applySalesTotals(productStats, salesState.perPid);

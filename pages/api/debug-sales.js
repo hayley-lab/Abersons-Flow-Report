@@ -1,6 +1,7 @@
 // Temporary debug: fetch recent sales and show raw line item fields for
 // any line items that look like returns or discounts.
 import { getLsToken, lsBase } from "../../lib/ls-auth";
+import { rateLimitInfoFromHeaders } from "../../lib/ls-fetch";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../lib/session";
 
@@ -12,14 +13,31 @@ export default async function handler(req, res) {
   const base = lsBase();
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
-  async function lsFetch(path) {
-    const r = await fetch(`${base}/${path}`, { headers });
-    return r.json();
+  async function fetchProbe(path) {
+    const response = await fetch(`${base}/${path}`, { headers, cache: "no-store" });
+    const data = await response.json();
+    return {
+      ok: response.ok,
+      status: response.status,
+      data,
+      rateLimit: rateLimitInfoFromHeaders(response.headers),
+    };
   }
 
-  // Fetch last 100 sales, find ones with returns or discounts
-  const data = await lsFetch("2.0/sales?page_size=100&date_from=2026-01-01");
-  const sales = data.data || [];
+  // Probe a 500-row request to verify whether LS caps 2.0/sales at 200 rows.
+  const requestedPageSize = 500;
+  const probePath = `2.0/sales?page_size=${requestedPageSize}&date_from=2026-01-01`;
+  const probe = await fetchProbe(probePath);
+  if (!probe.ok) {
+    return res.status(502).json({
+      error: "Lightspeed sales probe failed",
+      status: probe.status,
+      rateLimit: probe.rateLimit,
+      response: probe.data,
+    });
+  }
+
+  const sales = probe.data.data || [];
 
   const interesting = [];
   for (const sale of sales) {
@@ -40,5 +58,12 @@ export default async function handler(req, res) {
     if (interesting.length >= 20) break;
   }
 
-  return res.json({ count: interesting.length, samples: interesting });
+  return res.json({
+    requestedPageSize,
+    returnedCount: sales.length,
+    version: probe.data.version || null,
+    rateLimit: probe.rateLimit,
+    count: interesting.length,
+    samples: interesting,
+  });
 }
