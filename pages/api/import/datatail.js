@@ -173,8 +173,8 @@ function parseVendorDetail(html) {
       const desc = getText(descIdx);
       if (!price && !desc) continue;
 
-      // Parse status tally marks — each tally is a <span> or <div> with a color class
-      // ordered=gray/ordered, stock=red/stock, sold=blue/sold, sale=purple/sale, returned=black/returned
+      // Parse status tally marks. Legacy datatailor labels in-stock atoms
+      // with class "received"; keep "stock" as a compatibility fallback.
       const statusCell = cells[0] || ""; // Status is always first column
       const countClass = (cls) =>
         (statusCell.match(new RegExp('class="[^"]*' + cls + '[^"]*"', "g")) || []).length;
@@ -188,7 +188,7 @@ function parseVendorDetail(html) {
         cost: parseDollar(getText(costIdx)),
         price,
         qtyOrdered: countClass("ordered"),
-        qtyStock: countClass("stock"),
+        qtyStock: countClass("received") || countClass("stock"),
         qtySold: countClass("sold"),
         qtySale: countClass("sale"),
         qtyReturned: countClass("returned"),

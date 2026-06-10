@@ -17,15 +17,21 @@ import { sessionOptions } from "../../../lib/session";
 import {
   applySalesTotals,
   consignmentDate,
+  dateInRange,
   dateMinusDays,
   derivedOnHand,
+  displayOnHand,
   emptyProductStats,
   netOrderedValue,
-  netReceivedValue,
+  netReceivedCost,
+  netReceivedRetail,
   productCost,
   productName,
   productPrice,
   productVariant,
+  returnedCostValue,
+  returnedRetailValue,
+  seasonScanDateRange,
   seasonSalesFallbackDate,
   skuMatchesSeason,
 } from "../../../lib/flow-math";
@@ -53,10 +59,11 @@ function registerProduct(state, p) {
   const price = productPrice(p);
   const cost = productCost(p);
   const skuKey = (p.sku || "").toLowerCase().trim();
+  const overrideVendor = state.skuToVendorOverride?.[skuKey];
 
   let resolvedType = typeId,
-    resolvedSuppId = suppId,
-    resolvedSuppName = suppName;
+    resolvedSuppId = overrideVendor?.id || suppId,
+    resolvedSuppName = overrideVendor?.name || suppName;
   let resolvedPrice = price;
   let resolvedCost = cost;
 
@@ -198,6 +205,18 @@ export default async function handler(req, res) {
     return p;
   }
 
+  async function fetchLiveOnHand(pid) {
+    const inv = await lsFetch(`2.0/products/${pid}/inventory`);
+    const d = inv.data || inv;
+    return Array.isArray(d)
+      ? d.reduce((s, r) => s + (r.current_amount || 0), 0)
+      : d.current_amount != null
+        ? d.current_amount
+        : d.count != null
+          ? d.count
+          : null;
+  }
+
   async function ensureSeasonProduct(pid) {
     if (!pid) return false;
     if (state.seasonPids && state.seasonPids.includes(pid)) return true;
@@ -232,23 +251,25 @@ export default async function handler(req, res) {
     // ── INIT: departments + PO headers ──────────────────────────────────────
     if (state.phase === "init") {
       state.progress = "Loading departments & purchase orders…";
-      const dateFrom = seasonSalesFallbackDate(season);
-      const dateParam = dateFrom ? `&date_from=${dateFrom}` : "";
+      const scanRange = seasonScanDateRange(season);
+      const dateParam = scanRange.start ? `&date_from=${scanRange.start}` : "";
       const [cats, consignments, returnConsignments] = await Promise.all([
         lsFetchAll("2.0/product_types"),
         lsFetchAll(`2.0/consignments?type=SUPPLIER${dateParam}`),
-        lsFetchAll(`2.0/consignments?type=SUPPLIER_RETURN`),
+        lsFetchAll(`2.0/consignments?type=SUPPLIER_RETURN${dateParam}`),
       ]);
 
       // Trim to only needed fields to keep KV payloads small
       state.cats = cats.map((c) => ({ id: c.id, name: c.name }));
       state.consignments = consignments.map((c) => ({ id: c.id, date: consignmentDate(c) }));
-      state.returnConsignments = returnConsignments.map((c) => ({
-        id: c.id,
-        suppId: (c.supplier && c.supplier.id) || c.supplier_id || "__none__",
-        suppName: (c.supplier && c.supplier.name) || "Unknown",
-        date: consignmentDate(c),
-      }));
+      state.returnConsignments = returnConsignments
+        .map((c) => ({
+          id: c.id,
+          suppId: (c.supplier && c.supplier.id) || c.supplier_id || "__none__",
+          suppName: (c.supplier && c.supplier.name) || "Unknown",
+          date: consignmentDate(c),
+        }))
+        .filter((c) => !c.date || dateInRange(c.date, scanRange));
       state.parentStore = {};
       state.seasonPids = [];
       state.seasonParentIds = [];
@@ -263,6 +284,7 @@ export default async function handler(req, res) {
       state.pidToQtyReceived = {};
       state.pidToQtyReturned = {};
       state.skuToPid = {};
+      state.skuToVendorOverride = {};
       state.negPids = {};
       state.salesFloorDate = null;
       state.variantsSeenInScan = false;
@@ -324,6 +346,15 @@ export default async function handler(req, res) {
             const v = !raw ? null : typeof raw === "object" ? raw : JSON.parse(raw);
             for (const p of (v && v.products) || []) {
               const sku = (p.style || "").toLowerCase().trim();
+              if (sku) {
+                state.skuToVendorOverride[sku] = {
+                  id: v.vendorId || `${v.deptId || v.deptName || "override"}:${v.vendorName}`,
+                  name: v.vendorName || "Imported Vendor",
+                };
+                if (state.skuToPid[sku]) {
+                  state.pidToSupplier[state.skuToPid[sku]] = state.skuToVendorOverride[sku];
+                }
+              }
               // Only fetch if this SKU isn't already mapped to a PID
               if (sku && !state.skuToPid[sku]) handleSet.add(sku.replace("/", ""));
             }
@@ -536,25 +567,20 @@ export default async function handler(req, res) {
     // ── INVENTORY: scan-time live inventory reconciliation (not used as primary)
     if (state.phase === "inventory" && Date.now() < deadline) {
       while (state.inventoryIdx < state.seasonPids.length && Date.now() < deadline) {
-        const pid = state.seasonPids[state.inventoryIdx];
-        const ps = getProductStats(pid);
-        try {
-          const inv = await lsFetch(`2.0/products/${pid}/inventory`);
-          const d = inv.data || inv;
-          const live = Array.isArray(d)
-            ? d.reduce((s, r) => s + (r.current_amount || 0), 0)
-            : d.current_amount != null
-              ? d.current_amount
-              : d.count != null
-                ? d.count
-                : null;
+        const batch = state.seasonPids.slice(state.inventoryIdx, state.inventoryIdx + 5);
+        const liveValues = await Promise.all(
+          batch.map((pid) => fetchLiveOnHand(pid).catch(() => null))
+        );
+        batch.forEach((pid, idx) => {
+          const ps = getProductStats(pid);
+          const live = liveValues[idx];
           if (live != null) {
             // Store the live count now; the mismatch flag is computed in
             // finalizing, after sold/onSale are known (sales run after this phase).
             ps.liveOnHand = live;
           }
-        } catch (e) {}
-        state.inventoryIdx++;
+        });
+        state.inventoryIdx += batch.length;
         if (state.inventoryIdx % 50 === 0) {
           state.progress = `Reconciling live inventory (${state.inventoryIdx}/${state.seasonPids.length})…`;
         }
@@ -703,7 +729,6 @@ export default async function handler(req, res) {
       for (const [pid, ps] of Object.entries(state.productStats)) {
         const cid = state.pidToType[pid] || "__none__";
         const sup = state.pidToSupplier[pid] || ps._sup;
-        if (!sup || sup.i === "__none__") continue;
         const price = pidToPrice[pid] || 0;
         const cost = pidToCost[pid] || 0;
         ps.qtyOrdered = ps.qtyOrdered || state.pidToQtyOrdered[pid] || 0;
@@ -713,18 +738,19 @@ export default async function handler(req, res) {
         ps.orderedCost = cost * ps.qtyOrdered;
         ps.received = price * ps.qtyReceived;
         ps.receivedCost = cost * ps.qtyReceived;
-        ps.retVal = price * ps.retQty;
-        ps.retCost = cost * ps.retQty;
-        ps.onHand = derivedOnHand(ps);
+        ps.retVal = returnedRetailValue(ps, price);
+        ps.retCost = returnedCostValue(ps, cost);
+        const derivedStock = derivedOnHand(ps);
+        ps.onHand = displayOnHand(ps);
         ps.onOrder = Math.max(0, ps.qtyOrdered - ps.qtyReceived);
-        // Reconcile derived flow stock against live LS inventory (captured in the
-        // inventory phase). Computed here so sold/onSale are already applied.
-        ps.inventoryMismatch = ps.liveOnHand != null && ps.liveOnHand !== ps.onHand;
+        ps.inventoryMismatch = ps.liveOnHand != null && ps.liveOnHand !== derivedStock;
         if (!deptVendorData[cid]) deptVendorData[cid] = {};
-        if (!deptVendorData[cid][sup.i]) {
-          deptVendorData[cid][sup.i] = {
-            id: sup.i,
-            name: sup.n,
+        const vendorId = sup?.i && sup.i !== "__none__" ? sup.i : "__unassigned__";
+        const vendorName = sup?.i && sup.i !== "__none__" ? sup.n : "Unassigned";
+        if (!deptVendorData[cid][vendorId]) {
+          deptVendorData[cid][vendorId] = {
+            id: vendorId,
+            name: vendorName,
             ordered: 0,
             orderedCost: 0,
             received: 0,
@@ -734,13 +760,13 @@ export default async function handler(req, res) {
             sold: 0,
           };
         }
-        const v = deptVendorData[cid][sup.i];
+        const v = deptVendorData[cid][vendorId];
         v.ordered += netOrderedValue(ps, price);
         v.orderedCost += Math.max(0, ((ps.qtyOrdered || 0) - (ps.retQty || 0)) * cost);
-        v.received += netReceivedValue(ps, price);
-        v.cost += Math.max(0, ((ps.qtyReceived || 0) - (ps.retQty || 0)) * cost);
-        v.returned += ps.retVal || (ps.retQty || 0) * price;
-        v.returnedCost += ps.retCost || 0;
+        v.received += netReceivedRetail(ps, price);
+        v.cost += netReceivedCost(ps, cost);
+        v.returned += returnedRetailValue(ps, price);
+        v.returnedCost += returnedCostValue(ps, cost);
         v.sold += (ps.sold || 0) * price;
       }
 

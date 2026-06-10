@@ -11,8 +11,12 @@ import { sessionOptions } from "../../../lib/session";
 import {
   applySalesTotals,
   derivedOnHand,
+  displayOnHand,
   netOrderedValue,
-  netReceivedValue,
+  netReceivedCost,
+  netReceivedRetail,
+  returnedCostValue,
+  returnedRetailValue,
 } from "../../../lib/flow-math";
 import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sales-ledger";
 
@@ -54,13 +58,32 @@ export default async function handler(req, res) {
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
   const deadline = Date.now() + MAX_DURATION_MS;
 
-  async function lsFetch(path) {
-    const r = await fetch(`${base}/${path}`, { headers });
-    if (!r.ok) {
-      const txt = await r.text().catch(() => "");
-      throw new Error(`LS ${r.status} /${path.split("?")[0]}: ${txt.slice(0, 120)}`);
+  async function lsFetch(path, retries = 4) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const r = await fetch(`${base}/${path}`, { headers });
+      if ((r.status === 429 || r.status === 503) && attempt < retries) {
+        const wait = Math.min(2000 * Math.pow(2, attempt), 16000);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        continue;
+      }
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        throw new Error(`LS ${r.status} /${path.split("?")[0]}: ${txt.slice(0, 120)}`);
+      }
+      return r.json();
     }
-    return r.json();
+  }
+
+  async function fetchLiveOnHand(pid) {
+    const inv = await lsFetch(`2.0/products/${pid}/inventory`);
+    const d = inv.data || inv;
+    return Array.isArray(d)
+      ? d.reduce((s, r) => s + (r.current_amount || 0), 0)
+      : d.current_amount != null
+        ? d.current_amount
+        : d.count != null
+          ? d.count
+          : null;
   }
 
   try {
@@ -78,6 +101,8 @@ export default async function handler(req, res) {
         qtyOrdered: ps.qtyOrdered || 0,
         qtyReceived: ps.qtyReceived || 0,
         onHand: ps.onHand || 0,
+        liveOnHand: ps.liveOnHand,
+        inventoryMismatch: ps.inventoryMismatch || false,
         _sup: ps._sup || undefined,
         // Sales fields reset to 0 — ledger totals are authoritative.
         soldAmt: 0,
@@ -104,6 +129,7 @@ export default async function handler(req, res) {
 
     let saleCursor = salesState.maxVersion;
     let pages = 0;
+    const touchedPids = new Set();
 
     while (Date.now() < deadline) {
       const path = "2.0/sales?page_size=500" + (saleCursor ? "&after=" + saleCursor : "");
@@ -113,6 +139,9 @@ export default async function handler(req, res) {
 
       for (const sale of saleItems) {
         await reconcileSale(kv, season, salesState, sale, seasonPidSet, pidToPrice);
+        for (const li of sale.line_items || []) {
+          if (li?.product_id && seasonPidSet.has(li.product_id)) touchedPids.add(li.product_id);
+        }
       }
 
       if (saleItems.length < 500) break;
@@ -124,12 +153,22 @@ export default async function handler(req, res) {
     await saveSalesState(kv, season, salesState, seasonPidSet);
     applySalesTotals(productStats, salesState.perPid);
 
+    const changedPids = Array.from(touchedPids).filter((pid) => productStats[pid]);
+    for (let i = 0; i < changedPids.length && Date.now() < deadline; i += 5) {
+      const batch = changedPids.slice(i, i + 5);
+      const liveValues = await Promise.all(
+        batch.map((pid) => fetchLiveOnHand(pid).catch(() => productStats[pid].liveOnHand ?? null))
+      );
+      batch.forEach((pid, idx) => {
+        if (liveValues[idx] != null) productStats[pid].liveOnHand = liveValues[idx];
+      });
+    }
+
     // Roll up productStats → deptVendorData
     const deptVendorData = {};
     for (const [pid, ps] of Object.entries(productStats)) {
       const cid = pidToType[pid] || "__none__";
       const sup = pidToSupplier[pid] || ps._sup;
-      if (!sup || sup.i === "__none__") continue;
       const price = pidToPrice[pid] || 0;
       const cost = pidToCost[pid] || 0;
       ps.qtyOrdered = ps.qtyOrdered || pidToQtyOrdered[pid] || 0;
@@ -139,15 +178,19 @@ export default async function handler(req, res) {
       ps.orderedCost = cost * ps.qtyOrdered;
       ps.received = price * ps.qtyReceived;
       ps.receivedCost = cost * ps.qtyReceived;
-      ps.retVal = price * ps.retQty;
-      ps.retCost = cost * ps.retQty;
-      ps.onHand = derivedOnHand(ps);
+      ps.retVal = returnedRetailValue(ps, price);
+      ps.retCost = returnedCostValue(ps, cost);
+      const derivedStock = derivedOnHand(ps);
+      ps.onHand = displayOnHand(ps);
       ps.onOrder = Math.max(0, ps.qtyOrdered - ps.qtyReceived);
+      ps.inventoryMismatch = ps.liveOnHand != null && ps.liveOnHand !== derivedStock;
       if (!deptVendorData[cid]) deptVendorData[cid] = {};
-      if (!deptVendorData[cid][sup.i]) {
-        deptVendorData[cid][sup.i] = {
-          id: sup.i,
-          name: sup.n,
+      const vendorId = sup?.i && sup.i !== "__none__" ? sup.i : "__unassigned__";
+      const vendorName = sup?.i && sup.i !== "__none__" ? sup.n : "Unassigned";
+      if (!deptVendorData[cid][vendorId]) {
+        deptVendorData[cid][vendorId] = {
+          id: vendorId,
+          name: vendorName,
           ordered: 0,
           orderedCost: 0,
           received: 0,
@@ -157,13 +200,13 @@ export default async function handler(req, res) {
           sold: 0,
         };
       }
-      const v = deptVendorData[cid][sup.i];
+      const v = deptVendorData[cid][vendorId];
       v.ordered += netOrderedValue(ps, price);
       v.orderedCost += Math.max(0, ((ps.qtyOrdered || 0) - (ps.retQty || 0)) * cost);
-      v.received += netReceivedValue(ps, price);
-      v.cost += Math.max(0, ((ps.qtyReceived || 0) - (ps.retQty || 0)) * cost);
-      v.returned += ps.retVal || 0;
-      v.returnedCost += ps.retCost || 0;
+      v.received += netReceivedRetail(ps, price);
+      v.cost += netReceivedCost(ps, cost);
+      v.returned += returnedRetailValue(ps, price);
+      v.returnedCost += returnedCostValue(ps, cost);
       v.sold += (ps.sold || 0) * price;
     }
 
