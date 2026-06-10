@@ -219,12 +219,12 @@ export default async function handler(req, res) {
     return results;
   }
 
-  async function fetchProduct(pid) {
-    const r = await lsFetch(`2.0/products/${pid}`);
+  async function fetchProduct(pid, retries = 4) {
+    const r = await lsFetch(`2.0/products/${pid}`, retries);
     const p = r.data || r;
     if (p && p.variant_parent_id) {
       try {
-        const pr = await lsFetch(`2.0/products/${p.variant_parent_id}`);
+        const pr = await lsFetch(`2.0/products/${p.variant_parent_id}`, retries);
         p._parent = pr.data || pr;
       } catch (e) {}
     }
@@ -466,20 +466,17 @@ export default async function handler(req, res) {
       while (
         state._handleIdx >= state._seedHandles.length &&
         state._metaIdx < state._metaPids.length &&
-        Date.now() < deadline
+        Date.now() < deadline - 1500
       ) {
-        const batch = state._metaPids.slice(state._metaIdx, state._metaIdx + 5);
-        const products = await Promise.all(batch.map((pid) => fetchProduct(pid).catch(() => null)));
-        for (const product of products) {
-          if (
-            product?.id &&
-            (skuMatchesSeason(product.sku, season) ||
-              skuMatchesSeason(product?._parent?.sku, season))
-          ) {
-            registerProduct(state, product);
-          }
+        const pid = state._metaPids[state._metaIdx];
+        const product = await fetchProduct(pid, 1).catch(() => null);
+        if (
+          product?.id &&
+          (skuMatchesSeason(product.sku, season) || skuMatchesSeason(product?._parent?.sku, season))
+        ) {
+          registerProduct(state, product);
         }
-        state._metaIdx += batch.length;
+        state._metaIdx++;
         state.progress = `Backfilling product metadata (${state._metaIdx}/${state._metaPids.length})…`;
       }
 
