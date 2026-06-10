@@ -31,17 +31,20 @@ export default async function handler(req, res) {
     const base = lsBase();
 
     // Fetch consignment header
-    const hdr = await fetch(`${base}/2.0/consignments/${consignmentId}`, { headers }).then(r => r.json());
+    const hdr = await fetch(`${base}/2.0/consignments/${consignmentId}`, { headers }).then((r) =>
+      r.json()
+    );
 
     // Fetch all products in this consignment
-    let items = [], after = null;
+    const items = [];
+    let after = null;
     for (let p = 0; p < 50; p++) {
       const url = `${base}/2.0/consignments/${consignmentId}/products?page_size=200${after ? "&after=" + after : ""}`;
-      const data = await fetch(url, { headers }).then(r => r.json());
+      const data = await fetch(url, { headers }).then((r) => r.json());
       const batch = data.data || [];
       items.push(...batch);
       if (batch.length < 200) break;
-      const v = (data.version && typeof data.version === "object") ? data.version.max : null;
+      const v = data.version && typeof data.version === "object" ? data.version.max : null;
       const vi = batch.reduce((mx, i) => Math.max(mx, i.version || 0), 0);
       after = v || vi || null;
       if (!after) break;
@@ -52,16 +55,16 @@ export default async function handler(req, res) {
       consignment: hdr.data || hdr,
       itemCount: items.length,
       firstItemRaw: items[0] || null,
-      allItemsSummary: items.slice(0, 20).map(i => ({
+      allItemsSummary: items.slice(0, 20).map((i) => ({
         product_id: i.product_id,
-        count:      i.count,
-        received:   i.received,
-        cost:       i.cost,
-        price:      i.price,
+        count: i.count,
+        received: i.received,
+        cost: i.cost,
+        price: i.price,
         unit_price: i.unit_price,
         retail_price: i.retail_price,
         price_excluding_tax: i.price_excluding_tax,
-        tax:        i.tax,
+        tax: i.tax,
       })),
     });
   }
@@ -76,10 +79,17 @@ export default async function handler(req, res) {
     const data = await r.json();
     const p = data.data || data;
     return res.json({
-      id: p.id, name: p.name, sku: p.sku, handle: p.handle,
-      price: p.price, price_excluding_tax: p.price_excluding_tax,
-      price_including_tax: p.price_including_tax, retail_price: p.retail_price,
-      cost: p.cost, supplier: p.supplier, product_type_id: p.product_type_id,
+      id: p.id,
+      name: p.name,
+      sku: p.sku,
+      handle: p.handle,
+      price: p.price,
+      price_excluding_tax: p.price_excluding_tax,
+      price_including_tax: p.price_including_tax,
+      retail_price: p.retail_price,
+      cost: p.cost,
+      supplier: p.supplier,
+      product_type_id: p.product_type_id,
       variant_parent_id: p.variant_parent_id,
       allFields: Object.keys(p),
     });
@@ -90,11 +100,15 @@ export default async function handler(req, res) {
     const token = await getLsToken();
     const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     const url = `${lsBase()}/2.0/consignments?type=RETURN&page_size=200${supplierId ? "&supplier_id=" + supplierId : ""}`;
-    const data = await fetch(url, { headers }).then(r => r.json());
-    const items = (data.data || []).map(c => ({
-      id: c.id, status: c.status, type: c.type,
-      supplier: c.supplier, supplier_id: c.supplier_id,
-      name: c.name, reference: c.reference,
+    const data = await fetch(url, { headers }).then((r) => r.json());
+    const items = (data.data || []).map((c) => ({
+      id: c.id,
+      status: c.status,
+      type: c.type,
+      supplier: c.supplier,
+      supplier_id: c.supplier_id,
+      name: c.name,
+      reference: c.reference,
       created_at: c.created_at,
     }));
     return res.json({ count: items.length, items });
@@ -103,14 +117,21 @@ export default async function handler(req, res) {
   // ── Show override KV data for a season (vendor names + first product styles) ─
   if (action === "override") {
     if (!season) return res.status(400).json({ error: "season required" });
-    const [storesRaw, indexRaw] = await Promise.all([
-      kv.get(`scan:override:${season}:stores`),
-      kv.get(`scan:override:${season}:vendorIndex`),
-    ]);
-    const vendorIndex = indexRaw ? (typeof indexRaw === "string" ? JSON.parse(indexRaw) : indexRaw) : [];
-    const vendorRaws = await Promise.all(vendorIndex.map(k => kv.get(`scan:override:${season}:v:${k}`)));
+    const indexRaw = await kv.get(`scan:override:${season}:vendorIndex`);
+    const vendorIndex = indexRaw
+      ? typeof indexRaw === "string"
+        ? JSON.parse(indexRaw)
+        : indexRaw
+      : [];
+    const vendorRaws = await Promise.all(
+      vendorIndex.map((k) => kv.get(`scan:override:${season}:v:${k}`))
+    );
     const vendors = vendorIndex.map((key, i) => {
-      const v = vendorRaws[i] ? (typeof vendorRaws[i] === "string" ? JSON.parse(vendorRaws[i]) : vendorRaws[i]) : null;
+      const v = vendorRaws[i]
+        ? typeof vendorRaws[i] === "string"
+          ? JSON.parse(vendorRaws[i])
+          : vendorRaws[i]
+        : null;
       if (!v) return { key, error: "null" };
       const prods = v.products || [];
       return {
@@ -118,7 +139,9 @@ export default async function handler(req, res) {
         vendorName: v.vendorName,
         deptName: v.deptName,
         productCount: prods.length,
-        sampleStyles: prods.slice(0, 5).map(p => ({ style: p.style, description: p.description })),
+        sampleStyles: prods
+          .slice(0, 5)
+          .map((p) => ({ style: p.style, description: p.description })),
       };
     });
     return res.json({ vendorCount: vendors.length, vendors });
@@ -132,10 +155,14 @@ export default async function handler(req, res) {
     if (!data) return res.json({ error: "No scan data" });
     const skuToPid = data.skuToPid || {};
     if (style) {
-      const matches = Object.entries(skuToPid).filter(([sku]) => sku.startsWith(style.toLowerCase()));
+      const matches = Object.entries(skuToPid).filter(([sku]) =>
+        sku.startsWith(style.toLowerCase())
+      );
       return res.json({ style, matches: matches.slice(0, 20) });
     }
-    const sample = Object.entries(skuToPid).slice(0, 20).map(([sku, pid]) => ({ sku, pid }));
+    const sample = Object.entries(skuToPid)
+      .slice(0, 20)
+      .map(([sku, pid]) => ({ sku, pid }));
     return res.json({ total: Object.keys(skuToPid).length, sample });
   }
 
@@ -148,23 +175,33 @@ export default async function handler(req, res) {
   const { pidToSupplier, pidToType, seasonPids, deptVendors, summaryRows } = data;
 
   const deptNames = {};
-  (summaryRows || []).forEach(r => { deptNames[r.id] = r.name; });
+  (summaryRows || []).forEach((r) => {
+    deptNames[r.id] = r.name;
+  });
 
   const allVendors = [];
   for (const [deptId, vendors] of Object.entries(deptVendors || {})) {
     for (const v of vendors) {
-      allVendors.push({ deptId, deptName: deptNames[deptId] || deptId, vendorId: v.id, vendorName: v.name, ordered: v.ordered });
+      allVendors.push({
+        deptId,
+        deptName: deptNames[deptId] || deptId,
+        vendorId: v.id,
+        vendorName: v.name,
+        ordered: v.ordered,
+      });
     }
   }
 
-  const vendorProductCounts = allVendors.map(({ deptId, deptName, vendorId, vendorName, ordered }) => {
-    const matches = (seasonPids || []).filter(id => {
-      const sup = pidToSupplier && pidToSupplier[id];
-      const typ = pidToType && pidToType[id];
-      return sup && (sup.i || sup.id) === vendorId && (typ === deptId || typ === "__none__");
-    });
-    return { deptName, vendorName, vendorId, deptId, ordered, matchingSkus: matches.length };
-  }).sort((a, b) => b.ordered - a.ordered);
+  const vendorProductCounts = allVendors
+    .map(({ deptId, deptName, vendorId, vendorName, ordered }) => {
+      const matches = (seasonPids || []).filter((id) => {
+        const sup = pidToSupplier && pidToSupplier[id];
+        const typ = pidToType && pidToType[id];
+        return sup && (sup.i || sup.id) === vendorId && (typ === deptId || typ === "__none__");
+      });
+      return { deptName, vendorName, vendorId, deptId, ordered, matchingSkus: matches.length };
+    })
+    .sort((a, b) => b.ordered - a.ordered);
 
   return res.json({
     ts: data.ts,

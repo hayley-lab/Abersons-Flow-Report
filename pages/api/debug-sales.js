@@ -9,7 +9,7 @@ export default async function handler(req, res) {
   if (!session.authed) return res.status(401).json({ error: "Not authenticated" });
 
   const token = await getLsToken();
-  const base  = lsBase();
+  const base = lsBase();
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
   async function lsFetch(path) {
@@ -23,16 +23,16 @@ export default async function handler(req, res) {
 
   const interesting = [];
   for (const sale of sales) {
-    for (const li of (sale.line_items || [])) {
+    for (const li of sale.line_items || []) {
       const hasDiscount = parseFloat(li.discount || li.line_discount || li.discount_total || 0) > 0;
-      const isReturn    = !!li.is_return;
-      const zeroPrice   = parseFloat(li.total_price ?? li.price ?? 1) === 0;
+      const isReturn = !!li.is_return;
+      const zeroPrice = parseFloat(li.total_price ?? li.price ?? 1) === 0;
       if (hasDiscount || isReturn || zeroPrice) {
         interesting.push({
-          sale_id:    sale.id,
+          sale_id: sale.id,
           sale_status: sale.status,
           // show ALL fields on the line item so we can see exact names
-          line_item:  li,
+          line_item: li,
         });
         if (interesting.length >= 20) break;
       }

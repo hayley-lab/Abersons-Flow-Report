@@ -3,18 +3,18 @@ import { useState } from "react";
 import { SEASONS } from "../lib/seasons";
 
 export default function ImportPage() {
-  const [phpsessid,    setPhpsessid]    = useState("");
-  const [rememberme,   setRememberme]   = useState("");
-  const [status,       setStatus]       = useState(null);
-  const [probeResult,  setProbeResult]  = useState(null);
-  const [stores,       setStores]       = useState([]);
-  const [vendors,      setVendors]      = useState([]);
-  const [log,          setLog]          = useState([]);
-  const [running,      setRunning]      = useState(false);
+  const [phpsessid, setPhpsessid] = useState("");
+  const [rememberme, setRememberme] = useState("");
+  const [status, setStatus] = useState(null);
+  const [probeResult, setProbeResult] = useState(null);
+  const [stores, setStores] = useState([]);
+  const [vendors, setVendors] = useState([]);
+  const [log, setLog] = useState([]);
+  const [running, setRunning] = useState(false);
   const [targetSeason, setTargetSeason] = useState("spring25");
 
   function addLog(msg) {
-    setLog(prev => [...prev, msg]);
+    setLog((prev) => [...prev, msg]);
   }
 
   async function post(body) {
@@ -35,7 +35,9 @@ export default function ImportPage() {
     const result = await post({ action: "probe", phpsessid, rememberme });
     setProbeResult(result);
     if (result.ok) {
-      setStatus(`Connected! Current season on old site: "${result.current}" (prev: ${result.prev}, next: ${result.next})`);
+      setStatus(
+        `Connected! Current season on old site: "${result.current}" (prev: ${result.prev}, next: ${result.next})`
+      );
     } else {
       setStatus("Error: " + (result.error || "unknown"));
     }
@@ -49,41 +51,67 @@ export default function ImportPage() {
     setRunning(false); // reset any stuck state from prior run
 
     const storesResult = await post({ action: "fetchStores", phpsessid, rememberme });
-    if (!storesResult.ok) { setStatus("Error: " + storesResult.error); return; }
-    const storeList = storesResult.stores.filter(s => s.ordered > 0 || s.sold > 0 || s.received > 0);
+    if (!storesResult.ok) {
+      setStatus("Error: " + storesResult.error);
+      return;
+    }
+    const storeList = storesResult.stores.filter(
+      (s) => s.ordered > 0 || s.sold > 0 || s.received > 0
+    );
     setStores(storeList);
-    addLog(`Found ${storeList.length} active stores: ${storeList.map(s => s.name).join(", ")}`);
+    addLog(`Found ${storeList.length} active stores: ${storeList.map((s) => s.name).join(", ")}`);
 
     const allVendors = [];
     for (let i = 0; i < storeList.length; i++) {
       const st = storeList[i];
       setStatus(`Step 2/2: Fetching vendors for ${st.name} (${i + 1}/${storeList.length})…`);
-      const vResult = await post({ action: "fetchStoreVendors", phpsessid, rememberme, storeId: st.id, storeName: st.name });
+      const vResult = await post({
+        action: "fetchStoreVendors",
+        phpsessid,
+        rememberme,
+        storeId: st.id,
+        storeName: st.name,
+      });
       if (vResult.ok) {
         addLog(`  ${st.name}: ${vResult.vendors.length} vendors`);
         allVendors.push(...vResult.vendors);
       } else {
         addLog(`  ${st.name}: ERROR — ${vResult.error}`);
       }
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 200));
     }
     setVendors(allVendors);
-    setStatus(`Ready to import: ${allVendors.length} vendor/department combinations across ${storeList.length} departments.`);
+    setStatus(
+      `Ready to import: ${allVendors.length} vendor/department combinations across ${storeList.length} departments.`
+    );
   }
 
   async function handleImportAll() {
-    if (vendors.length === 0) { setStatus("Fetch vendor list first."); return; }
+    if (vendors.length === 0) {
+      setStatus("Fetch vendor list first.");
+      return;
+    }
     setRunning(true);
     setLog([]);
-    try { await doImport(); } finally { setRunning(false); }
+    try {
+      await doImport();
+    } finally {
+      setRunning(false);
+    }
   }
 
   async function doImport() {
     addLog(`Importing ${vendors.length} vendor/dept pages for ${targetSeason}…`);
 
     const storesMap = {};
-    stores.forEach(s => {
-      storesMap[s.id] = { id: s.id, name: s.name, ordered: s.ordered, received: s.received, sold: s.sold };
+    stores.forEach((s) => {
+      storesMap[s.id] = {
+        id: s.id,
+        name: s.name,
+        ordered: s.ordered,
+        received: s.received,
+        sold: s.sold,
+      };
     });
 
     const savedKeys = [];
@@ -94,15 +122,16 @@ export default function ImportPage() {
       try {
         const result = await post({
           action: "fetchVendorDetail",
-          phpsessid, rememberme,
+          phpsessid,
+          rememberme,
           vendorId: v.vendorId,
           deptId: v.deptId,
           season: targetSeason,
           vendorName: v.vendorName,
           deptName: v.storeName,
-          storeOrdered:  v.ordered  || 0,
+          storeOrdered: v.ordered || 0,
           storeReceived: v.received || 0,
-          storeSold:     v.sold     || 0,
+          storeSold: v.sold || 0,
         });
         if (result.ok) {
           savedKeys.push(`${v.deptId}__${v.vendorId}`);
@@ -113,13 +142,14 @@ export default function ImportPage() {
       } catch (err) {
         addLog(`  ✗ ${err.message}`);
       }
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 300));
     }
 
     addLog("Finalizing index…");
     const finalRes = await post({
       action: "finalizeImport",
-      phpsessid, rememberme,
+      phpsessid,
+      rememberme,
       season: targetSeason,
       stores: storesMap,
       vendorKeys: savedKeys,
@@ -146,64 +176,264 @@ export default function ImportPage() {
     }
   }
 
-  const inp = { width: "100%", fontFamily: "monospace", fontSize: 12, padding: "6px 8px", border: "1px solid #d0ccc5", borderRadius: 6, background: "#fafaf8", boxSizing: "border-box" };
-  const btn = (disabled, bg) => ({ padding: "8px 18px", background: disabled ? "#e0ddd8" : (bg || "#3a5a8c"), color: disabled ? "#999" : "#fff", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: disabled ? "default" : "pointer", fontFamily: "'DM Sans', sans-serif" });
+  const inp = {
+    width: "100%",
+    fontFamily: "monospace",
+    fontSize: 12,
+    padding: "6px 8px",
+    border: "1px solid #d0ccc5",
+    borderRadius: 6,
+    background: "#fafaf8",
+    boxSizing: "border-box",
+  };
+  const btn = (disabled, bg) => ({
+    padding: "8px 18px",
+    background: disabled ? "#e0ddd8" : bg || "#3a5a8c",
+    color: disabled ? "#999" : "#fff",
+    border: "none",
+    borderRadius: 6,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: disabled ? "default" : "pointer",
+    fontFamily: "'DM Sans', sans-serif",
+  });
 
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto", padding: "2rem 1rem", fontFamily: "'DM Sans', sans-serif", fontSize: 14 }}>
-      <h1 style={{ fontFamily: "'DM Serif Display', serif", fontSize: 24, marginBottom: "0.25rem" }}>Import from Old Report</h1>
-      <p style={{ color: "#9e9892", fontSize: 13, marginBottom: "1.5rem" }}>Pulls Spring/Fall 2025 data from datatailor.abersonstyle.com into KV.</p>
+    <div
+      style={{
+        maxWidth: 720,
+        margin: "0 auto",
+        padding: "2rem 1rem",
+        fontFamily: "'DM Sans', sans-serif",
+        fontSize: 14,
+      }}
+    >
+      <h1
+        style={{ fontFamily: "'DM Serif Display', serif", fontSize: 24, marginBottom: "0.25rem" }}
+      >
+        Import from Old Report
+      </h1>
+      <p style={{ color: "#9e9892", fontSize: 13, marginBottom: "1.5rem" }}>
+        Pulls Spring/Fall 2025 data from datatailor.abersonstyle.com into KV.
+      </p>
 
-      <div style={{ background: "#fff8e8", border: "1px solid #f0d080", borderRadius: 8, padding: "0.75rem 1rem", marginBottom: "1.5rem", fontSize: 12, color: "#7a5a00", lineHeight: 1.6 }}>
-        <strong>Before importing:</strong> Navigate the old site to the correct season (Spring 2025 or Fall 2025) using its season arrows, then paste your cookies below.
-        <br /><strong>To get cookies:</strong> DevTools → Application → Cookies → datatailor.abersonstyle.com → click each name, copy Value.
+      <div
+        style={{
+          background: "#fff8e8",
+          border: "1px solid #f0d080",
+          borderRadius: 8,
+          padding: "0.75rem 1rem",
+          marginBottom: "1.5rem",
+          fontSize: 12,
+          color: "#7a5a00",
+          lineHeight: 1.6,
+        }}
+      >
+        <strong>Before importing:</strong> Navigate the old site to the correct season (Spring 2025
+        or Fall 2025) using its season arrows, then paste your cookies below.
+        <br />
+        <strong>To get cookies:</strong> DevTools → Application → Cookies →
+        datatailor.abersonstyle.com → click each name, copy Value.
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: "1.5rem" }}>
         <div>
-          <label style={{ fontSize: 11, fontWeight: 600, color: "#6b6560", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>PHPSESSID value</label>
-          <input style={inp} type="password" value={phpsessid} onChange={e => setPhpsessid(e.target.value)} placeholder="paste cookie value…" />
+          <label
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "#6b6560",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              display: "block",
+              marginBottom: 4,
+            }}
+          >
+            PHPSESSID value
+          </label>
+          <input
+            style={inp}
+            type="password"
+            value={phpsessid}
+            onChange={(e) => setPhpsessid(e.target.value)}
+            placeholder="paste cookie value…"
+          />
         </div>
         <div>
-          <label style={{ fontSize: 11, fontWeight: 600, color: "#6b6560", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>REMEMBERME value (recommended)</label>
-          <input style={inp} type="password" value={rememberme} onChange={e => setRememberme(e.target.value)} placeholder="paste cookie value…" />
+          <label
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "#6b6560",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              display: "block",
+              marginBottom: 4,
+            }}
+          >
+            REMEMBERME value (recommended)
+          </label>
+          <input
+            style={inp}
+            type="password"
+            value={rememberme}
+            onChange={(e) => setRememberme(e.target.value)}
+            placeholder="paste cookie value…"
+          />
         </div>
         <div>
-          <label style={{ fontSize: 11, fontWeight: 600, color: "#6b6560", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>Save imported data as</label>
-          <select value={targetSeason} onChange={e => setTargetSeason(e.target.value)} style={{ ...inp, fontFamily: "'DM Sans', sans-serif" }}>
-            {SEASONS.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          <label
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "#6b6560",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              display: "block",
+              marginBottom: 4,
+            }}
+          >
+            Save imported data as
+          </label>
+          <select
+            value={targetSeason}
+            onChange={(e) => setTargetSeason(e.target.value)}
+            style={{ ...inp, fontFamily: "'DM Sans', sans-serif" }}
+          >
+            {SEASONS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
           </select>
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.5rem" }}>
-        <button style={btn(!phpsessid && !rememberme)} disabled={!phpsessid && !rememberme} onClick={handleProbe}>1. Test Connection</button>
-        <button style={btn(!probeResult?.ok)} disabled={!probeResult?.ok} onClick={handleFetchVendors}>2. Fetch Vendor List</button>
-        <button style={btn(running || vendors.length === 0)} disabled={running || vendors.length === 0} onClick={handleImportAll}>3. Import All ({vendors.length})</button>
-        <button style={btn(!probeResult?.ok, "#6b6560")} disabled={!probeResult?.ok} onClick={handleDebugHtml}>Debug HTML</button>
+        <button
+          style={btn(!phpsessid && !rememberme)}
+          disabled={!phpsessid && !rememberme}
+          onClick={handleProbe}
+        >
+          1. Test Connection
+        </button>
+        <button
+          style={btn(!probeResult?.ok)}
+          disabled={!probeResult?.ok}
+          onClick={handleFetchVendors}
+        >
+          2. Fetch Vendor List
+        </button>
+        <button
+          style={btn(running || vendors.length === 0)}
+          disabled={running || vendors.length === 0}
+          onClick={handleImportAll}
+        >
+          3. Import All ({vendors.length})
+        </button>
+        <button
+          style={btn(!probeResult?.ok, "#6b6560")}
+          disabled={!probeResult?.ok}
+          onClick={handleDebugHtml}
+        >
+          Debug HTML
+        </button>
       </div>
 
       {status && (
-        <div style={{ background: "#f0ede6", borderRadius: 8, padding: "0.6rem 1rem", marginBottom: "1rem", fontSize: 13, color: "#3a3530", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            background: "#f0ede6",
+            borderRadius: 8,
+            padding: "0.6rem 1rem",
+            marginBottom: "1rem",
+            fontSize: 13,
+            color: "#3a3530",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <span>{status}</span>
-          {running && <button onClick={() => setRunning(false)} style={{ background: "none", border: "1px solid #b0a898", borderRadius: 5, padding: "2px 10px", fontSize: 12, cursor: "pointer", color: "#6b6560" }}>Unlock</button>}
+          {running && (
+            <button
+              onClick={() => setRunning(false)}
+              style={{
+                background: "none",
+                border: "1px solid #b0a898",
+                borderRadius: 5,
+                padding: "2px 10px",
+                fontSize: 12,
+                cursor: "pointer",
+                color: "#6b6560",
+              }}
+            >
+              Unlock
+            </button>
+          )}
         </div>
       )}
 
       {log.length > 0 && (
-        <div style={{ background: "#1a1816", borderRadius: 8, padding: "1rem", maxHeight: 400, overflowY: "auto" }}>
+        <div
+          style={{
+            background: "#1a1816",
+            borderRadius: 8,
+            padding: "1rem",
+            maxHeight: 400,
+            overflowY: "auto",
+          }}
+        >
           {log.map((line, i) => (
-            <div key={i} style={{ fontFamily: "monospace", fontSize: 12, color: line.includes("✓") ? "#7ec8a0" : line.includes("✗") ? "#f08080" : "#d0ccc5", lineHeight: 1.6 }}>{line}</div>
+            <div
+              key={i}
+              style={{
+                fontFamily: "monospace",
+                fontSize: 12,
+                color: line.includes("✓") ? "#7ec8a0" : line.includes("✗") ? "#f08080" : "#d0ccc5",
+                lineHeight: 1.6,
+              }}
+            >
+              {line}
+            </div>
           ))}
         </div>
       )}
 
       {vendors.length > 0 && (
         <div style={{ marginTop: "1.5rem" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#6b6560", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Vendor List ({vendors.length})</div>
-          <div style={{ background: "#fff", border: "1px solid #e2ddd5", borderRadius: 8, maxHeight: 200, overflowY: "auto" }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#6b6560",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              marginBottom: 8,
+            }}
+          >
+            Vendor List ({vendors.length})
+          </div>
+          <div
+            style={{
+              background: "#fff",
+              border: "1px solid #e2ddd5",
+              borderRadius: 8,
+              maxHeight: 200,
+              overflowY: "auto",
+            }}
+          >
             {vendors.map((v, i) => (
-              <div key={i} style={{ padding: "5px 12px", borderBottom: "1px solid #f0ede6", fontSize: 12, display: "flex", gap: 12 }}>
+              <div
+                key={i}
+                style={{
+                  padding: "5px 12px",
+                  borderBottom: "1px solid #f0ede6",
+                  fontSize: 12,
+                  display: "flex",
+                  gap: 12,
+                }}
+              >
                 <span style={{ color: "#9e9892", width: 80, flexShrink: 0 }}>{v.storeName}</span>
                 <span>{v.vendorName}</span>
               </div>

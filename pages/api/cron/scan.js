@@ -19,18 +19,19 @@ const CRON_LOOP_DEADLINE_MS = 240 * 1000;
 
 function currentSeasons() {
   const year = new Date().getFullYear();
-  return SEASONS.filter(s => {
+  return SEASONS.filter((s) => {
     const m = s.id.match(/\d+$/);
     if (!m) return false;
     const y = parseInt("20" + m[0].slice(-2));
     return y >= year - 1;
-  }).map(s => s.id);
+  }).map((s) => s.id);
 }
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
 
-  const cronAuth = process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
+  const cronAuth =
+    process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
   if (!cronAuth) {
     const session = await getIronSession(req, res, sessionOptions);
     if (!session.authed) return res.status(401).json({ error: "Unauthorized" });
@@ -47,7 +48,7 @@ export default async function handler(req, res) {
     : `https://${process.env.VERCEL_URL}`;
   const headers = {
     "Content-Type": "application/json",
-    "Authorization": `Bearer ${process.env.CRON_SECRET}`,
+    Authorization: `Bearer ${process.env.CRON_SECRET}`,
   };
 
   const seasons = currentSeasons();
@@ -55,10 +56,12 @@ export default async function handler(req, res) {
   let kvResults;
   try {
     kvResults = await Promise.all(
-      seasons.map(season => Promise.all([
-        kv.get(`scan:job:${season}`),
-        force ? Promise.resolve(null) : kv.get(`scan:data:${season}`),
-      ]))
+      seasons.map((season) =>
+        Promise.all([
+          kv.get(`scan:job:${season}`),
+          force ? Promise.resolve(null) : kv.get(`scan:data:${season}`),
+        ])
+      )
     );
   } catch (e) {
     console.error("[cron/scan] KV read failed:", e.message);
@@ -95,12 +98,12 @@ export default async function handler(req, res) {
       );
       const json = await r.json();
       ss.restart = "0";
-      ss.phase   = json.phase;
+      ss.phase = json.phase;
       if (json.phase === "done" || json.phase === "error") ss.done = true;
-      ss.action  = "advanced";
+      ss.action = "advanced";
       return { season: ss.season, action: ss.action, phase: json.phase, progress: json.progress };
     } catch (e) {
-      ss.done   = true;
+      ss.done = true;
       ss.action = "error";
       return { season: ss.season, action: "error", error: e.message };
     }
@@ -110,14 +113,14 @@ export default async function handler(req, res) {
     // Cron path: loop for full time budget, advancing all seasons repeatedly
     const loopStart = Date.now();
     while (Date.now() - loopStart < CRON_LOOP_DEADLINE_MS) {
-      const pending = seasonState.filter(s => !s.done);
+      const pending = seasonState.filter((s) => !s.done);
       if (pending.length === 0) break;
 
       const batch = pending.slice(0, CONCURRENCY);
       const batchResults = await Promise.all(batch.map(stepSeason));
 
       // Round-robin: move just-processed seasons to back so others get turns
-      batch.forEach(ss => {
+      batch.forEach((ss) => {
         if (!ss.done) {
           const idx = seasonState.indexOf(ss);
           seasonState.splice(idx, 1);
@@ -125,29 +128,37 @@ export default async function handler(req, res) {
         }
       });
 
-      console.log("[cron/scan] pass:", batchResults.map(r => `${r.season}=${r.phase || r.error}`).join(" "));
+      console.warn(
+        "[cron/scan] pass:",
+        batchResults.map((r) => `${r.season}=${r.phase || r.error}`).join(" ")
+      );
     }
 
-    const allDone = seasonState.every(s => s.done);
-    console.log(`[cron/scan] finished in ${Math.round((Date.now() - loopStart) / 1000)}s, allDone=${allDone}`);
+    const allDone = seasonState.every((s) => s.done);
+    console.warn(
+      `[cron/scan] finished in ${Math.round((Date.now() - loopStart) / 1000)}s, allDone=${allDone}`
+    );
     return res.json({
       ok: true,
       allDone,
-      results: seasonState.map(s => ({ season: s.season, action: s.action || "skipped", phase: s.phase })),
+      results: seasonState.map((s) => ({
+        season: s.season,
+        action: s.action || "skipped",
+        phase: s.phase,
+      })),
     });
-
   } else {
     // UI path: one pass, return quickly so the browser loop can show progress
     const results = [];
     for (let i = 0; i < seasonState.length; i += CONCURRENCY) {
-      const batch = seasonState.slice(i, i + CONCURRENCY).filter(s => !s.done);
+      const batch = seasonState.slice(i, i + CONCURRENCY).filter((s) => !s.done);
       const batchResults = await Promise.all(batch.map(stepSeason));
       results.push(...batchResults);
     }
     // Include skipped seasons in results
-    seasonState.filter(s => s.done && s.action === "skipped").forEach(s =>
-      results.push({ season: s.season, action: "skipped" })
-    );
+    seasonState
+      .filter((s) => s.done && s.action === "skipped")
+      .forEach((s) => results.push({ season: s.season, action: "skipped" }));
     return res.json({ ok: true, results });
   }
 }

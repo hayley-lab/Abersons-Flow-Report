@@ -7,7 +7,13 @@ import { sessionOptions } from "../../../lib/session";
 
 function parseKv(val) {
   if (!val) return null;
-  if (typeof val === "string") { try { return JSON.parse(val); } catch { return null; } }
+  if (typeof val === "string") {
+    try {
+      return JSON.parse(val);
+    } catch {
+      return null;
+    }
+  }
   return val;
 }
 
@@ -19,12 +25,12 @@ async function loadOverride(season) {
   if (!indexRaw) return null;
 
   const vendorIndex = parseKv(indexRaw);
-  const stores      = parseKv(storesRaw) || {};
+  const stores = parseKv(storesRaw) || {};
   if (!Array.isArray(vendorIndex)) return null;
 
   // Load all vendor entries in parallel
   const vendorRaws = await Promise.all(
-    vendorIndex.map(key => kv.get(`scan:override:${season}:v:${key}`))
+    vendorIndex.map((key) => kv.get(`scan:override:${season}:v:${key}`))
   );
   const vendors = {};
   vendorIndex.forEach((key, i) => {
@@ -35,11 +41,19 @@ async function loadOverride(season) {
 }
 
 function decodeHtml(s) {
-  return (s || "").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#039;/gi, "'");
+  return (s || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#039;/gi, "'");
 }
 
 function normName(s) {
-  return (s || "").replace(/&[a-z]+;/gi, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (s || "")
+    .replace(/&[a-z]+;/gi, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
 
 function mergeOverride(data, override) {
@@ -54,17 +68,20 @@ function mergeOverride(data, override) {
   const productStats = data.productStats || {};
   const pidToPrice = data.pidToPrice || {};
   function computeReturnedFromSkus(ovProducts) {
-    let retVal = 0, retCost = 0, matched = 0;
-    for (const op of (ovProducts || [])) {
+    let retVal = 0,
+      retCost = 0,
+      matched = 0;
+    for (const op of ovProducts || []) {
       const sku = (op.style || "").toLowerCase().trim();
       if (!sku) continue;
       const pid = skuToPid[sku];
       if (pid && productStats[pid]) {
-        const ps  = productStats[pid];
+        const ps = productStats[pid];
         const qty = ps.retQty || 0;
         // Fallback price chain: override product price → pidToPrice from scan
-        const fallbackPrice = parseFloat(op.price || 0) || (pidToPrice[pid] || 0);
-        retVal  += ps.retVal  > 0 ? ps.retVal  : (qty > 0 && fallbackPrice > 0 ? fallbackPrice * qty : 0);
+        const fallbackPrice = parseFloat(op.price || 0) || pidToPrice[pid] || 0;
+        retVal +=
+          ps.retVal > 0 ? ps.retVal : qty > 0 && fallbackPrice > 0 ? fallbackPrice * qty : 0;
         retCost += ps.retCost || 0;
         matched++;
       }
@@ -74,42 +91,48 @@ function mergeOverride(data, override) {
 
   // Build LS lookup maps by normalized name
   const lsDeptByName = {};
-  (data.summaryRows || []).forEach(r => { lsDeptByName[normName(r.name)] = r; });
+  (data.summaryRows || []).forEach((r) => {
+    lsDeptByName[normName(r.name)] = r;
+  });
 
   const lsVendorByDeptAndName = {};
   Object.entries(data.deptVendors || {}).forEach(([deptId, vendors]) => {
-    const deptRow = (data.summaryRows || []).find(r => String(r.id) === String(deptId));
+    const deptRow = (data.summaryRows || []).find((r) => String(r.id) === String(deptId));
     const dk = deptRow ? normName(deptRow.name) : deptId;
     lsVendorByDeptAndName[dk] = {};
-    (vendors || []).forEach(v => { lsVendorByDeptAndName[dk][normName(v.name)] = v; });
+    (vendors || []).forEach((v) => {
+      lsVendorByDeptAndName[dk][normName(v.name)] = v;
+    });
   });
 
   // Hard-pull ordered/received values represent old RMH POs that never made it
   // into LS. They add to LS, they do not lose to LS when both exist.
-  const summaryRows = Object.values(override.stores).map(ov => {
+  const summaryRows = Object.values(override.stores).map((ov) => {
     const ls = lsDeptByName[normName(ov.name)];
     return {
-      id:           ls ? ls.id : ov.id,
-      name:         ls ? ls.name : decodeHtml(ov.name),
-      ordered:      (ls ? (ls.ordered || 0) : 0) + (ov.ordered || 0),
-      orderedCost:  ls ? (ls.orderedCost  || 0) : 0,
-      received:     (ls ? (ls.received || 0) : 0) + (ov.received || 0),
-      cost:         ls ? (ls.cost         || 0) : 0,
-      returned:     ls ? (ls.returned     || 0) : 0,
-      returnedCost: ls ? (ls.returnedCost || 0) : 0,
-      sold:         ls ? (ls.sold || 0) : (ov.sold || 0),
+      id: ls ? ls.id : ov.id,
+      name: ls ? ls.name : decodeHtml(ov.name),
+      ordered: (ls ? ls.ordered || 0 : 0) + (ov.ordered || 0),
+      orderedCost: ls ? ls.orderedCost || 0 : 0,
+      received: (ls ? ls.received || 0 : 0) + (ov.received || 0),
+      cost: ls ? ls.cost || 0 : 0,
+      returned: ls ? ls.returned || 0 : 0,
+      returnedCost: ls ? ls.returnedCost || 0 : 0,
+      sold: ls ? ls.sold || 0 : ov.sold || 0,
     };
   });
 
   // Build deptVendors from override as primary, supplement with LS sold amounts
   // Need dept name → id mapping from summaryRows
   const deptIdByName = {};
-  summaryRows.forEach(r => { deptIdByName[normName(r.name)] = r.id; });
+  summaryRows.forEach((r) => {
+    deptIdByName[normName(r.name)] = r.id;
+  });
 
   const deptVendors = {};
   // Group override vendors by dept
   const overrideByDept = {};
-  Object.values(override.vendors).forEach(v => {
+  Object.values(override.vendors).forEach((v) => {
     if (!v) return;
     const dk = normName(v.deptName);
     if (!overrideByDept[dk]) overrideByDept[dk] = [];
@@ -131,7 +154,7 @@ function mergeOverride(data, override) {
       return null;
     }
 
-    deptVendors[deptId] = ovVendors.map(ov => {
+    deptVendors[deptId] = ovVendors.map((ov) => {
       const match = findLsVendor(ov.vendorName);
       const ls = match ? match.vendor : null;
       if (match) consumedLsVendors.add(match.key);
@@ -142,15 +165,15 @@ function mergeOverride(data, override) {
       const skuReturns = computeReturnedFromSkus(ov.products);
 
       return {
-        id:               ls ? ls.id : ov.vendorId,
-        name:             ls ? ls.name : decodeHtml(ov.vendorName),
-        ordered:          (ls ? (ls.ordered || 0) : 0) + (ov.ordered || 0),
-        orderedCost:      ls ? (ls.orderedCost  || 0) : 0,
-        received:         (ls ? (ls.received || 0) : 0) + (ov.received || 0),
-        cost:             ls ? (ls.cost         || 0) : 0,
-        returned:         (skuReturns ? skuReturns.retVal  : 0) + (ls ? (ls.returned     || 0) : 0),
-        returnedCost:     (skuReturns ? skuReturns.retCost : 0) + (ls ? (ls.returnedCost || 0) : 0),
-        sold:             ls ? (ls.sold || 0) : (ov.sold || 0),
+        id: ls ? ls.id : ov.vendorId,
+        name: ls ? ls.name : decodeHtml(ov.vendorName),
+        ordered: (ls ? ls.ordered || 0 : 0) + (ov.ordered || 0),
+        orderedCost: ls ? ls.orderedCost || 0 : 0,
+        received: (ls ? ls.received || 0 : 0) + (ov.received || 0),
+        cost: ls ? ls.cost || 0 : 0,
+        returned: (skuReturns ? skuReturns.retVal : 0) + (ls ? ls.returned || 0 : 0),
+        returnedCost: (skuReturns ? skuReturns.retCost : 0) + (ls ? ls.returnedCost || 0 : 0),
+        sold: ls ? ls.sold || 0 : ov.sold || 0,
         overrideProducts: ov.products || [],
       };
     });
@@ -163,12 +186,14 @@ function mergeOverride(data, override) {
 
   // Preserve any LS depts not in override (vendors and summaryRows)
   const lsDeptRowById = {};
-  (data.summaryRows || []).forEach(r => { lsDeptRowById[r.id] = r; });
+  (data.summaryRows || []).forEach((r) => {
+    lsDeptRowById[r.id] = r;
+  });
   Object.entries(data.deptVendors || {}).forEach(([deptId, vendors]) => {
     if (!deptVendors[deptId]) {
       deptVendors[deptId] = vendors;
       // Also add to summaryRows if not already there
-      if (!summaryRows.find(r => String(r.id) === String(deptId))) {
+      if (!summaryRows.find((r) => String(r.id) === String(deptId))) {
         const ls = lsDeptRowById[deptId];
         if (ls) summaryRows.push(ls);
       }
@@ -176,18 +201,18 @@ function mergeOverride(data, override) {
   });
 
   // Rebuild summaryRows by summing deptVendors so dept totals always match vendor drilldown
-  const rebuiltSummaryRows = summaryRows.map(row => {
+  const rebuiltSummaryRows = summaryRows.map((row) => {
     const vendors = deptVendors[row.id] || [];
     if (vendors.length === 0) return row;
     return {
       ...row,
-      ordered:      vendors.reduce((a, v) => a + (v.ordered      || 0), 0),
-      orderedCost:  vendors.reduce((a, v) => a + (v.orderedCost  || 0), 0),
-      received:     vendors.reduce((a, v) => a + (v.received     || 0), 0),
-      cost:         vendors.reduce((a, v) => a + (v.cost         || 0), 0),
-      returned:     vendors.reduce((a, v) => a + (v.returned     || 0), 0),
+      ordered: vendors.reduce((a, v) => a + (v.ordered || 0), 0),
+      orderedCost: vendors.reduce((a, v) => a + (v.orderedCost || 0), 0),
+      received: vendors.reduce((a, v) => a + (v.received || 0), 0),
+      cost: vendors.reduce((a, v) => a + (v.cost || 0), 0),
+      returned: vendors.reduce((a, v) => a + (v.returned || 0), 0),
       returnedCost: vendors.reduce((a, v) => a + (v.returnedCost || 0), 0),
-      sold:         vendors.reduce((a, v) => a + (v.sold         || 0), 0),
+      sold: vendors.reduce((a, v) => a + (v.sold || 0), 0),
     };
   });
 
@@ -208,11 +233,17 @@ export default async function handler(req, res) {
   ]);
 
   let data = rawData || null;
-  if (override) { try { data = mergeOverride(rawData, override); } catch (e) { console.error("merge error", e); } }
+  if (override) {
+    try {
+      data = mergeOverride(rawData, override);
+    } catch (e) {
+      console.error("merge error", e);
+    }
+  }
 
   return res.json({
     data: data || null,
-    job:  job  ? { phase: job.phase, progress: job.progress, error: job.error } : null,
+    job: job ? { phase: job.phase, progress: job.progress, error: job.error } : null,
     hasOverride: !!override,
   });
 }

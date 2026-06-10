@@ -42,10 +42,12 @@ function stripTags(s) {
 
 // Parse current season label and prev/next titles from the root page
 function parseSeasonInfo(html) {
-  const prevM = /class="selectprevious"[^>]*title="([^"]+)"/.exec(html) ||
-                /title="([^"]+)"[^>]*class="selectprevious"/.exec(html);
-  const nextM = /class="selectnext"[^>]*title="([^"]+)"/.exec(html) ||
-                /title="([^"]+)"[^>]*class="selectnext"/.exec(html);
+  const prevM =
+    /class="selectprevious"[^>]*title="([^"]+)"/.exec(html) ||
+    /title="([^"]+)"[^>]*class="selectprevious"/.exec(html);
+  const nextM =
+    /class="selectnext"[^>]*title="([^"]+)"/.exec(html) ||
+    /title="([^"]+)"[^>]*class="selectnext"/.exec(html);
   return {
     prev: prevM ? prevM[1] : null,
     next: nextM ? nextM[1] : null,
@@ -63,16 +65,16 @@ function parseStores(html) {
     const storeM = /href="\/store\/(\d+)">([^<]+)<\/a>/.exec(row);
     if (!storeM) continue;
     const getLabel = (label) => {
-      const re = new RegExp('data-label="' + label + '"[^>]*>([^<]+)<', 'i');
+      const re = new RegExp('data-label="' + label + '"[^>]*>([^<]+)<', "i");
       const m = re.exec(row);
       return m ? m[1].trim() : "";
     };
     stores.push({
-      id:       storeM[1],
-      name:     storeM[2].trim(),
-      ordered:  parseDollar(getLabel("Ordered")),
+      id: storeM[1],
+      name: storeM[2].trim(),
+      ordered: parseDollar(getLabel("Ordered")),
       received: parseDollar(getLabel("Received")),
-      sold:     parseDollar(getLabel("Sold")),
+      sold: parseDollar(getLabel("Sold")),
     });
   }
   return stores;
@@ -86,8 +88,8 @@ function parseStoreVendors(html, storeId, storeName) {
   let m;
   while ((m = linkRe.exec(html)) !== null) {
     vendors.push({
-      vendorId:  m[1],
-      deptId:    m[2],
+      vendorId: m[1],
+      deptId: m[2],
       vendorName: m[3].trim(),
       storeId,
       storeName,
@@ -100,17 +102,18 @@ function parseStoreVendors(html, storeId, storeName) {
     const row = rowM[1];
     const vendorLinkM = /href="\/vendor\/(\d+)\/department\/(\d+)"[^>]*>([^<]+)<\/a>/.exec(row);
     if (!vendorLinkM) continue;
-    const vid = vendorLinkM[1], did = vendorLinkM[2];
+    const vid = vendorLinkM[1],
+      did = vendorLinkM[2];
     const getLabel = (label) => {
-      const re = new RegExp('data-label="' + label + '"[^>]*>([^<\\n]+)<', 'i');
+      const re = new RegExp('data-label="' + label + '"[^>]*>([^<\\n]+)<', "i");
       const mr = re.exec(row);
       return mr ? mr[1].trim() : "";
     };
-    const existing = vendors.find(v => v.vendorId === vid && v.deptId === did);
+    const existing = vendors.find((v) => v.vendorId === vid && v.deptId === did);
     if (existing) {
-      existing.ordered  = parseDollar(getLabel("Ordered"));
+      existing.ordered = parseDollar(getLabel("Ordered"));
       existing.received = parseDollar(getLabel("Received"));
-      existing.sold     = parseDollar(getLabel("Sold"));
+      existing.sold = parseDollar(getLabel("Sold"));
     }
   }
   return vendors;
@@ -120,13 +123,13 @@ function parseStoreVendors(html, storeId, storeName) {
 function parseVendorDetail(html) {
   // Totals are in data-label cells in the totals table
   const getLabel = (label) => {
-    const re = new RegExp('data-label="' + label + '"[^>]*>([^<\\n]+)<', 'i');
+    const re = new RegExp('data-label="' + label + '"[^>]*>([^<\\n]+)<', "i");
     const m = re.exec(html);
     return m ? parseDollar(m[1]) : 0;
   };
-  const ordered  = getLabel("Ordered");
+  const ordered = getLabel("Ordered");
   const received = getLabel("Received");
-  const sold     = getLabel("Sold");
+  const sold = getLabel("Sold");
 
   // Find the items table — has headers: Status, Description, Style, Color, Fabric, Size, Cost, Price
   const products = [];
@@ -140,16 +143,17 @@ function parseVendorDetail(html) {
     const headers = [];
     const thRe = /<th[^>]*>([\s\S]*?)<\/th>/gi;
     let hm;
-    while ((hm = thRe.exec(tableHtml)) !== null) headers.push(stripTags(hm[1]).toLowerCase().trim());
+    while ((hm = thRe.exec(tableHtml)) !== null)
+      headers.push(stripTags(hm[1]).toLowerCase().trim());
 
-    const idx = (name) => headers.findIndex(h => h.includes(name));
-    const descIdx   = idx("description");
-    const styleIdx  = idx("style");
-    const colorIdx  = idx("color");
+    const idx = (name) => headers.findIndex((h) => h.includes(name));
+    const descIdx = idx("description");
+    const styleIdx = idx("style");
+    const colorIdx = idx("color");
     const fabricIdx = idx("fabric");
-    const sizeIdx   = idx("size");
-    const costIdx   = idx("cost");
-    const priceIdx  = idx("price");
+    const sizeIdx = idx("size");
+    const costIdx = idx("cost");
+    const priceIdx = idx("price");
 
     if (descIdx === -1) continue;
 
@@ -164,28 +168,29 @@ function parseVendorDetail(html) {
       while ((cm = tdRe.exec(rowHtml)) !== null) cells.push(cm[1]);
       if (cells.length < 3) continue;
 
-      const getText = (i) => i >= 0 && i < cells.length ? stripTags(cells[i]) : "";
+      const getText = (i) => (i >= 0 && i < cells.length ? stripTags(cells[i]) : "");
       const price = parseDollar(getText(priceIdx));
-      const desc  = getText(descIdx);
+      const desc = getText(descIdx);
       if (!price && !desc) continue;
 
       // Parse status tally marks — each tally is a <span> or <div> with a color class
       // ordered=gray/ordered, stock=red/stock, sold=blue/sold, sale=purple/sale, returned=black/returned
       const statusCell = cells[0] || ""; // Status is always first column
-      const countClass = (cls) => (statusCell.match(new RegExp('class="[^"]*' + cls + '[^"]*"', 'g')) || []).length;
+      const countClass = (cls) =>
+        (statusCell.match(new RegExp('class="[^"]*' + cls + '[^"]*"', "g")) || []).length;
 
       products.push({
         description: desc,
-        style:       getText(styleIdx),
-        color:       getText(colorIdx),
-        fabric:      getText(fabricIdx),
-        size:        getText(sizeIdx),
-        cost:        parseDollar(getText(costIdx)),
+        style: getText(styleIdx),
+        color: getText(colorIdx),
+        fabric: getText(fabricIdx),
+        size: getText(sizeIdx),
+        cost: parseDollar(getText(costIdx)),
         price,
-        qtyOrdered:  countClass("ordered"),
-        qtyStock:    countClass("stock"),
-        qtySold:     countClass("sold"),
-        qtySale:     countClass("sale"),
+        qtyOrdered: countClass("ordered"),
+        qtyStock: countClass("stock"),
+        qtySold: countClass("sold"),
+        qtySale: countClass("sale"),
         qtyReturned: countClass("returned"),
       });
     }
@@ -202,12 +207,15 @@ export default async function handler(req, res) {
   if (!session.authed) return res.status(401).json({ error: "Not authenticated" });
 
   const { action, phpsessid, rememberme } = req.body || {};
-  if (!phpsessid && !rememberme) return res.status(400).json({ error: "Provide at least one cookie value" });
+  if (!phpsessid && !rememberme)
+    return res.status(400).json({ error: "Provide at least one cookie value" });
 
   const cookies = [
-    phpsessid  ? `PHPSESSID=${phpsessid}`   : "",
+    phpsessid ? `PHPSESSID=${phpsessid}` : "",
     rememberme ? `REMEMBERME=${rememberme}` : "",
-  ].filter(Boolean).join("; ");
+  ]
+    .filter(Boolean)
+    .join("; ");
 
   try {
     if (action === "probe") {
@@ -244,7 +252,16 @@ export default async function handler(req, res) {
     }
 
     if (action === "fetchVendorDetail") {
-      const { vendorId, deptId, season, vendorName, deptName, storeOrdered, storeReceived, storeSold } = req.body;
+      const {
+        vendorId,
+        deptId,
+        season,
+        vendorName,
+        deptName,
+        storeOrdered,
+        storeReceived,
+        storeSold,
+      } = req.body;
       const html = await dtFetch(`/vendor/${vendorId}/department/${deptId}`, cookies);
       const data = parseVendorDetail(html);
 
@@ -253,17 +270,25 @@ export default async function handler(req, res) {
         const TTL = 60 * 60 * 24 * 30;
         const key = `${deptId}__${vendorId}`;
         const vendorRecord = {
-          vendorId, vendorName: vendorName || "",
-          deptId, deptName: deptName || "",
-          ordered:  data.ordered  || storeOrdered  || 0,
+          vendorId,
+          vendorName: vendorName || "",
+          deptId,
+          deptName: deptName || "",
+          ordered: data.ordered || storeOrdered || 0,
           received: data.received || storeReceived || 0,
-          sold:     data.sold     || storeSold     || 0,
+          sold: data.sold || storeSold || 0,
           products: data.products,
         };
         await kv.set(`scan:override:${season}:v:${key}`, JSON.stringify(vendorRecord), { ex: TTL });
       }
 
-      return res.json({ ok: true, ordered: data.ordered, received: data.received, sold: data.sold, productCount: data.products.length });
+      return res.json({
+        ok: true,
+        ordered: data.ordered,
+        received: data.received,
+        sold: data.sold,
+        productCount: data.products.length,
+      });
     }
 
     if (action === "finalizeImport") {
@@ -278,7 +303,11 @@ export default async function handler(req, res) {
 
       if (vendorKeys && vendorKeys.length > 0) {
         const existingRaw = await kv.get(`scan:override:${season}:vendorIndex`);
-        const existing = existingRaw ? (typeof existingRaw === "string" ? JSON.parse(existingRaw) : existingRaw) : [];
+        const existing = existingRaw
+          ? typeof existingRaw === "string"
+            ? JSON.parse(existingRaw)
+            : existingRaw
+          : [];
         const merged = Array.from(new Set([...existing, ...vendorKeys]));
         await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(merged), TTL_OPTS);
       }

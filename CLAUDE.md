@@ -276,10 +276,11 @@ These rules apply to ALL code the AI writes or edits in this repo. They are enfo
 ### Tooling
 - **Formatting:** Prettier owns formatting. Run `npm run format` before committing; never hand-format. Config: 2-space indent, double quotes, semicolons, 100-char width, trailing commas (es5).
 - **Linting:** `npm run lint` (`next lint`). It MUST pass with zero ESLint **errors** before pushing. Warnings should trend toward zero — never add new warnings in code you touch.
+- **Codacy:** Codacy is not used for this project. Do not install the Codacy CLI, run Codacy analysis, or treat Codacy as a required quality gate.
 - Do NOT add a root `babel.config.js` — it disables Next's SWC compiler. Jest transforms come from `next/jest` in `jest.config.js`.
 
 ### Style rules
-- **`const`/`let` only — never `var`.** Prefer `const`; use `let` only when reassignment is required. (Legacy `var` in `pages/index.js` is grandfathered as warnings; convert opportunistically when editing nearby code, but do NOT do a giant unrelated reformat that collides with the other agent.)
+- **`const`/`let` only — never `var`.** Prefer `const`; use `let` only when reassignment is required.
 - Use `===`/`!==` (smart `eqeqeq`) — avoid loose equality except the `== null` null/undefined check.
 - No leftover `console.log` (`console.warn`/`console.error` are allowed for genuine diagnostics).
 - No unused variables. Prefix intentionally-unused args/vars with `_`.

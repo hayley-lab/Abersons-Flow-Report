@@ -18,9 +18,17 @@ export default async function handler(req, res) {
   const vendorMatches = [];
   if (data && data.deptVendors) {
     Object.entries(data.deptVendors).forEach(([deptId, vendors]) => {
-      (vendors || []).forEach(v => {
+      (vendors || []).forEach((v) => {
         if (!vendor || (v.name || "").toLowerCase().includes(vendor.toLowerCase())) {
-          vendorMatches.push({ deptId, id: v.id, name: v.name, ordered: v.ordered, received: v.received, sold: v.sold, returned: v.returned });
+          vendorMatches.push({
+            deptId,
+            id: v.id,
+            name: v.name,
+            ordered: v.ordered,
+            received: v.received,
+            sold: v.sold,
+            returned: v.returned,
+          });
         }
       });
     });
@@ -29,17 +37,25 @@ export default async function handler(req, res) {
   // If vendor given, find all products for that vendor via pidToSupplier
   let vendorProducts = null;
   if (vendor && data && data.pidToSupplier && data.productStats) {
-    const matchingVendorIds = new Set(vendorMatches.map(v => String(v.id)));
+    const matchingVendorIds = new Set(vendorMatches.map((v) => String(v.id)));
     // Build inverted skuToPid so we can show SKU per pid
     const pidToSku = {};
     if (data.skuToPid) {
-      Object.entries(data.skuToPid).forEach(([s, p]) => { pidToSku[p] = s; });
+      Object.entries(data.skuToPid).forEach(([s, p]) => {
+        pidToSku[p] = s;
+      });
     }
     const products = [];
     Object.entries(data.pidToSupplier).forEach(([pid, sup]) => {
       if (sup && matchingVendorIds.has(String(sup.i))) {
         const stats = data.productStats[pid] || {};
-        products.push({ pid, sku: pidToSku[pid] || "", sold: stats.sold || 0, onSale: stats.onSale || 0, returned: stats.returned || 0 });
+        products.push({
+          pid,
+          sku: pidToSku[pid] || "",
+          sold: stats.sold || 0,
+          onSale: stats.onSale || 0,
+          returned: stats.returned || 0,
+        });
       }
     });
     products.sort((a, b) => b.sold - a.sold);
@@ -50,8 +66,8 @@ export default async function handler(req, res) {
   let skuSales = null;
   if (sku || pidQuery) {
     try {
-      const token   = await getLsToken();
-      const base    = lsBase();
+      const token = await getLsToken();
+      const base = lsBase();
       const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
       let pid = pidQuery || null;
@@ -61,13 +77,16 @@ export default async function handler(req, res) {
         pid = data.skuToPid[skuLower];
         if (!pid) {
           for (const [k, v] of Object.entries(data.skuToPid)) {
-            if (k.includes(skuLower) || skuLower.includes(k)) { pid = v; break; }
+            if (k.includes(skuLower) || skuLower.includes(k)) {
+              pid = v;
+              break;
+            }
           }
         }
       }
 
       if (pid) {
-        const stats = data && data.productStats ? (data.productStats[pid] || {}) : {};
+        const stats = data && data.productStats ? data.productStats[pid] || {} : {};
 
         const [prodRes, salesRes] = await Promise.all([
           fetch(`${base}/2.0/products/${pid}`, { headers }),
@@ -77,8 +96,8 @@ export default async function handler(req, res) {
         const prod = prodData.data || prodData;
 
         const matchingLines = [];
-        for (const sale of (salesData.data || [])) {
-          for (const li of (sale.line_items || [])) {
+        for (const sale of salesData.data || []) {
+          for (const li of sale.line_items || []) {
             if (li.product_id === pid) {
               matchingLines.push({
                 sale_id: sale.id,
@@ -93,12 +112,25 @@ export default async function handler(req, res) {
             }
           }
         }
-        skuSales = { pid, name: prod.name, custom_sku: prod.custom_sku, sku: prod.sku, kvStats: stats, matchingLines };
+        skuSales = {
+          pid,
+          name: prod.name,
+          custom_sku: prod.custom_sku,
+          sku: prod.sku,
+          kvStats: stats,
+          matchingLines,
+        };
       } else {
         const skuKeys = data && data.skuToPid ? Object.keys(data.skuToPid) : [];
         const base = (sku || "").split("/")[0].toLowerCase();
-        const matching = skuKeys.filter(k => k.includes(base));
-        skuSales = { error: "pid not found", sku, pidQuery, totalSkuKeys: skuKeys.length, matchingSkuKeys: matching.slice(0, 20) };
+        const matching = skuKeys.filter((k) => k.includes(base));
+        skuSales = {
+          error: "pid not found",
+          sku,
+          pidQuery,
+          totalSkuKeys: skuKeys.length,
+          matchingSkuKeys: matching.slice(0, 20),
+        };
       }
     } catch (e) {
       skuSales = { error: e.message };

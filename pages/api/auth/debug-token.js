@@ -14,7 +14,11 @@ export default async function handler(req, res) {
     const r = await fetch(`${base}/${path}`, { headers: hdrs });
     const text = await r.text();
     let body;
-    try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 300) }; }
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = { raw: text.slice(0, 300) };
+    }
     return { status: r.status, ok: r.ok, body };
   }
 
@@ -42,7 +46,13 @@ export default async function handler(req, res) {
     productFetchTest = await Promise.all(
       pids.map(async (pid) => {
         const r = await ls(`2.0/products/${pid}`);
-        return { pid, status: r.status, has_data: !!r.body?.data?.id, keys: r.body?.data ? Object.keys(r.body.data).slice(0, 5) : null, error: r.body?.errors };
+        return {
+          pid,
+          status: r.status,
+          has_data: !!r.body?.data?.id,
+          keys: r.body?.data ? Object.keys(r.body.data).slice(0, 5) : null,
+          error: r.body?.errors,
+        };
       })
     );
   }
@@ -50,9 +60,22 @@ export default async function handler(req, res) {
   res.status(200).json({
     season_tag: { id: seasonTag.id, name: seasonTag.name },
     tag_filter_tests: {
-      "products?tag_id=X":     { status: test1.status, count: test1.body?.data?.length, sample_name: test1.body?.data?.[0]?.name },
-      "products?tag_ids[]=X":  { status: test2.status, count: test2.body?.data?.length, sample_name: test2.body?.data?.[0]?.name },
-      "tags/{id}/products":    { status: test3.status, count: test3.body?.data?.length, sample_name: test3.body?.data?.[0]?.name, error: test3.body?.errors },
+      "products?tag_id=X": {
+        status: test1.status,
+        count: test1.body?.data?.length,
+        sample_name: test1.body?.data?.[0]?.name,
+      },
+      "products?tag_ids[]=X": {
+        status: test2.status,
+        count: test2.body?.data?.length,
+        sample_name: test2.body?.data?.[0]?.name,
+      },
+      "tags/{id}/products": {
+        status: test3.status,
+        count: test3.body?.data?.length,
+        sample_name: test3.body?.data?.[0]?.name,
+        error: test3.body?.errors,
+      },
     },
     product_fetch_test: productFetchTest,
   });
