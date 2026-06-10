@@ -11,17 +11,23 @@ export default async function handler(req, res) {
   if (!season) return res.status(400).json({ error: "season parameter required" });
 
   const base = `https://${session.domainPrefix}.retail.lightspeed.app/api`;
-  const headers = { Authorization: `Bearer ${session.accessToken}`, "Content-Type": "application/json" };
+  const headers = {
+    Authorization: `Bearer ${session.accessToken}`,
+    "Content-Type": "application/json",
+  };
 
   async function lsFetch(path) {
     const r = await fetch(`${base}/${path}`, { headers });
     const text = await r.text();
-    try { return { status: r.status, body: JSON.parse(text) }; }
-    catch { return { status: r.status, body: { raw: text.slice(0, 300) } }; }
+    try {
+      return { status: r.status, body: JSON.parse(text) };
+    } catch {
+      return { status: r.status, body: { raw: text.slice(0, 300) } };
+    }
   }
 
   function getCursor(body, items) {
-    const vfr = (body.version && typeof body.version === "object") ? body.version.max : null;
+    const vfr = body.version && typeof body.version === "object" ? body.version.max : null;
     const vfi = items.reduce((mx, i) => Math.max(mx, i.version || 0), 0);
     return (vfr !== null ? vfr : vfi) || null;
   }
@@ -45,7 +51,12 @@ export default async function handler(req, res) {
     let products = [];
     after = null;
     for (let p = 0; p < 200; p++) {
-      const r = await lsFetch("2.0/products?tag_ids[]=" + seasonTag.id + "&page_size=200" + (after ? "&after=" + after : ""));
+      const r = await lsFetch(
+        "2.0/products?tag_ids[]=" +
+          seasonTag.id +
+          "&page_size=200" +
+          (after ? "&after=" + after : "")
+      );
       if (r.status !== 200) break;
       const items = r.body.data || [];
       products = products.concat(items);

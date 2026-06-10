@@ -18,7 +18,11 @@ export default async function handler(req, res) {
   const scanData = await kv.get(`scan:data:${season}`);
 
   const index = indexRaw ? (typeof indexRaw === "string" ? JSON.parse(indexRaw) : indexRaw) : null;
-  const stores = storesRaw ? (typeof storesRaw === "string" ? JSON.parse(storesRaw) : storesRaw) : null;
+  const stores = storesRaw
+    ? typeof storesRaw === "string"
+      ? JSON.parse(storesRaw)
+      : storesRaw
+    : null;
 
   // Sample first vendor
   let sampleVendor = null;
@@ -27,11 +31,13 @@ export default async function handler(req, res) {
     sampleVendor = { key: index[0], value: typeof v === "string" ? JSON.parse(v) : v };
   }
 
-  const scanSummary = scanData ? {
-    summaryRowCount: (scanData.summaryRows || []).length,
-    deptVendorKeys: Object.keys(scanData.deptVendors || {}),
-    firstSummaryRow: (scanData.summaryRows || [])[0] || null,
-  } : null;
+  const scanSummary = scanData
+    ? {
+        summaryRowCount: (scanData.summaryRows || []).length,
+        deptVendorKeys: Object.keys(scanData.deptVendors || {}),
+        firstSummaryRow: (scanData.summaryRows || [])[0] || null,
+      }
+    : null;
 
   return res.json({
     season,

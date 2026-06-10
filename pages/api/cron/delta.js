@@ -7,18 +7,19 @@ import { sessionOptions } from "../../../lib/session";
 
 function currentSeasons() {
   const year = new Date().getFullYear();
-  return SEASONS.filter(s => {
+  return SEASONS.filter((s) => {
     const m = s.id.match(/\d+$/);
     if (!m) return false;
     const y = parseInt("20" + m[0].slice(-2));
     return y >= year - 1;
-  }).map(s => s.id);
+  }).map((s) => s.id);
 }
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
 
-  const cronAuth = process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
+  const cronAuth =
+    process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
   if (!cronAuth) {
     const session = await getIronSession(req, res, sessionOptions);
     if (!session.authed) return res.status(401).json({ error: "Unauthorized" });
@@ -27,30 +28,36 @@ export default async function handler(req, res) {
   const base = process.env.VERCEL_PROJECT_PRODUCTION_URL
     ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
     : `https://${process.env.VERCEL_URL}`;
-  const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.CRON_SECRET}` };
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${process.env.CRON_SECRET}`,
+  };
 
   const seasons = currentSeasons();
 
   // Check job states in parallel, then fire all delta scans in parallel
-  const jobs = await Promise.all(seasons.map(s => kv.get(`scan:job:${s}`)));
+  const jobs = await Promise.all(seasons.map((s) => kv.get(`scan:job:${s}`)));
 
-  const results = await Promise.all(seasons.map(async (season, i) => {
-    const job = jobs[i];
-    if (job && job.phase && job.phase !== "done" && job.phase !== "error") {
-      return { season, action: "skipped", reason: "full scan in progress" };
-    }
-    try {
-      const r = await fetch(`${base}/api/scan/delta?season=${encodeURIComponent(season)}`, {
-        method: "POST", headers,
-      });
-      const json = await r.json();
-      return r.ok
-        ? { season, action: "delta", ts: json.ts, pages: json.pages }
-        : { season, action: "skipped", reason: json.error };
-    } catch (e) {
-      return { season, action: "error", error: e.message };
-    }
-  }));
+  const results = await Promise.all(
+    seasons.map(async (season, i) => {
+      const job = jobs[i];
+      if (job && job.phase && job.phase !== "done" && job.phase !== "error") {
+        return { season, action: "skipped", reason: "full scan in progress" };
+      }
+      try {
+        const r = await fetch(`${base}/api/scan/delta?season=${encodeURIComponent(season)}`, {
+          method: "POST",
+          headers,
+        });
+        const json = await r.json();
+        return r.ok
+          ? { season, action: "delta", ts: json.ts, pages: json.pages }
+          : { season, action: "skipped", reason: json.error };
+      } catch (e) {
+        return { season, action: "error", error: e.message };
+      }
+    })
+  );
 
   return res.json({ ok: true, results });
 }

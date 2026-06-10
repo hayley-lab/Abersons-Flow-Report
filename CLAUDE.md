@@ -3,6 +3,60 @@
 ## Git Workflow
 All commits go to branch `claude/determined-brown-C3xNA`. **Always work on this branch directly** — never commit to local `main`. Use `git push origin claude/determined-brown-C3xNA`. Before first commit in a session, run `git config user.email noreply@anthropic.com && git config user.name Claude`.
 
+### Conventional Commits (AI MUST follow)
+Every commit message MUST use [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+<type>(<optional scope>): <short description>
+
+[optional body — explain why, not what; wrap at ~72 chars]
+
+[optional footer — e.g. Fixes #123]
+```
+
+**Rules:**
+- **Subject line is mandatory** and MUST match `<type>(<scope>): <description>`.
+- Use **imperative mood** in the subject (`fix scan totals`, not `fixed` / `fixes`).
+- Keep the subject **≤ 72 characters**. No trailing period.
+- **Scope** is optional but encouraged for multi-area repos (`scan`, `ui`, `lib`, `auth`, `cron`, `docs`).
+- Use a **body** when the change needs context beyond the subject (bug root cause, trade-off, migration note).
+- **One logical change per commit** — do not bundle unrelated fixes.
+
+**Allowed types:**
+
+| Type | When to use |
+|------|-------------|
+| `feat` | New user-facing behavior or capability |
+| `fix` | Bug fix |
+| `docs` | Documentation only (`CLAUDE.md`, README, comments that document behavior) |
+| `test` | Adding or updating tests only |
+| `refactor` | Code change that neither fixes a bug nor adds a feature |
+| `perf` | Performance improvement |
+| `style` | Formatting, whitespace, semicolons — no logic change |
+| `build` | Build system or external dependencies |
+| `ci` | CI/CD configuration |
+| `chore` | Maintenance that doesn't fit above (deps bump, tooling) |
+
+**Examples (good):**
+```
+fix(scan): record vendor returns using SUPPLIER_RETURN type
+feat(ui): auto-refresh when delta sync completes
+docs: add conventional commit guidelines to CLAUDE.md
+test(lib): add regression tests for sale-vs-on-sale classification
+refactor(scan): extract flow math into lib/flow-math.js
+```
+
+**Examples (bad — never use):**
+```
+Fixed bug
+Update files
+WIP
+Merge stuff
+f8a5ef5 Fix flow report accuracy with shared math...
+```
+
+**Before committing:** run `npm test` and `npm run lint` when the repo has those scripts and your change touches code (see Testing Policy when present).
+
 ## Background
 Abersons switched POS systems from RMH (old) to Lightspeed Retail / LS (new). The old flow report was connected to RMH. This new app connects to LS and replaces it. Sales history was transferred into LS, but not all POs were — some older POs were hard-pulled from the old flow report.
 
@@ -215,3 +269,41 @@ The key files and their roles:
 - Do not assume all POs are in LS — some came from the datatail import
 - Do not use supplier ID for brand matching — multiple brands share one LS supplier ID; match by SKU
 - Do not show negative Received (cost) — cap at $0 for consignment vendors
+
+## Code Quality & Style Guidelines (AI MUST follow)
+These rules apply to ALL code the AI writes or edits in this repo. They are enforced (with warnings today, tightening over time) by ESLint + Prettier — see `.eslintrc.json` and `.prettierrc.json`.
+
+### Tooling
+- **Formatting:** Prettier owns formatting. Run `npm run format` before committing; never hand-format. Config: 2-space indent, double quotes, semicolons, 100-char width, trailing commas (es5).
+- **Linting:** `npm run lint` (`next lint`). It MUST pass with zero ESLint **errors** before pushing. Warnings should trend toward zero — never add new warnings in code you touch.
+- **Codacy:** Codacy is not used for this project. Do not install the Codacy CLI, run Codacy analysis, or treat Codacy as a required quality gate.
+- Do NOT add a root `babel.config.js` — it disables Next's SWC compiler. Jest transforms come from `next/jest` in `jest.config.js`.
+
+### Style rules
+- **`const`/`let` only — never `var`.** Prefer `const`; use `let` only when reassignment is required.
+- Use `===`/`!==` (smart `eqeqeq`) — avoid loose equality except the `== null` null/undefined check.
+- No leftover `console.log` (`console.warn`/`console.error` are allowed for genuine diagnostics).
+- No unused variables. Prefix intentionally-unused args/vars with `_`.
+- Keep functions small and pure where possible. Pull pure logic into `lib/` modules (like `lib/flow-math.js`, `lib/seasons.js`) so it is unit-testable in isolation.
+- Comments explain non-obvious intent, trade-offs, or domain constraints (e.g. the LS/datatail netting rules) — not what the code literally does.
+- Respect the existing architecture and the "What NOT To Do" list above. Style cleanups must never change behavior.
+
+## Testing Policy (AI MUST follow)
+Unit tests are a default deliverable, not an afterthought.
+
+### Write tests by DEFAULT for everything
+- For **every** new function, bug fix, or behavior change, the AI MUST add or update unit tests in the same change. "Done" means code **and** its tests.
+- Prefer extracting business logic into pure functions under `lib/` and testing it directly. This is how the flow-report math (ordering, receiving, vendor returns, sales/on-sale netting, on-hand) should be verified — at the individual-SKU / product level, matching the bottom-up data flow described above.
+- Each bug fix gets a regression test that fails before the fix and passes after.
+- Test the real domain rules, not trivial getters. Good targets: season/SKU matching, sale-vs-on-sale classification, customer-return handling, netting of received/returned totals, header total formulas.
+- Tests live in `__tests__/` folders next to the code (e.g. `lib/__tests__/seasons.test.js`) or as `*.test.js`. Use `next/jest` (already configured). Default env is `node`; add a `@jest-environment jsdom` docblock for React component tests.
+- Mock external I/O (Vercel KV, the Lightspeed API, `fetch`). Never hit live LS or KV from a unit test.
+
+### Run tests BEFORE pushing
+- The AI MUST run `npm test` and confirm it is green **before every push**. Do not push with failing or skipped tests.
+- Required pre-push gate (all must pass): `npm test` → `npm run lint` (zero errors) → `npm run build` for changes that affect the build.
+- If a test is intentionally pending, mark it `it.todo(...)` or `test.skip` with a comment explaining why — never leave silently broken tests.
+- CI/local equivalent: `npm run test:ci`.
+
+### Expanding test coverage
+The lint/test scaffold is on `main`. Keep new tests focused on stable, pure modules under `lib/` (e.g. `lib/flow-math.js`, season/SKU matching, sale-vs-on-sale classification) and add regression tests as scan pipeline logic settles.

@@ -30,7 +30,9 @@ export default async function handler(req, res) {
   // Append to vendor index rather than overwrite
   const existingIndexRaw = await kv.get(`scan:override:${season}:vendorIndex`);
   const existingIndex = existingIndexRaw
-    ? (typeof existingIndexRaw === "string" ? JSON.parse(existingIndexRaw) : existingIndexRaw)
+    ? typeof existingIndexRaw === "string"
+      ? JSON.parse(existingIndexRaw)
+      : existingIndexRaw
     : [];
   const newKeys = Object.keys(data.vendors || {});
   const mergedIndex = Array.from(new Set([...existingIndex, ...newKeys]));

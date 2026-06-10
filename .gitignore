@@ -8,6 +8,9 @@ node_modules/
 .next/
 out/
 
+# Test coverage
+coverage/
+
 # Environment variables
 .env
 .env.local

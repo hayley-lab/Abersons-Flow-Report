@@ -14,11 +14,7 @@ export default async function handler(req, res) {
   session.oauthState = state;
   await session.save();
 
-  const scope = [
-    "products:read",
-    "sales:read",
-    "consignments:read",
-  ].join(" ");
+  const scope = ["products:read", "sales:read", "consignments:read"].join(" ");
 
   const url =
     `https://secure.retail.lightspeed.app/connect` +

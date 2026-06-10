@@ -5,14 +5,30 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:ci": "jest --ci"
   },
   "dependencies": {
     "@vercel/kv": "^2.0.0",
     "iron-session": "^8.0.1",
-    "next": "14.2.3",
+    "next": "16.2.9",
     "node-fetch": "^3.3.2",
     "react": "18.3.1",
     "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^16.2.9",
+    "eslint-config-prettier": "^10.1.8",
+    "jest": "^30.4.2",
+    "prettier": "^3.8.4"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
   }
 }
