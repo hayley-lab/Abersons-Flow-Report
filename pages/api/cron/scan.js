@@ -13,6 +13,7 @@ import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
+const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 // Leave buffer before maxDuration so we can return cleanly.
 // maxDuration is 300s (capped at 60s on Hobby plan).
 const CRON_LOOP_DEADLINE_MS = 240 * 1000;
@@ -60,6 +61,7 @@ export default async function handler(req, res) {
         Promise.all([
           kv.get(`scan:job:${season}`),
           force ? Promise.resolve(null) : kv.get(`scan:data:${season}`),
+          kv.get(`scan:lastFull:${season}`),
         ])
       )
     );
@@ -72,36 +74,71 @@ export default async function handler(req, res) {
 
   // Build per-season work items
   const seasonState = seasons.map((season, i) => {
-    const [job, data] = kvResults[i];
+    const [job, data, lastFull] = kvResults[i];
     const phase = job ? job.phase : null;
     const lastTs = (job && job.ts) || (data && data.ts) || null;
     const msSinceScan = lastTs ? Date.now() - lastTs : Infinity;
+    const lastFullTs = Number(lastFull || 0) || null;
+    const fullDue = !lastFullTs || Date.now() - lastFullTs >= FULL_REBUILD_INTERVAL_MS;
 
     let restart = "0";
+    let mode = job?.scanMode || "incremental";
     if (restartAll) {
       restart = "1";
+      mode = "full";
     } else if (!phase || phase === "done" || phase === "error") {
       if (msSinceScan < RESCAN_INTERVAL_MS) {
-        return { season, phase, restart, done: true, action: "skipped" };
+        return { season, phase, restart, mode, done: true, action: "skipped" };
       }
-      restart = "1";
+      if (!data || fullDue) {
+        restart = "1";
+        mode = "full";
+      } else {
+        mode = "incremental";
+      }
     }
 
-    return { season, phase, restart, done: false, action: null };
+    return { season, phase, restart, mode, done: false, action: null };
   });
 
   async function stepSeason(ss) {
     try {
       const r = await fetch(
-        `${base}/api/scan/step?season=${encodeURIComponent(ss.season)}&restart=${ss.restart}`,
+        `${base}/api/scan/step?season=${encodeURIComponent(ss.season)}&restart=${ss.restart}&mode=${ss.mode}`,
         { method: "POST", headers }
       );
-      const json = await r.json();
+      const text = await r.text();
+      let json = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { error: text.slice(0, 300) };
+      }
       ss.restart = "0";
+      if (!r.ok) {
+        ss.done = true;
+        ss.action = "error";
+        ss.phase = json.phase || ss.phase || null;
+        return {
+          season: ss.season,
+          action: "error",
+          phase: ss.phase,
+          mode: ss.mode,
+          status: r.status,
+          error: json.error || json.message || text.slice(0, 300),
+        };
+      }
       ss.phase = json.phase;
+      ss.mode = json.mode || ss.mode;
       if (json.phase === "done" || json.phase === "error") ss.done = true;
       ss.action = "advanced";
-      return { season: ss.season, action: ss.action, phase: json.phase, progress: json.progress };
+      return {
+        season: ss.season,
+        action: ss.action,
+        phase: json.phase,
+        mode: ss.mode,
+        progress: json.progress,
+      };
     } catch (e) {
       ss.done = true;
       ss.action = "error";
@@ -145,6 +182,7 @@ export default async function handler(req, res) {
         season: s.season,
         action: s.action || "skipped",
         phase: s.phase,
+        mode: s.mode,
       })),
     });
   } else {

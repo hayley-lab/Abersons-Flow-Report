@@ -19,6 +19,7 @@ import {
   returnedRetailValue,
 } from "../../../lib/flow-math";
 import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sales-ledger";
+import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
 
@@ -153,15 +154,24 @@ export default async function handler(req, res) {
     await saveSalesState(kv, season, salesState, seasonPidSet);
     applySalesTotals(productStats, salesState.perPid);
 
-    const changedPids = Array.from(touchedPids).filter((pid) => productStats[pid]);
-    for (let i = 0; i < changedPids.length && Date.now() < deadline; i += 5) {
-      const batch = changedPids.slice(i, i + 5);
-      const liveValues = await Promise.all(
-        batch.map((pid) => fetchLiveOnHand(pid).catch(() => productStats[pid].liveOnHand ?? null))
-      );
-      batch.forEach((pid, idx) => {
-        if (liveValues[idx] != null) productStats[pid].liveOnHand = liveValues[idx];
-      });
+    try {
+      const inventoryResult = await syncInventoryCache(kv, season, lsFetch, { deadline });
+      for (const pid of existing.seasonPids || []) {
+        const live = liveOnHandFromCache(inventoryResult.cache, pid);
+        if (live != null && productStats[pid]) productStats[pid].liveOnHand = live;
+      }
+    } catch (e) {
+      console.warn(`[delta] ${season} bulk inventory sync failed, falling back:`, e.message);
+      const changedPids = Array.from(touchedPids).filter((pid) => productStats[pid]);
+      for (let i = 0; i < changedPids.length && Date.now() < deadline; i += 5) {
+        const batch = changedPids.slice(i, i + 5);
+        const liveValues = await Promise.all(
+          batch.map((pid) => fetchLiveOnHand(pid).catch(() => productStats[pid].liveOnHand ?? null))
+        );
+        batch.forEach((pid, idx) => {
+          if (liveValues[idx] != null) productStats[pid].liveOnHand = liveValues[idx];
+        });
+      }
     }
 
     // Roll up productStats → deptVendorData

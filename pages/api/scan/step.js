@@ -42,6 +42,14 @@ import {
   reconcileSale,
   saveSalesState,
 } from "../../../lib/sales-ledger";
+import {
+  applyConsignmentTotalsToMaps,
+  clearConsignmentLedger,
+  loadConsignmentState,
+  reconcileConsignment,
+  saveConsignmentState,
+} from "../../../lib/consignment-ledger";
+import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
 
 const CHUNK_MS = 6000;
 
@@ -135,6 +143,7 @@ export default async function handler(req, res) {
 
   // Load small + big state and merge
   const restart = req.query.restart === "1";
+  const requestedMode = !restart && req.query.mode === "incremental" ? "incremental" : "full";
   const [smallState, bigData] = restart
     ? [null, null]
     : await Promise.all([kv.get(jobKey), kv.get(bigKey)]);
@@ -144,10 +153,12 @@ export default async function handler(req, res) {
     state = {
       phase: "init",
       season,
+      scanMode: requestedMode,
       startedAt: Date.now(),
       progress: "Starting…",
     };
   }
+  if (!state.scanMode) state.scanMode = requestedMode;
 
   let token;
   try {
@@ -247,29 +258,65 @@ export default async function handler(req, res) {
     return state.productStats[pid];
   }
 
+  function fullRebuild() {
+    return state.scanMode !== "incremental";
+  }
+
+  function trimConsignment(c) {
+    return {
+      id: c.id,
+      type: c.type,
+      version: c.version || null,
+      status: c.status || null,
+      deleted_at: c.deleted_at || null,
+      date: consignmentDate(c),
+      created_at: c.created_at || null,
+      received_at: c.received_at || null,
+      due_at: c.due_at || null,
+      supplier_id: c.supplier_id || null,
+      supplier: c.supplier || null,
+    };
+  }
+
+  async function fetchConsignmentHeaders(type) {
+    const scanRange = state.scanRange || seasonScanDateRange(season);
+    const params = [`type=${encodeURIComponent(type)}`];
+    const modeIsFull = fullRebuild() || state.consignmentBackfill;
+    const after = state.consignmentState?.maxVersionByType?.[type];
+    if (modeIsFull && scanRange.start)
+      params.push(`date_from=${encodeURIComponent(scanRange.start)}`);
+    if (!modeIsFull && after) params.push(`after=${encodeURIComponent(after)}`);
+
+    const headers = (await lsFetchAll(`2.0/consignments?${params.join("&")}`)).map(trimConsignment);
+    if (type !== "RETURN") return headers;
+    return headers.filter((c) => !c.date || dateInRange(c.date, scanRange));
+  }
+
+  function hydrateProductStatsFromQuantityMaps() {
+    const ids = new Set([
+      ...Object.keys(state.pidToQtyOrdered || {}),
+      ...Object.keys(state.pidToQtyReceived || {}),
+      ...Object.keys(state.pidToQtyReturned || {}),
+    ]);
+
+    for (const pid of ids) {
+      const ps = getProductStats(pid);
+      ps.qtyOrdered = state.pidToQtyOrdered?.[pid] || 0;
+      ps.qtyReceived = state.pidToQtyReceived?.[pid] || 0;
+      ps.retQty = state.pidToQtyReturned?.[pid] || 0;
+    }
+  }
+
   try {
     // ── INIT: departments + PO headers ──────────────────────────────────────
     if (state.phase === "init") {
-      state.progress = "Loading departments & purchase orders…";
+      state.progress = "Loading departments…";
       const scanRange = seasonScanDateRange(season);
-      const dateParam = scanRange.start ? `&date_from=${scanRange.start}` : "";
-      const [cats, consignments, returnConsignments] = await Promise.all([
-        lsFetchAll("2.0/product_types"),
-        lsFetchAll(`2.0/consignments?type=SUPPLIER${dateParam}`),
-        lsFetchAll(`2.0/consignments?type=SUPPLIER_RETURN${dateParam}`),
-      ]);
+      const cats = await lsFetchAll("2.0/product_types");
 
       // Trim to only needed fields to keep KV payloads small
       state.cats = cats.map((c) => ({ id: c.id, name: c.name }));
-      state.consignments = consignments.map((c) => ({ id: c.id, date: consignmentDate(c) }));
-      state.returnConsignments = returnConsignments
-        .map((c) => ({
-          id: c.id,
-          suppId: (c.supplier && c.supplier.id) || c.supplier_id || "__none__",
-          suppName: (c.supplier && c.supplier.name) || "Unknown",
-          date: consignmentDate(c),
-        }))
-        .filter((c) => !c.date || dateInRange(c.date, scanRange));
+      state.scanRange = scanRange;
       state.parentStore = {};
       state.seasonPids = [];
       state.seasonParentIds = [];
@@ -292,7 +339,7 @@ export default async function handler(req, res) {
       state.productStats = {};
 
       state.phase = "products_seed";
-      state.progress = `Loaded ${cats.length} depts, ${consignments.length} POs, ${returnConsignments.length} returns — seeding products…`;
+      state.progress = `Loaded ${cats.length} depts — seeding products…`;
     }
 
     // ── PRODUCTS_SEED: discover season products without a full catalog scan ───
@@ -401,136 +448,112 @@ export default async function handler(req, res) {
 
         state.phase = "consignments";
         state.consigIdx = 0;
-        state.progress = `Found ${state.seasonPids.length} products — scanning POs (0/${state.consignments.length})…`;
+        state.progress = `Found ${state.seasonPids.length} products — preparing PO sync…`;
       }
     }
 
     // ── CONSIGNMENTS: aggregate PO values by dept+vendor ────────────────────
     if (state.phase === "consignments" && Date.now() < deadline) {
+      if (!state._consignReady) {
+        state.consignmentState = await loadConsignmentState(kv, season);
+        const priorPidSet = new Set(state.consignmentState.pidSet || []);
+        const pidsChanged = state.seasonPids.some((pid) => !priorPidSet.has(pid));
+        state.consignmentBackfill =
+          fullRebuild() || !state.consignmentState.maxVersionByType?.SUPPLIER || pidsChanged;
+
+        if (state.consignmentBackfill) {
+          await clearConsignmentLedger(kv, season);
+          state.consignmentState = await loadConsignmentState(kv, season);
+        } else {
+          applyConsignmentTotalsToMaps(state, state.consignmentState);
+          hydrateProductStatsFromQuantityMaps();
+        }
+
+        state.consignments = await fetchConsignmentHeaders("SUPPLIER");
+        state.consigIdx = state.consigIdx || 0;
+        state._consignReady = true;
+        state.progress = state.consignmentBackfill
+          ? `Rebuilding PO ledger (0/${state.consignments.length})…`
+          : `Syncing changed POs (0/${state.consignments.length})…`;
+      }
+
       const seasonPidSet = new Set(state.seasonPids);
 
       while (state.consigIdx < state.consignments.length && Date.now() < deadline) {
         const c = state.consignments[state.consigIdx];
         const items = await lsFetchAll("2.0/consignments/" + c.id + "/products");
-
-        for (const item of items) {
-          if ((item.count || 0) < 0) continue; // skip vendor returns / adjustments
-          const pid = item.product_id;
-          if (!seasonPidSet.has(pid)) {
-            const registered = await ensureSeasonProduct(pid);
-            if (!registered) continue;
-            seasonPidSet.add(pid);
-          }
-
-          const itemRetailPrice = parseFloat(
-            item.price || item.unit_price || item.retail_price || 0
-          );
-          const price = state.pidToPrice[pid] || itemRetailPrice || 0;
-          const itemCost = state.pidToCost[pid] || parseFloat(item.cost || 0);
-          const qtyOrdered = Math.max(0, item.count || 0);
-          const qtyRecvd = Math.max(0, item.received || 0);
-          if (c.date)
-            state.salesFloorDate = state.salesFloorDate
-              ? c.date < state.salesFloorDate
-                ? c.date
-                : state.salesFloorDate
-              : c.date;
-
-          state.pidToQtyOrdered[pid] = (state.pidToQtyOrdered[pid] || 0) + qtyOrdered;
-          state.pidToQtyReceived[pid] = (state.pidToQtyReceived[pid] || 0) + qtyRecvd;
-
-          // Dollar rollup only makes sense when we know the supplier (non-override products)
-          const sup = state.pidToSupplier[pid];
-          if (!sup || sup.i === "__none__") continue;
-
-          const ps = getProductStats(pid);
-          ps.qtyOrdered = (ps.qtyOrdered || 0) + qtyOrdered;
-          ps.qtyReceived = (ps.qtyReceived || 0) + qtyRecvd;
-          ps.ordered += price * qtyOrdered;
-          ps.orderedCost += itemCost * qtyOrdered;
-          ps.received += price * qtyRecvd;
-          ps.receivedCost += itemCost * qtyRecvd;
-        }
+        await reconcileConsignment(
+          kv,
+          season,
+          state.consignmentState,
+          c,
+          items,
+          "SUPPLIER",
+          seasonPidSet,
+          ensureSeasonProduct
+        );
 
         state.consigIdx++;
-        state.progress = `Scanning POs (${state.consigIdx}/${state.consignments.length})…`;
+        state.progress = `${state.consignmentBackfill ? "Rebuilding" : "Syncing changed"} POs (${state.consigIdx}/${state.consignments.length})…`;
       }
 
       if (state.consigIdx >= state.consignments.length) {
-        const orderedCount = Object.values(state.pidToQtyOrdered).filter((q) => q > 0).length;
+        await saveConsignmentState(kv, season, state.consignmentState, new Set(state.seasonPids));
+        applyConsignmentTotalsToMaps(state, state.consignmentState);
+        hydrateProductStatsFromQuantityMaps();
+        const orderedCount = Object.values(state.pidToQtyOrdered || {}).filter((q) => q > 0).length;
         console.warn(
           `[step] ${season} CONSIGNMENTS DONE: ${orderedCount} products with ordered qty, ${Object.keys(state.productStats).length} products with any stats`
         );
         delete state.consignments;
+        delete state._consignReady;
         delete state.parentStore;
 
         state.phase = "returns";
         state.returnConsigIdx = 0;
-        state.progress = `Scanning vendor returns (0/${state.returnConsignments.length})…`;
+        state.progress = "Preparing vendor return sync…";
       }
     }
 
     // ── RETURNS: aggregate vendor return values by dept+vendor ───────────────
     if (state.phase === "returns" && Date.now() < deadline) {
+      if (!state._returnReady) {
+        state.consignmentState = state.consignmentState || (await loadConsignmentState(kv, season));
+        if (!state.consignmentBackfill && !state.consignmentState.maxVersionByType?.RETURN) {
+          state.consignmentBackfill = true;
+        }
+        state.returnConsignments = await fetchConsignmentHeaders("RETURN");
+        state.returnConsigIdx = state.returnConsigIdx || 0;
+        state._returnReady = true;
+        state.progress = state.consignmentBackfill
+          ? `Rebuilding vendor return ledger (0/${state.returnConsignments.length})…`
+          : `Syncing changed vendor returns (0/${state.returnConsignments.length})…`;
+      }
+
       const seasonPidSet = new Set(state.seasonPids);
 
       while (state.returnConsigIdx < state.returnConsignments.length && Date.now() < deadline) {
         const c = state.returnConsignments[state.returnConsigIdx];
         const items = await lsFetchAll("2.0/consignments/" + c.id + "/products");
-
-        // Debug: log each return consignment summary
-        const inSeasonItems = items.filter((i) => seasonPidSet.has(i.product_id));
-        const totalQty = items.reduce((s, i) => s + Math.abs(i.count || 0), 0);
-        if (items.length > 0 || state.returnConsigIdx < 3) {
-          console.warn(
-            `[step] ${season} return consig ${state.returnConsigIdx} (${c.suppName}): ${items.length} items, ${inSeasonItems.length} in-season, totalQty=${totalQty}, suppId=${c.suppId}`
-          );
-          if (inSeasonItems.length > 0) {
-            const s = inSeasonItems[0];
-            const price = state.pidToPrice ? state.pidToPrice[s.product_id] || 0 : 0;
-            console.warn(
-              `[step] ${season} in-season return sample: pid=${s.product_id}, count=${s.count}, cost=${s.cost}, price=${price}`
-            );
-          }
-        }
-
-        for (const item of items) {
-          const pid = item.product_id;
-          // LS may store return quantities as negative (return) or positive — use absolute value
-          const qty = Math.abs(item.count || 0);
-          if (!qty) continue;
-
-          if (!seasonPidSet.has(pid)) {
-            const registered = await ensureSeasonProduct(pid);
-            if (!registered) continue;
-            seasonPidSet.add(pid);
-          }
-
-          const itemCost = state.pidToCost[pid] || parseFloat(item.cost || 0);
-          const sup =
-            state.pidToSupplier[pid] && state.pidToSupplier[pid].i !== "__none__"
-              ? state.pidToSupplier[pid]
-              : { i: c.suppId, n: c.suppName };
-          if (!sup || sup.i === "__none__") continue;
-
-          // Try pidToPrice first, then item's own retail price field as fallback
-          const itemRetailPrice = parseFloat(
-            item.price || item.unit_price || item.retail_price || 0
-          );
-          const price = (state.pidToPrice && state.pidToPrice[pid]) || itemRetailPrice || 0;
-
-          state.pidToQtyReturned[pid] = (state.pidToQtyReturned[pid] || 0) + qty;
-          const ps = getProductStats(pid);
-          ps.retVal += price * qty;
-          ps.retCost += itemCost * qty;
-          ps.retQty = (ps.retQty || 0) + qty;
-        }
+        await reconcileConsignment(
+          kv,
+          season,
+          state.consignmentState,
+          c,
+          items,
+          "RETURN",
+          seasonPidSet,
+          ensureSeasonProduct
+        );
 
         state.returnConsigIdx++;
-        state.progress = `Scanning vendor returns (${state.returnConsigIdx}/${state.returnConsignments.length})…`;
+        state.progress = `${state.consignmentBackfill ? "Rebuilding" : "Syncing changed"} vendor returns (${state.returnConsigIdx}/${state.returnConsignments.length})…`;
       }
 
       if (state.returnConsigIdx >= state.returnConsignments.length) {
+        await saveConsignmentState(kv, season, state.consignmentState, new Set(state.seasonPids));
+        applyConsignmentTotalsToMaps(state, state.consignmentState);
+        hydrateProductStatsFromQuantityMaps();
         // Summary log: total retVal / retCost across all products so we can confirm returns were captured
         let totalRetVal = 0,
           totalRetCost = 0,
@@ -556,37 +579,66 @@ export default async function handler(req, res) {
         }
 
         delete state.returnConsignments;
+        delete state._returnReady;
         state.phase = "inventory";
-        state.inventoryIdx = 0;
+        state.inventorySynced = false;
         state.salesPages = 0;
         state.saleCursor = null;
-        state.progress = `Reconciling live inventory (0/${state.seasonPids.length})…`;
+        state.progress = "Reconciling live inventory…";
       }
     }
 
     // ── INVENTORY: scan-time live inventory reconciliation (not used as primary)
     if (state.phase === "inventory" && Date.now() < deadline) {
-      while (state.inventoryIdx < state.seasonPids.length && Date.now() < deadline) {
-        const batch = state.seasonPids.slice(state.inventoryIdx, state.inventoryIdx + 5);
-        const liveValues = await Promise.all(
-          batch.map((pid) => fetchLiveOnHand(pid).catch(() => null))
-        );
-        batch.forEach((pid, idx) => {
-          const ps = getProductStats(pid);
-          const live = liveValues[idx];
-          if (live != null) {
-            // Store the live count now; the mismatch flag is computed in
-            // finalizing, after sold/onSale are known (sales run after this phase).
-            ps.liveOnHand = live;
+      if (!state.inventorySynced) {
+        if (!state.inventoryBulkFailed) {
+          try {
+            const result = await syncInventoryCache(kv, season, lsFetch, {
+              reset: fullRebuild() && !state.inventoryResetDone,
+              deadline,
+            });
+            state.inventoryResetDone = true;
+            state.progress = result.done
+              ? `Applying live inventory for ${state.seasonPids.length} products…`
+              : `Syncing live inventory… (${result.pages} pages this step)`;
+
+            if (result.done) {
+              for (const pid of state.seasonPids) {
+                const live = liveOnHandFromCache(result.cache, pid);
+                if (live != null) getProductStats(pid).liveOnHand = live;
+              }
+              state.inventorySynced = true;
+            }
+          } catch (e) {
+            state.inventoryBulkFailed = true;
+            state.inventoryIdx = state.inventoryIdx || 0;
+            console.warn(`[step] ${season} bulk inventory sync failed, falling back:`, e.message);
           }
-        });
-        state.inventoryIdx += batch.length;
-        if (state.inventoryIdx % 50 === 0) {
-          state.progress = `Reconciling live inventory (${state.inventoryIdx}/${state.seasonPids.length})…`;
+        }
+
+        while (
+          state.inventoryBulkFailed &&
+          state.inventoryIdx < state.seasonPids.length &&
+          Date.now() < deadline
+        ) {
+          const batch = state.seasonPids.slice(state.inventoryIdx, state.inventoryIdx + 5);
+          const liveValues = await Promise.all(
+            batch.map((pid) => fetchLiveOnHand(pid).catch(() => null))
+          );
+          batch.forEach((pid, idx) => {
+            const live = liveValues[idx];
+            if (live != null) getProductStats(pid).liveOnHand = live;
+          });
+          state.inventoryIdx += batch.length;
+          state.progress = `Reconciling live inventory fallback (${state.inventoryIdx}/${state.seasonPids.length})…`;
+        }
+
+        if (state.inventoryBulkFailed && state.inventoryIdx >= state.seasonPids.length) {
+          state.inventorySynced = true;
         }
       }
 
-      if (state.inventoryIdx >= state.seasonPids.length) {
+      if (state.inventorySynced) {
         state.phase = "sales";
         state.salesPages = 0;
         state.saleCursor = null;
@@ -605,7 +657,7 @@ export default async function handler(req, res) {
         // Backfill (full rebuild) when there is no ledger yet OR the product set
         // expanded — a newly-registered product may have sold before the prior
         // maxVersion and must be re-attributed against the current pid set.
-        state.salesBackfill = !state.salesState.maxVersion || pidsChanged;
+        state.salesBackfill = fullRebuild() || !state.salesState.maxVersion || pidsChanged;
         state.salesDateFrom = state.salesBackfill
           ? dateMinusDays(state.salesFloorDate, 30) || seasonSalesFallbackDate(season) || ""
           : "";
@@ -860,6 +912,9 @@ export default async function handler(req, res) {
         ),
         // Keep job key with done+ts so cron/scan can check recency without loading scan:data
         kv.set(jobKey, { phase: "done", season: state.season, ts: doneTs }, { ex: 2 * 3600 }),
+        ...(fullRebuild()
+          ? [kv.set(`scan:lastFull:${state.season}`, doneTs, { ex: 180 * 24 * 3600 })]
+          : []),
       ]);
       await kv.del(bigKey);
 
@@ -867,6 +922,7 @@ export default async function handler(req, res) {
         phase: "done",
         season: state.season,
         ts: doneTs,
+        mode: state.scanMode,
         progress: "Scan complete!",
       });
     }
@@ -881,20 +937,27 @@ export default async function handler(req, res) {
     const SMALL_FIELDS = new Set([
       "phase",
       "season",
+      "scanMode",
       "startedAt",
       "progress",
       "error",
       "consigIdx",
       "returnConsigIdx",
+      "inventorySynced",
+      "inventoryResetDone",
+      "inventoryBulkFailed",
       "inventoryIdx",
       "salesPages",
       "saleCursor",
       "salesDateFrom",
       "salesBackfill",
       "salesLedgerCleared",
+      "consignmentBackfill",
       "_seedReady",
       "_priorIdx",
       "_handleIdx",
+      "_consignReady",
+      "_returnReady",
     ]);
     const small = {},
       big = {};
@@ -906,7 +969,7 @@ export default async function handler(req, res) {
       kv.set(jobKey, small, { ex: 24 * 3600 }),
       kv.set(bigKey, big, { ex: 24 * 3600 }),
     ]);
-    return res.json({ phase: state.phase, progress: state.progress || "…" });
+    return res.json({ phase: state.phase, mode: state.scanMode, progress: state.progress || "…" });
   } catch (e) {
     console.error(`[step] ${season} error:`, e.message);
     const errState = { phase: "error", season, error: e.message };
