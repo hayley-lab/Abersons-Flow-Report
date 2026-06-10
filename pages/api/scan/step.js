@@ -125,6 +125,20 @@ function registerProduct(state, p) {
       state.skuToPid[skuKey] = p.id;
     }
   }
+
+  // Prior pid caches may predate metadata fields. Keep product display maps
+  // fresh even when the pid was already registered.
+  state.pidToType[p.id] = state.pidToType[p.id] || resolvedType;
+  state.pidToSupplier[p.id] = state.pidToSupplier[p.id] || {
+    i: resolvedSuppId,
+    n: resolvedSuppName,
+  };
+  state.pidToPrice[p.id] = state.pidToPrice[p.id] || resolvedPrice;
+  state.pidToCost[p.id] = state.pidToCost[p.id] || resolvedCost;
+  state.pidToName[p.id] = state.pidToName[p.id] || productName(p);
+  state.pidToSku[p.id] = state.pidToSku[p.id] || p.sku || "";
+  state.pidToVariant[p.id] = state.pidToVariant[p.id] || productVariant(p);
+  if (skuKey && !state.skuToPid[skuKey]) state.skuToPid[skuKey] = p.id;
 }
 
 export default async function handler(req, res) {
@@ -353,12 +367,15 @@ export default async function handler(req, res) {
         state._seedReady = true;
         state._seedHandles = [];
         state._handleIdx = 0;
+        state._metaPids = [];
+        state._metaIdx = 0;
         const priorPidSet = new Set(state.seasonPids);
 
         // 1. Restore pid maps from lightweight scan:pids key (avoids loading full scan:data blob)
         try {
           const pidsKey = `scan:pids:${season}`;
-          const priorPids = (await kv.get(pidsKey)) || (await kv.get(dataKey)); // fallback for first run
+          const [priorPidMaps, priorData] = await Promise.all([kv.get(pidsKey), kv.get(dataKey)]);
+          const priorPids = priorPidMaps || priorData; // fallback for first run
           if (priorPids && Array.isArray(priorPids.seasonPids) && priorPids.seasonPids.length > 0) {
             for (const pid of priorPids.seasonPids) {
               if (!priorPidSet.has(pid)) {
@@ -366,14 +383,17 @@ export default async function handler(req, res) {
                 priorPidSet.add(pid);
               }
             }
-            Object.assign(state.pidToType, priorPids.pidToType || {});
-            Object.assign(state.pidToSupplier, priorPids.pidToSupplier || {});
-            Object.assign(state.skuToPid, priorPids.skuToPid || {});
-            Object.assign(state.pidToPrice, priorPids.pidToPrice || {});
-            Object.assign(state.pidToCost, priorPids.pidToCost || {});
-            Object.assign(state.pidToName, priorPids.pidToName || {});
-            Object.assign(state.pidToSku, priorPids.pidToSku || {});
-            Object.assign(state.pidToVariant, priorPids.pidToVariant || {});
+            for (const source of [priorData, priorPidMaps]) {
+              if (!source) continue;
+              Object.assign(state.pidToType, source.pidToType || {});
+              Object.assign(state.pidToSupplier, source.pidToSupplier || {});
+              Object.assign(state.skuToPid, source.skuToPid || {});
+              Object.assign(state.pidToPrice, source.pidToPrice || {});
+              Object.assign(state.pidToCost, source.pidToCost || {});
+              Object.assign(state.pidToName, source.pidToName || {});
+              Object.assign(state.pidToSku, source.pidToSku || {});
+              Object.assign(state.pidToVariant, source.pidToVariant || {});
+            }
           }
         } catch (e) {}
 
@@ -410,10 +430,14 @@ export default async function handler(req, res) {
           state._seedHandles = [...handleSet];
         } catch (e) {}
 
-        console.warn(
-          `[step] ${season} products_seed: restored ${state.seasonPids.length} prior pids, ${state._seedHandles.length} new handles to fetch`
+        state._metaPids = state.seasonPids.filter(
+          (pid) => !state.pidToName?.[pid] || !state.pidToSku?.[pid]
         );
-        state.progress = `Seeding products (${state.seasonPids.length} from prior scan, ${state._seedHandles.length} new from datatail)…`;
+
+        console.warn(
+          `[step] ${season} products_seed: restored ${state.seasonPids.length} prior pids, ${state._seedHandles.length} new handles to fetch, ${state._metaPids.length} missing metadata`
+        );
+        state.progress = `Seeding products (${state.seasonPids.length} from prior scan, ${state._seedHandles.length} new from datatail, ${state._metaPids.length} missing metadata)…`;
       }
 
       const pidSet = new Set(state.seasonPids);
@@ -439,10 +463,35 @@ export default async function handler(req, res) {
           state.progress = `Fetching new datatail products (${state._handleIdx}/${state._seedHandles.length})…`;
       }
 
-      if (state._handleIdx >= state._seedHandles.length) {
+      while (
+        state._handleIdx >= state._seedHandles.length &&
+        state._metaIdx < state._metaPids.length &&
+        Date.now() < deadline
+      ) {
+        const batch = state._metaPids.slice(state._metaIdx, state._metaIdx + 5);
+        const products = await Promise.all(batch.map((pid) => fetchProduct(pid).catch(() => null)));
+        for (const product of products) {
+          if (
+            product?.id &&
+            (skuMatchesSeason(product.sku, season) ||
+              skuMatchesSeason(product?._parent?.sku, season))
+          ) {
+            registerProduct(state, product);
+          }
+        }
+        state._metaIdx += batch.length;
+        state.progress = `Backfilling product metadata (${state._metaIdx}/${state._metaPids.length})…`;
+      }
+
+      if (
+        state._handleIdx >= state._seedHandles.length &&
+        state._metaIdx >= state._metaPids.length
+      ) {
         delete state._seedReady;
         delete state._seedHandles;
         delete state._handleIdx;
+        delete state._metaPids;
+        delete state._metaIdx;
         console.warn(
           `[step] ${season} products_seed done: ${state.seasonPids.length} products found`
         );
@@ -962,6 +1011,7 @@ export default async function handler(req, res) {
       "_seedReady",
       "_priorIdx",
       "_handleIdx",
+      "_metaIdx",
       "_consignReady",
       "_returnReady",
     ]);
