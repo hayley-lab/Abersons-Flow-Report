@@ -1,7 +1,6 @@
 # Abersons Flow Report — Project Context
 
 ## Git Workflow
-All commits go to branch `claude/determined-brown-C3xNA`. **Always work on this branch directly** — never commit to local `main`. Use `git push origin claude/determined-brown-C3xNA`. Before first commit in a session, run `git config user.email noreply@anthropic.com && git config user.name Claude`.
 
 ### Conventional Commits (AI MUST follow)
 Every commit message MUST use [Conventional Commits](https://www.conventionalcommits.org/) format:
