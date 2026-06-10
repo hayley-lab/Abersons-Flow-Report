@@ -383,6 +383,31 @@ export default function FlowReport() {
 
   // ── vendor drilldown ───────────────────────────────────────────────────────
 
+  // Compute vendor-row-compatible totals from a product rows array so they can
+  // be flowed up into vendorRows, which drives the dept-level summary header.
+  function flowUpVendorTotals(vendor, rows) {
+    var t = { ordered: 0, orderedCost: 0, received: 0, cost: 0, returned: 0, returnedCost: 0, sold: 0 };
+    rows.forEach(function(p) {
+      var price = p.price || 0, c = p.cost || 0;
+      var ret = p.returned || 0;
+      t.ordered     += (p.qtyOrdered || 0) * price;
+      t.orderedCost += (p.qtyOrdered || 0) * c;
+      // gross received (includes returned so dept header's "received - returned" is correct)
+      t.received     += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + ret) * price;
+      t.cost         += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0) + ret) * c;
+      t.returned     += ret * price;
+      t.returnedCost += ret * c;
+      t.sold         += (p.sold || 0) * price;
+    });
+    setVendorRows(function(prev) {
+      return prev.map(function(r) {
+        return (r.id === vendor.id || r.name === vendor.name)
+          ? Object.assign({}, r, t)
+          : r;
+      });
+    });
+  }
+
   const openVendor = useCallback(async function(vendor) {
     setCurrentVendor(vendor);
     setProductRows([]);
@@ -432,7 +457,7 @@ export default function FlowReport() {
           );
         }
 
-        setProductRows(vendor.overrideProducts.map(function(p) {
+        var overrideRows = vendor.overrideProducts.map(function(p) {
           const pid    = skuToPid[(p.style || "").toLowerCase().trim()];
           const stats  = pid ? (productStats[pid] || {}) : {};
           const onHand = pid && invMap[pid] != null ? invMap[pid] : (p.qtyStock || 0);
@@ -449,7 +474,9 @@ export default function FlowReport() {
             returned:   stats.retQty   != null ? stats.retQty   : (p.qtyReturned || 0),
             saleAmt:    stats.saleAmt  || 0,
           };
-        }));
+        });
+        setProductRows(overrideRows);
+        flowUpVendorTotals(vendor, overrideRows);
         setProductLoading(false);
         return;
       }
@@ -479,7 +506,7 @@ export default function FlowReport() {
         products = fetched.filter(Boolean);
       }
 
-      setProductRows(products.map(function(p) {
+      var lsRows = products.map(function(p) {
         const stats = productStats[p.id] || {};
         return {
           name:     (p.description ? p.description.replace(/<[^>]*>/g, "").trim() : "") || p.name,
@@ -491,10 +518,12 @@ export default function FlowReport() {
           onHand:     p._onHand != null ? p._onHand : (p.inventory && p.inventory.count != null) ? p.inventory.count : (p.inventory_count || 0),
           sold:       stats.sold     || 0,
           onSale:     stats.onSale   || 0,
-          returned:   stats.returned || 0,
+          returned:   stats.retQty   || 0,
           saleAmt:    stats.saleAmt  || 0,
         };
-      }));
+      });
+      setProductRows(lsRows);
+      flowUpVendorTotals(vendor, lsRows);
     } catch (e) {
       setProductError(e.message);
     }
@@ -651,7 +680,7 @@ export default function FlowReport() {
   const vTotalSold         = vendorRows.reduce((a, r) => a + (r.sold         || 0), 0);
 
   const BUCKET_COLORS = { sold: "#4a7ab5", sale: "#6c3483", stock: "#c0392b", ordered: "#aaa", returned: "#000000" };
-  const BUCKET_LABELS = { ordered: "ordered", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
+  const BUCKET_LABELS = { ordered: "on order", stock: "in stock", sold: "sold", sale: "on sale", returned: "returned" };
   const productBuckets = (function() {
     const b = { ordered: {n:0,v:0}, stock: {n:0,v:0}, sold: {n:0,v:0}, sale: {n:0,v:0}, returned: {n:0,v:0} };
     productRows.forEach(function(p) {
