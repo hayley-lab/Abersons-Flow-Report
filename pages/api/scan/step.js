@@ -565,15 +565,35 @@ export default async function handler(req, res) {
       delete state.pidToPrice;
 
       // Patch retVal for any vendor returns where price wasn't available during the returns phase.
-      // Fall back to deriving price from ordered retail ÷ ordered qty when pidToPrice is 0/missing.
+      // 1. Try pidToPrice (already fetched during consignments/returns phases)
+      // 2. Try deriving price from ordered retail ÷ ordered qty
+      // 3. Last resort: live API fetch for the specific product (and its parent if variant)
+      //    — only fires for the small number of products with retQty>0 and still no price,
+      //      bypassing any stale _priceTried flags that may have blocked earlier fetches.
       for (const [pid, ps] of Object.entries(state.productStats)) {
-        if ((ps.retQty || 0) > 0) {
-          const derivedPrice = pidToPrice[pid] ||
-            ((state.pidToQtyOrdered && (state.pidToQtyOrdered[pid] || 0) > 0)
-              ? (ps.ordered || 0) / state.pidToQtyOrdered[pid]
-              : 0);
-          console.log(`[step] ${season} FINALIZING-RET: pid=${pid} retQty=${ps.retQty} retVal=${ps.retVal} pidToPrice=${pidToPrice[pid]} ordered=${ps.ordered} qtyOrdered=${state.pidToQtyOrdered?.[pid]} derivedPrice=${derivedPrice} sup=${JSON.stringify(state.pidToSupplier[pid])}`);
-          if (!ps.retVal && derivedPrice > 0) ps.retVal = ps.retQty * derivedPrice;
+        if ((ps.retQty || 0) > 0 && !ps.retVal) {
+          let derivedPrice = pidToPrice[pid] || 0;
+          if (!derivedPrice && (state.pidToQtyOrdered?.[pid] || 0) > 0 && (ps.ordered || 0) > 0) {
+            derivedPrice = ps.ordered / state.pidToQtyOrdered[pid];
+          }
+          if (!derivedPrice) {
+            // Live fetch — only for products with a vendor return still missing a price
+            try {
+              const r = await lsFetch(`2.0/products/${pid}`);
+              const pd = r.data || r;
+              derivedPrice = parseFloat(pd.price_excluding_tax || pd.price || pd.retail_price || 0);
+              if (!derivedPrice && pd.variant_parent_id) {
+                const pr = await lsFetch(`2.0/products/${pd.variant_parent_id}`);
+                const pard = pr.data || pr;
+                derivedPrice = parseFloat(pard.price_excluding_tax || pard.price || pard.retail_price || 0);
+              }
+            } catch (e) {}
+          }
+          if (derivedPrice > 0) {
+            ps.retVal = ps.retQty * derivedPrice;
+            pidToPrice[pid] = derivedPrice; // keep in sync for vendor rollup below
+          }
+          console.log(`[step] ${season} FINALIZING-RET: pid=${pid} retQty=${ps.retQty} retVal=${ps.retVal} derivedPrice=${derivedPrice}`);
         }
       }
 
