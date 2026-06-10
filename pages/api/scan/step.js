@@ -974,6 +974,6 @@ export default async function handler(req, res) {
     console.error(`[step] ${season} error:`, e.message);
     const errState = { phase: "error", season, error: e.message };
     await kv.set(jobKey, errState, { ex: 300 }).catch(() => {});
-    return res.status(500).json({ phase: "error", error: e.message });
+    return res.json({ phase: "error", season, error: e.message });
   }
 }
