@@ -157,20 +157,34 @@ Generated in `lib/seasons.js`. Current year + 1 ahead, back to 2025.
 
 Active seasons for scanning: current year, next year, prior year.
 
-## Current State (Jun 7, 2026) — First Successful Full Scan
+## Current State (Jun 10, 2026)
 The scan pipeline is working end-to-end. Key things confirmed working:
 - products_seed restores ~7000+ products from scan:pids without API calls on second+ run
 - Ordered qty (qtyOrdered) flows correctly from LS POs to product rows
 - Vendor returns: retQty shows in Returned column per product
-- Returned (retail) header correct for datatail/consignment vendors (fallback price fix)
 - 2027 seasons complete with empty data and do not repeat
 - UI scan loop retries on 500/503 — won't stop prematurely on transient errors
 - scan:job kept on completion so cron interval check works correctly
+- Nightly workflow uses ?restart=1 on first call to force fresh rescan past 1-hour interval
+
+## Vendor Header — How Totals Are Computed (Jun 10, 2026)
+All numbers in the vendor product drilldown header are computed from the individual product rows using live prices fetched from LS. This guarantees the header always matches the product list and color key, regardless of any scan-time price computation issues.
+
+Formulas (per product row, summed across all products):
+- **Ordered (retail)** = sum(qtyOrdered × price)
+- **Ordered (cost)** = sum(qtyOrdered × cost)
+- **Received (retail)** = sum((onHand + sold + onSale) × price)
+  — this is net received: items received minus vendor returns (returned items are not in any of onHand/sold/onSale)
+- **Received (cost)** = sum((onHand + sold + onSale) × cost − returned × cost), capped at $0
+- **Returned (retail)** = sum(returned × price)
+- **Sold (retail)** = sum(sold × price) — full-price sales only; on-sale items are tracked separately in the color key
+
+Note: the vendor LIST table and store SUMMARY still use scan:data aggregated values. These should match the above for most vendors but may differ if the scan had price computation issues for specific variant products.
 
 ## Known Remaining Issues
-1. **Received (cost) shows negative for consignment vendors** — e.g. Judi Powers shows −$159,190. Fix: cap at $0 in the UI since consignment vendors have no upfront received cost. **IN PROGRESS.**
-2. **Staud spring26 return** — Carrie may have entered a return in the wrong season. Needs investigation.
-3. **Ordered (cost) = $0 for some vendors** — datatail-only vendors have no LS cost data on POs. This is a data gap from the old system, not a code bug.
+1. **Staud spring26 return** — Carrie may have entered a return in the wrong season. Needs investigation.
+2. **Ordered (cost) = $0 for datatail-only vendors** — no LS cost data on old RMH POs. Data gap, not a code bug. Spring 2026 ordered cost is low for this reason.
+3. **scan retVal still 0 for some LS-native variant products** — the vendor header now bypasses this via live product computation, but scan:data still stores 0 for returned retail on these products. Vendor list and store summary RETURNED column may undercount for those vendors until the scan price computation is fixed.
 
 ## Stable Checkpoint — Revert Instructions
 If the scan breaks again, the last known-good commit is the one that merged `Fix Returned (retail) header for datatail-only vendors` to main (Jun 7, 2026). To find it:

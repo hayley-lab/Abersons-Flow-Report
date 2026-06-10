@@ -667,6 +667,25 @@ export default function FlowReport() {
     return b;
   })();
 
+  // Product-level totals for vendor header — computed from live prices so they
+  // always match the product list and color key regardless of scan-time price accuracy.
+  const productTotals = (function() {
+    var t = { orderedRetail: 0, orderedCost: 0, receivedRetail: 0, receivedCost: 0, returnedRetail: 0, returnedCost: 0, soldRetail: 0 };
+    productRows.forEach(function(p) {
+      var price = p.price || 0;
+      var cost  = p.cost  || 0;
+      t.orderedRetail  += (p.qtyOrdered || 0) * price;
+      t.orderedCost    += (p.qtyOrdered || 0) * cost;
+      // Received = in stock + sold + on sale (net of vendor returns — returned items are not in these buckets)
+      t.receivedRetail += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0)) * price;
+      t.receivedCost   += ((p.onHand || 0) + (p.sold || 0) + (p.onSale || 0)) * cost - (p.returned || 0) * cost;
+      t.returnedRetail += (p.returned || 0) * price;
+      t.returnedCost   += (p.returned || 0) * cost;
+      t.soldRetail     += (p.sold || 0) * price;
+    });
+    return t;
+  })();
+
   var seasonLabel = "";
   for (var sIdx = 0; sIdx < SEASONS.length; sIdx++) {
     if (SEASONS[sIdx].id === season) { seasonLabel = SEASONS[sIdx].name; break; }
@@ -1065,12 +1084,12 @@ export default function FlowReport() {
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
-                { label: "Ordered (retail)",  value: fmt(currentVendor ? currentVendor.ordered      : 0) },
-                { label: "Ordered (cost)",    value: fmt(currentVendor ? currentVendor.orderedCost : 0) },
-                { label: "Received (retail)", value: fmt(currentVendor ? (currentVendor.received - productBuckets.returned.v) : 0), sub: currentVendor && currentVendor.ordered > 0 ? ((currentVendor.received / currentVendor.ordered) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
-                { label: "Received (cost)",   value: fmt(currentVendor ? Math.max(0, (currentVendor.cost || 0) - (currentVendor.returnedCost || 0)) : 0) },
-                { label: "Returned (retail)", value: fmt(productBuckets.returned.v) },
-                { label: "Sold (retail)",     value: fmt(currentVendor ? currentVendor.sold        : 0), sub: (currentVendor && (currentVendor.received - (currentVendor.returned || 0)) > 0) ? ((currentVendor.sold / (currentVendor.received - (currentVendor.returned || 0))) * 100).toFixed(1) + "% of received" : "0.0% of received" },
+                { label: "Ordered (retail)",  value: fmt(productTotals.orderedRetail) },
+                { label: "Ordered (cost)",    value: fmt(productTotals.orderedCost) },
+                { label: "Received (retail)", value: fmt(productTotals.receivedRetail), sub: productTotals.orderedRetail > 0 ? ((productTotals.receivedRetail / productTotals.orderedRetail) * 100).toFixed(1) + "% of ordered" : "0.0% of ordered" },
+                { label: "Received (cost)",   value: fmt(Math.max(0, productTotals.receivedCost)) },
+                { label: "Returned (retail)", value: fmt(productTotals.returnedRetail) },
+                { label: "Sold (retail)",     value: fmt(productTotals.soldRetail), sub: productTotals.receivedRetail > 0 ? ((productTotals.soldRetail / productTotals.receivedRetail) * 100).toFixed(1) + "% of received" : "0.0% of received" },
                 { label: "SKUs",              value: productRows.length },
               ].map(function(kv) {
                 return (
