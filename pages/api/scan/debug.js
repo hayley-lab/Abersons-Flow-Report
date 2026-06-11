@@ -2,12 +2,43 @@ import { kv } from "@vercel/kv";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { getLsToken, lsBase } from "../../../lib/ls-auth";
+import {
+  CATALOG_META_KEY,
+  loadCatalogProducts,
+  seasonBucketKey,
+} from "../../../lib/catalog-store";
 
 export default async function handler(req, res) {
   const session = await getIronSession(req, res, sessionOptions);
   if (!session.authed) return res.status(401).json({ error: "Not authenticated" });
 
   const { action, season, consignmentId, productId, supplierId } = req.query;
+
+  // ── Read-only peek at the shared catalog cache (no sync, no LS calls) ────────
+  // Safe to poll during a rebuild — unlike POST/GET /api/scan/catalog, this never
+  // advances the build, so it can't race or regress buildOffset.
+  if (action === "catalog") {
+    const meta = await kv.get(CATALOG_META_KEY);
+    const seasons = String(req.query.seasons || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const buckets = {};
+    for (const s of seasons) {
+      const b = await kv.get(seasonBucketKey(s));
+      buckets[s] = b && Array.isArray(b.seasonPids) ? b.seasonPids.length : 0;
+    }
+    let cachedProducts = null;
+    if (req.query.count === "1" && meta) {
+      const products = await loadCatalogProducts(kv, meta.shardCount);
+      cachedProducts = Object.keys(products).length;
+    }
+    return res.json({
+      meta: meta || null,
+      cachedProducts,
+      buckets,
+    });
+  }
 
   // ── Peek scan job + inventory cache state (read-only, no stepping) ──────────
   if (action === "job") {
