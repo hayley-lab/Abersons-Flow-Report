@@ -11,9 +11,16 @@ import { kv } from "@vercel/kv";
 import { SEASONS } from "../../../lib/seasons";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
+import { catalogIsComplete, planSeasonWork } from "../../../lib/scan-orchestrator";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+// Carries the full-rebuild intent across the catalog-building yields: ?restart=1
+// arrives on the first call but the cron yields (without stepping seasons) while
+// the shared catalog builds, so later calls — which carry no ?restart — must
+// still know a rebuild is owed. 12h covers the weekly workflow's 340-min budget.
+const REBUILD_TS_KEY = "scan:rebuild:ts";
+const REBUILD_TS_TTL_SECONDS = 12 * 3600;
 // Overall internal time budget per invocation, SHARED by the catalog drive and
 // the season loop. maxDuration is 300s (capped at 60s on Hobby); this stays
 // under it with margin for one final ~60s sub-request.
@@ -60,6 +67,21 @@ export default async function handler(req, res) {
 
   const seasons = currentSeasons();
 
+  // Persist the full-rebuild intent up front, before the catalog-building yields,
+  // so it survives across cron calls even though only the first call carries
+  // ?restart=1. Read the prior request timestamp on calls that don't restart.
+  let rebuildTs = null;
+  try {
+    if (restartAll) {
+      rebuildTs = Date.now();
+      await kv.set(REBUILD_TS_KEY, rebuildTs, { ex: REBUILD_TS_TTL_SECONDS });
+    } else {
+      rebuildTs = Number(await kv.get(REBUILD_TS_KEY)) || null;
+    }
+  } catch (e) {
+    console.error("[cron/scan] rebuild flag read/write failed:", e.message);
+  }
+
   // Single shared deadline for this invocation. The catalog drive and the season
   // loop both respect it so their budgets cannot sum past maxDuration.
   const handlerStart = Date.now();
@@ -79,8 +101,15 @@ export default async function handler(req, res) {
       resetFirst = false;
       try {
         const r = await fetch(`${base}/api/scan/catalog${q}`, { method: "POST", headers });
-        last = await r.json().catch(() => ({}));
-        if (!r.ok || last?.complete) break;
+        const body = await r.json().catch(() => null);
+        if (body) last = body;
+        if (!r.ok) {
+          console.error(`[cron/scan] catalog HTTP ${r.status}: ${body?.error || ""}`);
+          break;
+        }
+        // Stop driving once the cache is fully built (buckets written); otherwise
+        // keep advancing the resumable cold build until the budget runs out.
+        if (body?.cacheComplete) break;
       } catch (e) {
         console.error("[cron/scan] catalog drive failed:", e.message);
         break;
@@ -101,19 +130,22 @@ export default async function handler(req, res) {
     console.error("[cron/scan] catalog drive error:", e.message);
   }
 
-  // If the cold build is still in progress, yield this whole invocation to it:
-  // don't step seasons yet (with no per-season bucket they'd fall back to the
-  // slow legacy per-season catalog scan). The driver loop calls us again to
-  // continue the build; this returns promptly, well under maxDuration.
-  if (loopInternally && catalogResult && catalogResult.complete === false) {
+  // If the shared catalog cache is not fully built, yield this whole invocation
+  // to the build: don't step seasons yet (with no per-season bucket they'd fall
+  // back to the slow legacy per-season catalog scan, defeating the optimization).
+  // A missing/failed catalog response counts as "not complete" so a timeout or
+  // transient error doesn't leak seasons onto the fallback path. The driver loop
+  // calls us again to continue the build; this returns promptly under maxDuration.
+  if (loopInternally && !catalogIsComplete(catalogResult)) {
     return res.json({
       ok: true,
       allDone: false,
       catalogBuilding: true,
       catalog: {
         complete: false,
-        version: catalogResult.version ?? null,
-        added: catalogResult.added ?? 0,
+        cacheComplete: false,
+        version: (catalogResult && catalogResult.version) ?? null,
+        added: (catalogResult && catalogResult.added) ?? 0,
       },
       results: [],
     });
@@ -144,26 +176,24 @@ export default async function handler(req, res) {
     const lastTs = (job && job.ts) || (data && data.ts) || null;
     const msSinceScan = lastTs ? Date.now() - lastTs : Infinity;
     const lastFullTs = Number(lastFull || 0) || null;
-    const fullDue = !lastFullTs || Date.now() - lastFullTs >= FULL_REBUILD_INTERVAL_MS;
 
-    let restart = "0";
-    let mode = job?.scanMode || "incremental";
-    if (restartAll) {
-      restart = "1";
-      mode = "full";
-    } else if (!phase || phase === "done" || phase === "error") {
-      if (msSinceScan < RESCAN_INTERVAL_MS) {
-        return { season, phase, restart, mode, done: true, action: "skipped" };
-      }
-      if (!data || fullDue) {
-        restart = "1";
-        mode = "full";
-      } else {
-        mode = "incremental";
-      }
+    const plan = planSeasonWork({
+      phase,
+      scanMode: job?.scanMode,
+      hasData: !!data,
+      msSinceScan,
+      lastFullTs,
+      rebuildTs,
+      restartAll,
+      now: Date.now(),
+      rescanIntervalMs: RESCAN_INTERVAL_MS,
+      fullRebuildIntervalMs: FULL_REBUILD_INTERVAL_MS,
+    });
+
+    if (plan.skip) {
+      return { season, phase, restart: plan.restart, mode: plan.mode, done: true, action: "skipped" };
     }
-
-    return { season, phase, restart, mode, done: false, action: null };
+    return { season, phase, restart: plan.restart, mode: plan.mode, done: false, action: null };
   });
 
   async function stepSeason(ss) {
@@ -237,6 +267,15 @@ export default async function handler(req, res) {
     }
 
     const allDone = seasonState.every((s) => s.done);
+    // The rebuild cycle is complete once every season has finished, so clear the
+    // intent flag; otherwise a later nightly call would force a needless rebuild.
+    if (allDone && rebuildTs) {
+      try {
+        await kv.del(REBUILD_TS_KEY);
+      } catch (e) {
+        console.error("[cron/scan] rebuild flag clear failed:", e.message);
+      }
+    }
     console.warn(
       `[cron/scan] finished in ${Math.round((Date.now() - loopStart) / 1000)}s, allDone=${allDone}`
     );
