@@ -14,7 +14,11 @@ jobs:
       - name: Drive full scans to completion
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        # No `set -e`: a transient curl timeout or a non-JSON body (e.g. a Vercel
+        # function-timeout page) must NOT abort the rebuild loop. We handle every
+        # failure explicitly and keep looping until allDone or the wall clock.
         run: |
+          set +e
           echo "Starting weekly full scan loop..."
           # Loop until the orchestrator reports allDone, guarded by a wall clock
           # that stays within timeout-minutes: 360 (340 min budget).
@@ -22,24 +26,39 @@ jobs:
           i=0
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             i=$(( i + 1 ))
-            echo "--- Call $i ---"
+            echo "--- Call $i ($(date -u +%H:%M:%S) UTC) ---"
+            # Only the first call requests a fresh rebuild; the API persists that
+            # intent so subsequent (query-less) calls still rebuild every season
+            # once the shared catalog finishes building.
             if [ "$i" = "1" ]; then
               QUERY="?restart=1"
             else
               QUERY=""
             fi
-            RESPONSE=$(curl -s --max-time 295 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
+            RESPONSE=$(curl -sS --max-time 295 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Content-Type: application/json")
-            printf '%s\n' "$RESPONSE" | jq . 2>/dev/null || echo "(non-JSON response: ${RESPONSE:0:200})"
-            # Tolerate timeouts / non-JSON (e.g. a function timeout page): treat
-            # as "not done" and keep looping rather than aborting under bash -e.
-            ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null || echo false)
+            CURL_RC=$?
+            if [ "$CURL_RC" -ne 0 ]; then
+              echo "curl failed (rc=$CURL_RC) — likely a function timeout; treating as not done, continuing."
+              sleep 5
+              continue
+            fi
+            # Parse only when the body is valid JSON; otherwise log a snippet and
+            # treat as "not done" so a single bad response never crashes the job.
+            if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, catalogBuilding, catalog, results}' 2>/dev/null \
+                || printf '%s\n' "$RESPONSE"
+              ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null)
+            else
+              echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
+              ALL_DONE=false
+            fi
             if [ "$ALL_DONE" = "true" ]; then
               echo "All seasons complete. Done."
               exit 0
             fi
-            echo "Seasons still in progress, continuing..."
+            echo "Still in progress (catalog building or seasons stepping), continuing..."
             sleep 3
           done
           echo "Reached time budget — scan may still be in progress."
