@@ -461,6 +461,12 @@ export default async function handler(req, res) {
       }
 
       const pidSet = new Set(state.seasonPids);
+      // Defensive: a scan whose state was initialized by an older deploy may
+      // lack these maps when resumed after a deploy. The one-time setup guard
+      // above is skipped on resume (_seedReady already set), so ensure they
+      // exist here, where the loops below write to them every step.
+      if (!state.deadHandles) state.deadHandles = {};
+      if (!state.costDone) state.costDone = {};
 
       // Fetch only NEW override handles not covered by the prior scan
       while (state._handleIdx < state._seedHandles.length && Date.now() < deadline) {
