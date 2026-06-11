@@ -52,6 +52,14 @@ export default async function handler(req, res) {
     productProbe = p;
   }
 
+  // Pull a larger page so we can find a variant (variant_parent_id != null) and
+  // confirm it carries its own cost/price/supplier/type (vs. only the parent).
+  const wideProbe = usedVersion
+    ? await probe(`${usedVersion}/search?type=products&page_size=200`)
+    : null;
+  const wideProducts = wideProbe?.data?.data || [];
+  const firstVariant = wideProducts.find((p) => p && p.variant_parent_id) || null;
+
   const products = productProbe?.data?.data || [];
   const firstProduct = products[0] || null;
 
@@ -64,6 +72,19 @@ export default async function handler(req, res) {
 
   return res.json({
     usedVersion,
+    variantSample: firstVariant
+      ? pick(firstVariant, [
+          "id",
+          "sku",
+          "variant_parent_id",
+          "name",
+          "variant_name",
+          "price_excluding_tax",
+          "supply_price",
+          "supplier_id",
+          "product_type_id",
+        ])
+      : "no variant in first 200",
     products: {
       ok: productProbe?.ok,
       status: productProbe?.status,
