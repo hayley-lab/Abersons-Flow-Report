@@ -60,6 +60,8 @@ import {
   shouldFetchHandle,
 } from "../../../lib/product-metadata";
 import { searchEnabled, searchPages, SEARCH_PAGE_SIZE } from "../../../lib/ls-search";
+import { shouldFullCatalogScan } from "../../../lib/catalog-gate";
+import { seasonBucketKey } from "../../../lib/catalog-store";
 import {
   isResolvedSupplier,
   supplierId,
@@ -169,6 +171,9 @@ export default async function handler(req, res) {
 
   const { season } = req.query;
   if (!season) return res.status(400).json({ error: "season required" });
+
+  // Force the legacy per-season catalog scan even when a cache/prior set exists.
+  const catalogForce = req.query.catalog === "1";
 
   const jobKey = `scan:job:${season}`;
   const bigKey = `scan:job:big:${season}`;
@@ -419,6 +424,29 @@ export default async function handler(req, res) {
           }
         } catch (e) {}
 
+        // 1b. Restore this season's products from the shared catalog bucket
+        //     (zero API calls). The store-wide catalog cache holds every product;
+        //     the bucket is the season's slice in the same shape as scan:pids.
+        try {
+          const bucket = await kv.get(seasonBucketKey(season));
+          if (bucket && Array.isArray(bucket.seasonPids) && bucket.seasonPids.length > 0) {
+            for (const pid of bucket.seasonPids) {
+              if (!priorPidSet.has(pid)) {
+                state.seasonPids.push(pid);
+                priorPidSet.add(pid);
+              }
+            }
+            Object.assign(state.pidToType, bucket.pidToType || {});
+            Object.assign(state.pidToSupplier, bucket.pidToSupplier || {});
+            Object.assign(state.skuToPid, bucket.skuToPid || {});
+            Object.assign(state.pidToPrice, bucket.pidToPrice || {});
+            Object.assign(state.pidToCost, bucket.pidToCost || {});
+            Object.assign(state.pidToName, bucket.pidToName || {});
+            Object.assign(state.pidToSku, bucket.pidToSku || {});
+            Object.assign(state.pidToVariant, bucket.pidToVariant || {});
+          }
+        } catch (e) {}
+
         // 2. Collect handles for override products not already in the pid set
         //    (new products added to datatail since last scan)
         try {
@@ -448,7 +476,9 @@ export default async function handler(req, res) {
               // Fetch only SKUs not already mapped to a PID and not previously
               // found to be dead (no in-season LS product) — avoids re-fetching
               // hundreds of unresolved RMH handles on every scan.
-              if (shouldFetchHandle(sku, { skuToPid: state.skuToPid, deadHandles: state.deadHandles }))
+              if (
+                shouldFetchHandle(sku, { skuToPid: state.skuToPid, deadHandles: state.deadHandles })
+              )
                 handleSet.add(handleForSku(sku));
             }
           }
@@ -468,7 +498,16 @@ export default async function handler(req, res) {
         // per record) and filtering by SKU. /search returns cost/price/supplier/
         // type per product (variants included), so this replaces the per-handle
         // lookups, the metadata backfill, AND the multi-scan cost backfill.
-        state._catalogMode = searchEnabled() && fullRebuild();
+        //
+        // With the shared catalog cache this is a disabled fallback: it only runs
+        // when the season has no cached/prior pids to seed from (true cold edge
+        // case) or when explicitly forced via ?catalog=1.
+        state._catalogMode = shouldFullCatalogScan({
+          searchEnabled: searchEnabled(),
+          fullRebuild: fullRebuild(),
+          priorPidCount: state.seasonPids.length,
+          force: catalogForce,
+        });
 
         if (state._catalogMode) {
           state._catalogOffset = 0;
@@ -828,6 +867,13 @@ export default async function handler(req, res) {
       }
     }
 
+    // Empty seasons (e.g. future 2027 seasons with no products) must not page
+    // the entire sales history for nothing — skip straight to finalizing.
+    if (state.phase === "sales" && (!state.seasonPids || state.seasonPids.length === 0)) {
+      state.phase = "finalizing";
+      state.progress = "No products in season — skipping sales.";
+    }
+
     // ── SALES: aggregate sold $ (vendor) and sold units (product) ───────────
     if (state.phase === "sales" && Date.now() < deadline) {
       const seasonPidSet = new Set(state.seasonPids);
@@ -1165,9 +1211,11 @@ export default async function handler(req, res) {
       if (SMALL_FIELDS.has(k)) small[k] = v;
       else big[k] = v;
     }
+    // 72h (not 24h) so a delayed/skipped nightly resumes in-progress state
+    // instead of letting it expire and silently reinitializing.
     await Promise.all([
-      kv.set(jobKey, small, { ex: 24 * 3600 }),
-      kv.set(bigKey, big, { ex: 24 * 3600 }),
+      kv.set(jobKey, small, { ex: 72 * 3600 }),
+      kv.set(bigKey, big, { ex: 72 * 3600 }),
     ]);
     return res.json({
       phase: state.phase,

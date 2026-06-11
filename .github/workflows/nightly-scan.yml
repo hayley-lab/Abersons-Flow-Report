@@ -16,7 +16,12 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           echo "Starting nightly incremental scan loop..."
-          for i in $(seq 1 20); do
+          # Loop until the orchestrator reports allDone, guarded by a wall clock
+          # that stays within timeout-minutes: 360 (340 min budget).
+          DEADLINE=$(( $(date +%s) + 340 * 60 ))
+          i=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            i=$(( i + 1 ))
             echo "--- Call $i ---"
             RESPONSE=$(curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
               -H "Authorization: Bearer $CRON_SECRET" \
@@ -29,4 +34,4 @@ jobs:
             fi
             echo "Seasons still in progress, continuing..."
           done
-          echo "Reached iteration limit — scan may still be in progress."
+          echo "Reached time budget — scan may still be in progress."

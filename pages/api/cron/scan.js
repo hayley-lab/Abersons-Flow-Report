@@ -17,6 +17,10 @@ const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 // Leave buffer before maxDuration so we can return cleanly.
 // maxDuration is 300s (capped at 60s on Hobby plan).
 const CRON_LOOP_DEADLINE_MS = 240 * 1000;
+// Time reserved for driving the shared catalog cache before stepping seasons.
+// Incremental syncs are cheap (~1 call); only the first-ever cold build uses the
+// full budget, and it resumes across firings if it can't finish in one.
+const CATALOG_DRIVE_MS = 180 * 1000;
 
 function currentSeasons() {
   const year = new Date().getFullYear();
@@ -53,6 +57,39 @@ export default async function handler(req, res) {
   };
 
   const seasons = currentSeasons();
+
+  // Drive the shared catalog cache before stepping seasons so each season can
+  // seed from scan:catalog:season:{season} with zero catalog API calls. Failures
+  // are non-fatal — step.js falls back to scan:pids + lazy registration.
+  async function driveCatalog() {
+    const catalogDeadline = Date.now() + (loopInternally ? CATALOG_DRIVE_MS : 0);
+    let resetFirst = restartAll;
+    let last = null;
+    do {
+      const q = resetFirst ? "?reset=1" : "";
+      resetFirst = false;
+      try {
+        const r = await fetch(`${base}/api/scan/catalog${q}`, { method: "POST", headers });
+        last = await r.json().catch(() => ({}));
+        if (!r.ok || last?.complete) break;
+      } catch (e) {
+        console.error("[cron/scan] catalog drive failed:", e.message);
+        break;
+      }
+    } while (Date.now() < catalogDeadline);
+    return last;
+  }
+
+  try {
+    const catalogResult = await driveCatalog();
+    if (catalogResult) {
+      console.warn(
+        `[cron/scan] catalog: complete=${catalogResult.complete} version=${catalogResult.version} added=${catalogResult.added}`
+      );
+    }
+  } catch (e) {
+    console.error("[cron/scan] catalog drive error:", e.message);
+  }
 
   let kvResults;
   try {
