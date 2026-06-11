@@ -188,6 +188,7 @@ export default async function handler(req, res) {
       hasData: !!data,
       msSinceScan,
       lastFullTs,
+      startedAt: job?.startedAt ?? null,
       rebuildTs,
       restartAll,
       now: Date.now(),
