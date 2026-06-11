@@ -1101,6 +1101,7 @@ export default async function handler(req, res) {
         ts: doneTs,
         mode: state.scanMode,
         progress: "Scan complete!",
+        calls: finalCounts,
       });
     }
 
@@ -1157,7 +1158,12 @@ export default async function handler(req, res) {
       kv.set(jobKey, small, { ex: 24 * 3600 }),
       kv.set(bigKey, big, { ex: 24 * 3600 }),
     ]);
-    return res.json({ phase: state.phase, mode: state.scanMode, progress: state.progress || "…" });
+    return res.json({
+      phase: state.phase,
+      mode: state.scanMode,
+      progress: state.progress || "…",
+      calls: cumulative,
+    });
   } catch (e) {
     console.error(`[step] ${season} error:`, e.message);
     const errState = { phase: "error", season, error: e.message };
