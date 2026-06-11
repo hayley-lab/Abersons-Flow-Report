@@ -23,15 +23,18 @@ jobs:
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             i=$(( i + 1 ))
             echo "--- Call $i ---"
-            RESPONSE=$(curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
+            RESPONSE=$(curl -s --max-time 295 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Content-Type: application/json")
-            echo "$RESPONSE" | jq . || true
-            ALL_DONE=$(echo "$RESPONSE" | jq -r '.allDone // false')
+            printf '%s\n' "$RESPONSE" | jq . 2>/dev/null || echo "(non-JSON response: ${RESPONSE:0:200})"
+            # Tolerate timeouts / non-JSON (e.g. a function timeout page): treat
+            # as "not done" and keep looping rather than aborting under bash -e.
+            ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null || echo false)
             if [ "$ALL_DONE" = "true" ]; then
               echo "All seasons complete. Done."
               exit 0
             fi
             echo "Seasons still in progress, continuing..."
+            sleep 3
           done
           echo "Reached time budget — scan may still be in progress."

@@ -14,13 +14,15 @@ import { sessionOptions } from "../../../lib/session";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-// Leave buffer before maxDuration so we can return cleanly.
-// maxDuration is 300s (capped at 60s on Hobby plan).
-const CRON_LOOP_DEADLINE_MS = 240 * 1000;
-// Time reserved for driving the shared catalog cache before stepping seasons.
-// Incremental syncs are cheap (~1 call); only the first-ever cold build uses the
-// full budget, and it resumes across firings if it can't finish in one.
-const CATALOG_DRIVE_MS = 180 * 1000;
+// Overall internal time budget per invocation, SHARED by the catalog drive and
+// the season loop. maxDuration is 300s (capped at 60s on Hobby); this stays
+// under it with margin for one final ~60s sub-request.
+const CRON_LOOP_DEADLINE_MS = 230 * 1000;
+// Cap on how long the cold catalog build may run before yielding (to seasons if
+// it finished, or to the next firing if not). Incremental syncs finish in ~1
+// call; only the first-ever cold build approaches this cap, and it resumes
+// across firings via buildOffset. Must be < CRON_LOOP_DEADLINE_MS.
+const CATALOG_DRIVE_MS = 150 * 1000;
 
 function currentSeasons() {
   const year = new Date().getFullYear();
@@ -58,11 +60,18 @@ export default async function handler(req, res) {
 
   const seasons = currentSeasons();
 
+  // Single shared deadline for this invocation. The catalog drive and the season
+  // loop both respect it so their budgets cannot sum past maxDuration.
+  const handlerStart = Date.now();
+  const overallDeadline = handlerStart + CRON_LOOP_DEADLINE_MS;
+
   // Drive the shared catalog cache before stepping seasons so each season can
   // seed from scan:catalog:season:{season} with zero catalog API calls. Failures
   // are non-fatal — step.js falls back to scan:pids + lazy registration.
   async function driveCatalog() {
-    const catalogDeadline = Date.now() + (loopInternally ? CATALOG_DRIVE_MS : 0);
+    const catalogDeadline = loopInternally
+      ? Math.min(Date.now() + CATALOG_DRIVE_MS, overallDeadline)
+      : Date.now();
     let resetFirst = restartAll;
     let last = null;
     do {
@@ -80,8 +89,9 @@ export default async function handler(req, res) {
     return last;
   }
 
+  let catalogResult = null;
   try {
-    const catalogResult = await driveCatalog();
+    catalogResult = await driveCatalog();
     if (catalogResult) {
       console.warn(
         `[cron/scan] catalog: complete=${catalogResult.complete} version=${catalogResult.version} added=${catalogResult.added}`
@@ -89,6 +99,24 @@ export default async function handler(req, res) {
     }
   } catch (e) {
     console.error("[cron/scan] catalog drive error:", e.message);
+  }
+
+  // If the cold build is still in progress, yield this whole invocation to it:
+  // don't step seasons yet (with no per-season bucket they'd fall back to the
+  // slow legacy per-season catalog scan). The driver loop calls us again to
+  // continue the build; this returns promptly, well under maxDuration.
+  if (loopInternally && catalogResult && catalogResult.complete === false) {
+    return res.json({
+      ok: true,
+      allDone: false,
+      catalogBuilding: true,
+      catalog: {
+        complete: false,
+        version: catalogResult.version ?? null,
+        added: catalogResult.added ?? 0,
+      },
+      results: [],
+    });
   }
 
   let kvResults;
@@ -184,9 +212,9 @@ export default async function handler(req, res) {
   }
 
   if (loopInternally) {
-    // Cron path: loop for full time budget, advancing all seasons repeatedly
+    // Cron path: loop for the remaining shared budget, advancing all seasons.
     const loopStart = Date.now();
-    while (Date.now() - loopStart < CRON_LOOP_DEADLINE_MS) {
+    while (Date.now() < overallDeadline) {
       const pending = seasonState.filter((s) => !s.done);
       if (pending.length === 0) break;
 
