@@ -9,6 +9,33 @@ export default async function handler(req, res) {
 
   const { action, season, consignmentId, productId, supplierId } = req.query;
 
+  // ── Peek scan job + inventory cache state (read-only, no stepping) ──────────
+  if (action === "job") {
+    if (!season) return res.status(400).json({ error: "season required" });
+    const [job, big, inv] = await Promise.all([
+      kv.get(`scan:job:${season}`),
+      kv.get(`scan:job:big:${season}`),
+      kv.get("scan:inv:store"),
+    ]);
+    return res.json({
+      job: job || null,
+      catalog: big
+        ? {
+            catalogMode: big._catalogMode,
+            catalogOffset: big._catalogOffset,
+            catalogDone: big._catalogDone,
+            catalogMatched: big._catalogMatched,
+            seedHandles: Array.isArray(big._seedHandles) ? big._seedHandles.length : undefined,
+            seasonPids: Array.isArray(big.seasonPids) ? big.seasonPids.length : undefined,
+            callCounts: big.callCounts || null,
+          }
+        : null,
+      inventoryStore: inv
+        ? { version: inv.version, products: Object.keys(inv.onHand || {}).length }
+        : null,
+    });
+  }
+
   // ── Raw LS fetch helper ─────────────────────────────────────────────────────
   if (action === "ls") {
     // Fetch any LS API path and return raw JSON
