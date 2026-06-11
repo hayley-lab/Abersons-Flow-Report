@@ -94,7 +94,12 @@ export default async function handler(req, res) {
     const catalogDeadline = loopInternally
       ? Math.min(Date.now() + CATALOG_DRIVE_MS, overallDeadline)
       : Date.now();
-    let resetFirst = restartAll;
+    // Reset = a full cold rebuild of the shared catalog. Do this ONLY on an
+    // explicit ?catalog=1, never on a weekly season rebuild (?restart=1): the
+    // incremental top-up keeps the catalog current in ~1 call, so re-paging the
+    // whole 200k+ catalog every week would be wasteful. The catalog still
+    // cold-builds automatically whenever its cache is missing or incomplete.
+    let resetFirst = req.query.catalog === "1";
     let last = null;
     do {
       const q = resetFirst ? "?reset=1" : "";
