@@ -59,6 +59,7 @@ import {
   selectCostBackfillPids,
   shouldFetchHandle,
 } from "../../../lib/product-metadata";
+import { searchEnabled, searchPages, SEARCH_PAGE_SIZE } from "../../../lib/ls-search";
 
 const CHUNK_MS = 6000;
 // Bulk inventory is the default on Vercel Pro (300s maxDuration); set
@@ -448,33 +449,47 @@ export default async function handler(req, res) {
           state._seedHandles = [...handleSet];
         } catch (e) {}
 
-        // Fast metadata recovery: skuToPid already maps every known product's
-        // SKU → pid. Inverting it fills pidToSku (and a pidToName fallback —
-        // these products' LS name IS the SKU) with zero API calls, so the SKU
-        // and description columns populate even when prior caches predate the
-        // metadata maps.
+        // Always invert skuToPid so SKU/name columns populate instantly for any
+        // prior pids, regardless of discovery mode.
         const recoveredFromSku = recoverSkuMetadata({
           skuToPid: state.skuToPid,
           pidToSku: state.pidToSku,
           pidToName: state.pidToName,
         });
 
-        // Only pids with NO recoverable SKU still need a live metadata fetch —
-        // a small remainder, so the scan finalizes quickly instead of stalling
-        // on thousands of per-product calls.
-        state._metaPids = pidsMissingSku(state.seasonPids, state.pidToSku);
+        // Catalog mode: on a full rebuild with /search enabled, discover season
+        // products by paginating the whole catalog (page_size 1000, ~5x cheaper
+        // per record) and filtering by SKU. /search returns cost/price/supplier/
+        // type per product (variants included), so this replaces the per-handle
+        // lookups, the metadata backfill, AND the multi-scan cost backfill.
+        state._catalogMode = searchEnabled() && fullRebuild();
 
-        // Bounded cost backfill: cost is the one field inversion can't recover.
-        state._costPids = selectCostBackfillPids(
-          state.seasonPids,
-          { pidToPrice: state.pidToPrice, costDone: state.costDone },
-          COST_BACKFILL_PER_SCAN
-        );
-
-        console.warn(
-          `[step] ${season} products_seed: restored ${state.seasonPids.length} prior pids, recovered ${recoveredFromSku} SKUs from skuToPid, ${state._seedHandles.length} new handles, ${state._metaPids.length} missing SKU, ${state._costPids.length} cost backfill`
-        );
-        state.progress = `Seeding products (${state.seasonPids.length} from prior scan, ${state._seedHandles.length} new from datatail, ${state._costPids.length} cost lookups)…`;
+        if (state._catalogMode) {
+          state._catalogOffset = 0;
+          state._catalogDone = false;
+          state._catalogMatched = 0;
+          // Datatail handles / cost backfill are unnecessary in catalog mode.
+          state._seedHandles = [];
+          state._metaPids = [];
+          state._costPids = [];
+          console.warn(
+            `[step] ${season} products_seed (catalog/search): restored ${state.seasonPids.length} prior pids, recovered ${recoveredFromSku} SKUs — scanning full catalog via /search`
+          );
+          state.progress = "Scanning product catalog via search…";
+        } else {
+          // Legacy mode (incremental scans or /search disabled): restore + new
+          // datatail handles + bounded per-scan cost backfill.
+          state._metaPids = pidsMissingSku(state.seasonPids, state.pidToSku);
+          state._costPids = selectCostBackfillPids(
+            state.seasonPids,
+            { pidToPrice: state.pidToPrice, costDone: state.costDone },
+            COST_BACKFILL_PER_SCAN
+          );
+          console.warn(
+            `[step] ${season} products_seed: restored ${state.seasonPids.length} prior pids, recovered ${recoveredFromSku} SKUs from skuToPid, ${state._seedHandles.length} new handles, ${state._metaPids.length} missing SKU, ${state._costPids.length} cost backfill`
+          );
+          state.progress = `Seeding products (${state.seasonPids.length} from prior scan, ${state._seedHandles.length} new from datatail, ${state._costPids.length} cost lookups)…`;
+        }
       }
 
       const pidSet = new Set(state.seasonPids);
@@ -552,11 +567,38 @@ export default async function handler(req, res) {
         state.progress = `Backfilling product cost (${state._costIdx}/${state._costPids.length})…`;
       }
 
-      if (
+      // Catalog discovery via /search — page the whole catalog (1000/page) and
+      // register season-matching products with their cost/price/supplier/type.
+      // Resumable across steps via _catalogOffset.
+      if (state._catalogMode && !state._catalogDone && Date.now() < deadline - 1000) {
+        const result = await searchPages({
+          lsFetch,
+          type: "products",
+          pageSize: SEARCH_PAGE_SIZE,
+          startOffset: state._catalogOffset || 0,
+          deadline: deadline - 500,
+          onPage: (items) => {
+            for (const p of items) {
+              if (p && p.id && !pidSet.has(p.id) && skuMatchesSeason(p.sku, season)) {
+                registerProduct(state, p);
+                pidSet.add(p.id);
+                state._catalogMatched = (state._catalogMatched || 0) + 1;
+              }
+            }
+          },
+        });
+        state._catalogOffset = result.offset;
+        state._catalogDone = result.done;
+        state.progress = `Scanning catalog via search — ${state._catalogMatched || 0} matched (offset ${state._catalogOffset})…`;
+      }
+
+      const legacySeedDone =
         state._handleIdx >= state._seedHandles.length &&
         state._metaIdx >= state._metaPids.length &&
-        state._costIdx >= state._costPids.length
-      ) {
+        state._costIdx >= state._costPids.length;
+      const seedDone = state._catalogMode ? !!state._catalogDone : legacySeedDone;
+
+      if (seedDone) {
         delete state._seedReady;
         delete state._seedHandles;
         delete state._handleIdx;
@@ -564,6 +606,10 @@ export default async function handler(req, res) {
         delete state._metaIdx;
         delete state._costPids;
         delete state._costIdx;
+        delete state._catalogMode;
+        delete state._catalogOffset;
+        delete state._catalogDone;
+        delete state._catalogMatched;
         console.warn(
           `[step] ${season} products_seed done: ${state.seasonPids.length} products found`
         );
@@ -1089,6 +1135,10 @@ export default async function handler(req, res) {
       "_handleIdx",
       "_metaIdx",
       "_costIdx",
+      "_catalogMode",
+      "_catalogOffset",
+      "_catalogDone",
+      "_catalogMatched",
       "_consignReady",
       "_returnReady",
     ]);
