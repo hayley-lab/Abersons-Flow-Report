@@ -11,7 +11,11 @@ import { kv } from "@vercel/kv";
 import { SEASONS } from "../../../lib/seasons";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
-import { catalogIsComplete, planSeasonWork } from "../../../lib/scan-orchestrator";
+import {
+  catalogIsComplete,
+  planSeasonWork,
+  resolveLastFullTs,
+} from "../../../lib/scan-orchestrator";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -30,6 +34,15 @@ const CRON_LOOP_DEADLINE_MS = 230 * 1000;
 // call; only the first-ever cold build approaches this cap, and it resumes
 // across firings via buildOffset. Must be < CRON_LOOP_DEADLINE_MS.
 const CATALOG_DRIVE_MS = 150 * 1000;
+// Same idea for the store-wide sales cache: drive it to completion before
+// stepping seasons so each season projects sales with zero 2.0/sales paging.
+const SALES_DRIVE_MS = 150 * 1000;
+// Gate the store-wide sales cache. Default on; set ENABLE_SALES_STORE=0 to fall
+// back to per-season sales paging (step.js also auto-falls-back per run).
+const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
+// Store-wide consignment cache (POs + returns) drive budget + gate.
+const CONSIGN_DRIVE_MS = 150 * 1000;
+const ENABLE_CONSIGN_STORE = process.env.ENABLE_CONSIGN_STORE !== "0";
 
 function currentSeasons() {
   const year = new Date().getFullYear();
@@ -123,6 +136,65 @@ export default async function handler(req, res) {
     return last;
   }
 
+  // Drive the store-wide sales cache (built once for the whole store) so each
+  // season projects sales from the shared aggregate instead of paging 2.0/sales.
+  // Mirrors driveCatalog; resumable across invocations via its version cursor.
+  async function driveSales() {
+    const salesDeadline = loopInternally
+      ? Math.min(Date.now() + SALES_DRIVE_MS, overallDeadline)
+      : Date.now();
+    const resetFirst = req.query.sales === "1";
+    let last = null;
+    let first = true;
+    do {
+      const q = first && resetFirst ? "?reset=1" : "";
+      first = false;
+      try {
+        const r = await fetch(`${base}/api/scan/sales-cache${q}`, { method: "POST", headers });
+        const body = await r.json().catch(() => null);
+        if (body) last = body;
+        if (!r.ok) {
+          console.error(`[cron/scan] sales-cache HTTP ${r.status}: ${body?.error || ""}`);
+          break;
+        }
+        if (body?.cacheComplete) break;
+      } catch (e) {
+        console.error("[cron/scan] sales drive failed:", e.message);
+        break;
+      }
+    } while (Date.now() < salesDeadline);
+    return last;
+  }
+
+  // Drive the store-wide consignment cache (POs + vendor returns). Mirrors
+  // driveCatalog/driveSales; resumable across invocations via its version cursor.
+  async function driveConsign() {
+    const consignDeadline = loopInternally
+      ? Math.min(Date.now() + CONSIGN_DRIVE_MS, overallDeadline)
+      : Date.now();
+    const resetFirst = req.query.consign === "1";
+    let last = null;
+    let first = true;
+    do {
+      const q = first && resetFirst ? "?reset=1" : "";
+      first = false;
+      try {
+        const r = await fetch(`${base}/api/scan/consign-cache${q}`, { method: "POST", headers });
+        const body = await r.json().catch(() => null);
+        if (body) last = body;
+        if (!r.ok) {
+          console.error(`[cron/scan] consign-cache HTTP ${r.status}: ${body?.error || ""}`);
+          break;
+        }
+        if (body?.cacheComplete) break;
+      } catch (e) {
+        console.error("[cron/scan] consign drive failed:", e.message);
+        break;
+      }
+    } while (Date.now() < consignDeadline);
+    return last;
+  }
+
   let catalogResult = null;
   try {
     catalogResult = await driveCatalog();
@@ -156,6 +228,61 @@ export default async function handler(req, res) {
     });
   }
 
+  // Catalog is built. Drive the sales cache next (it needs the catalog price
+  // map). Yield if it isn't complete yet so seasons never page sales themselves.
+  let salesResult = null;
+  if (ENABLE_SALES_STORE) {
+    try {
+      salesResult = await driveSales();
+      if (salesResult) {
+        console.warn(
+          `[cron/scan] sales: complete=${salesResult.complete} version=${salesResult.metaVersion ?? salesResult.version}`
+        );
+      }
+    } catch (e) {
+      console.error("[cron/scan] sales drive error:", e.message);
+    }
+    if (loopInternally && !catalogIsComplete(salesResult)) {
+      return res.json({
+        ok: true,
+        allDone: false,
+        salesBuilding: true,
+        sales: {
+          complete: false,
+          cacheComplete: false,
+          version: (salesResult && (salesResult.metaVersion ?? salesResult.version)) ?? null,
+        },
+        results: [],
+      });
+    }
+  }
+
+  // Drive the store-wide consignment cache last (it projects per-season buckets
+  // using the catalog pid sets). Yield if not complete so seasons never re-page
+  // consignment headers or PO line items themselves.
+  let consignResult = null;
+  if (ENABLE_CONSIGN_STORE) {
+    try {
+      consignResult = await driveConsign();
+      if (consignResult) {
+        console.warn(
+          `[cron/scan] consign: complete=${consignResult.complete} added=${consignResult.added}`
+        );
+      }
+    } catch (e) {
+      console.error("[cron/scan] consign drive error:", e.message);
+    }
+    if (loopInternally && !catalogIsComplete(consignResult)) {
+      return res.json({
+        ok: true,
+        allDone: false,
+        consignBuilding: true,
+        consign: { complete: false, cacheComplete: false },
+        results: [],
+      });
+    }
+  }
+
   let kvResults;
   try {
     kvResults = await Promise.all(
@@ -180,7 +307,10 @@ export default async function handler(req, res) {
     const phase = job ? job.phase : null;
     const lastTs = (job && job.ts) || (data && data.ts) || null;
     const msSinceScan = lastTs ? Date.now() - lastTs : Infinity;
-    const lastFullTs = Number(lastFull || 0) || null;
+    // Prefer the lastFull embedded in the done job record so a single scan:job read is
+    // authoritative even if the separate scan:lastFull key lags — avoids re-restarting a
+    // season that just finished a full rebuild in this cycle.
+    const lastFullTs = resolveLastFullTs(lastFull, job);
 
     const plan = planSeasonWork({
       phase,

@@ -22,9 +22,13 @@ import {
 } from "../../../lib/flow-math";
 import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sales-ledger";
 import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
+import { loadSalesAgg, loadSalesStoreMeta, projectSeasonSales } from "../../../lib/sales-store";
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
 const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY !== "0";
+// When the store-wide sales cache is built, delta projects sales from the shared
+// aggregate (advanced once per cron/delta invocation) instead of paging LS itself.
+const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
@@ -105,32 +109,53 @@ export default async function handler(req, res) {
     const pidToPrice = existing.pidToPrice || {};
     const pidToCost = existing.pidToCost || {};
 
-    const salesState = await loadSalesState(kv, season);
-    if (!salesState.maxVersion) {
-      return res.status(409).json({ error: "No sales ledger found. Run a full scan first." });
-    }
-
     let pages = 0;
     const touchedPids = new Set();
 
-    await fetchSalesPages({
-      lsFetch,
-      deadline,
-      initialCursor: salesState.maxVersion,
-      onPage: async (saleItems) => {
-        pages++;
+    // Store-wide projection: cron/delta advances the shared sales cache once
+    // before firing per-season deltas, so here we just filter that aggregate to
+    // this season's pids — no per-season 2.0/sales paging, and edited/voided
+    // sales are reconciled correctly inside the store's own per-sale ledger.
+    let usedStore = false;
+    if (ENABLE_SALES_STORE) {
+      const meta = await loadSalesStoreMeta(kv);
+      if (meta && meta.complete) {
+        const agg = await loadSalesAgg(kv);
+        const perPid = projectSeasonSales(agg, existing.seasonPids);
+        applySalesTotals(productStats, perPid);
+        await saveSalesState(
+          kv,
+          season,
+          { maxVersion: meta.version || null, perPid, pidSet: existing.seasonPids },
+          seasonPidSet
+        );
+        usedStore = true;
+      }
+    }
 
-        for (const sale of saleItems) {
-          await reconcileSale(kv, season, salesState, sale, seasonPidSet, pidToPrice);
-          for (const li of sale.line_items || []) {
-            if (li?.product_id && seasonPidSet.has(li.product_id)) touchedPids.add(li.product_id);
+    if (!usedStore) {
+      // Legacy fallback: page only new sales after the per-season ledger cursor.
+      const salesState = await loadSalesState(kv, season);
+      if (!salesState.maxVersion) {
+        return res.status(409).json({ error: "No sales ledger found. Run a full scan first." });
+      }
+      await fetchSalesPages({
+        lsFetch,
+        deadline,
+        initialCursor: salesState.maxVersion,
+        onPage: async (saleItems) => {
+          pages++;
+          for (const sale of saleItems) {
+            await reconcileSale(kv, season, salesState, sale, seasonPidSet, pidToPrice);
+            for (const li of sale.line_items || []) {
+              if (li?.product_id && seasonPidSet.has(li.product_id)) touchedPids.add(li.product_id);
+            }
           }
-        }
-      },
-    });
-
-    await saveSalesState(kv, season, salesState, seasonPidSet);
-    applySalesTotals(productStats, salesState.perPid);
+        },
+      });
+      await saveSalesState(kv, season, salesState, seasonPidSet);
+      applySalesTotals(productStats, salesState.perPid);
+    }
 
     if (ENABLE_BULK_INVENTORY) {
       try {

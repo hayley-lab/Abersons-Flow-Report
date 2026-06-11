@@ -62,6 +62,8 @@ import {
 import { searchEnabled, searchPages, SEARCH_PAGE_SIZE } from "../../../lib/ls-search";
 import { shouldFullCatalogScan } from "../../../lib/catalog-gate";
 import { seasonBucketKey } from "../../../lib/catalog-store";
+import { loadSalesAgg, loadSalesStoreMeta, projectSeasonSales } from "../../../lib/sales-store";
+import { consignSeasonKey } from "../../../lib/consignment-store";
 import {
   isResolvedSupplier,
   supplierId,
@@ -75,6 +77,18 @@ const CHUNK_MS = 6000;
 // chunked by the step deadline and the store-wide cache is version-incremental,
 // so it no longer risks the Hobby-runtime timeout that originally gated it.
 const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY !== "0";
+// When the store-wide sales cache is built (by the cron drive), each season
+// projects its sales from that shared aggregate instead of paging 2.0/sales —
+// the single biggest per-season call saving. Set ENABLE_SALES_STORE=0 to force
+// the legacy per-season paging path. step.js also auto-falls-back per run if the
+// store isn't complete yet, so a missing/partial cache never blocks a scan.
+const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
+// When the store-wide consignment cache is built (by the cron drive), each
+// season reads its ordered/received/returned qty from the projected per-season
+// bucket instead of re-paging consignment headers and every PO's line items.
+// Set ENABLE_CONSIGN_STORE=0 to force legacy per-season consignment paging;
+// step.js also auto-falls-back per run if the bucket isn't present yet.
+const ENABLE_CONSIGN_STORE = process.env.ENABLE_CONSIGN_STORE !== "0";
 // Cost is the only product field we cannot recover by inverting skuToPid — it
 // needs a live LS fetch (supply_price). Backfill it in bounded per-scan chunks
 // so the scan always finalizes; remaining products fill in over later scans.
@@ -485,7 +499,11 @@ export default async function handler(req, res) {
               // found to be dead (no in-season LS product) — avoids re-fetching
               // hundreds of unresolved RMH handles on every scan.
               if (
-                shouldFetchHandle(sku, { skuToPid: state.skuToPid, deadHandles: state.deadHandles })
+                shouldFetchHandle(sku, {
+                  skuToPid: state.skuToPid,
+                  deadHandles: state.deadHandles,
+                  catalogComplete: state._catalogSeeded,
+                })
               )
                 handleSet.add(handleForSku(sku));
             }
@@ -671,6 +689,44 @@ export default async function handler(req, res) {
         state.phase = "consignments";
         state.consigIdx = 0;
         state.progress = `Found ${state.seasonPids.length} products — preparing PO sync…`;
+      }
+    }
+
+    // ── CONSIGNMENTS (store projection) ─────────────────────────────────────
+    // When the shared consignment cache is built, read this season's projected
+    // ordered/received/returned quantities from one key — no header paging and
+    // no per-PO line-item fetches — and skip straight past the returns phase.
+    if (
+      state.phase === "consignments" &&
+      ENABLE_CONSIGN_STORE &&
+      !state.consignStoreUnavailable &&
+      !state._consignReady &&
+      Date.now() < deadline
+    ) {
+      try {
+        const bucket = await kv.get(consignSeasonKey(season));
+        if (bucket) {
+          state.pidToQtyOrdered = bucket.pidToQtyOrdered || {};
+          state.pidToQtyReceived = bucket.pidToQtyReceived || {};
+          state.pidToQtyReturned = bucket.pidToQtyReturned || {};
+          if (bucket.salesFloorDate) state.salesFloorDate = bucket.salesFloorDate;
+          hydrateProductStatsFromQuantityMaps();
+          const orderedCount = Object.values(state.pidToQtyOrdered).filter((q) => q > 0).length;
+          const retCount = Object.values(state.pidToQtyReturned).filter((q) => q > 0).length;
+          console.warn(
+            `[step] ${season} CONSIGNMENTS (store projection): ${orderedCount} ordered, ${retCount} returned`
+          );
+          state.phase = "inventory";
+          state.inventorySynced = false;
+          state.salesPages = 0;
+          state.saleCursor = null;
+          state.progress = "Reconciling live inventory…";
+        } else {
+          state.consignStoreUnavailable = true;
+        }
+      } catch (e) {
+        console.warn(`[step] ${season} consignment store projection failed, paging LS:`, e.message);
+        state.consignStoreUnavailable = true;
       }
     }
 
@@ -884,6 +940,38 @@ export default async function handler(req, res) {
     }
 
     // ── SALES: aggregate sold $ (vendor) and sold units (product) ───────────
+    if (state.phase === "sales" && Date.now() < deadline) {
+      const seasonPidSet = new Set(state.seasonPids);
+
+      // Store-wide projection: the shared sales cache (built once by the cron
+      // drive) holds a per-PID aggregate of every sale. Filtering it to this
+      // season's pids reproduces the per-season sales totals with ZERO 2.0/sales
+      // paging. Falls back to legacy paging if the cache isn't complete yet.
+      if (ENABLE_SALES_STORE && !state.salesStoreUnavailable && !state.salesState) {
+        try {
+          const meta = await loadSalesStoreMeta(kv);
+          if (meta && meta.complete) {
+            const agg = await loadSalesAgg(kv);
+            const perPid = projectSeasonSales(agg, state.seasonPids);
+            state.salesState = { maxVersion: meta.version || null, perPid, pidSet: state.seasonPids };
+            await saveSalesState(kv, season, state.salesState, seasonPidSet);
+            applySalesTotals(state.productStats, perPid);
+            console.warn(
+              `[step] ${season} SALES (store projection): ${Object.keys(perPid).length} pids with sales, version=${meta.version}`
+            );
+            state.phase = "finalizing";
+          } else {
+            state.salesStoreUnavailable = true;
+          }
+        } catch (e) {
+          console.warn(`[step] ${season} sales store projection failed, paging LS:`, e.message);
+          state.salesStoreUnavailable = true;
+        }
+      }
+    }
+
+    // Legacy per-season sales paging (fallback when the store cache is disabled
+    // or not yet built). Skipped once the store projection set phase=finalizing.
     if (state.phase === "sales" && Date.now() < deadline) {
       const seasonPidSet = new Set(state.seasonPids);
 
@@ -1148,8 +1236,21 @@ export default async function handler(req, res) {
           },
           { ex: 48 * 3600 }
         ),
-        // Keep job key with done+ts so cron/scan can check recency without loading scan:data
-        kv.set(jobKey, { phase: "done", season: state.season, ts: doneTs }, { ex: 2 * 3600 }),
+        // Keep job key with done+ts so cron/scan can check recency without loading scan:data.
+        // Embed scanMode and (for full rebuilds) lastFull so a SINGLE scan:job read is
+        // authoritative — the orchestrator must not re-restart a just-finished full season
+        // just because the separate scan:lastFull key hasn't propagated yet.
+        kv.set(
+          jobKey,
+          {
+            phase: "done",
+            season: state.season,
+            ts: doneTs,
+            scanMode: state.scanMode,
+            ...(fullRebuild() ? { lastFull: doneTs } : {}),
+          },
+          { ex: 2 * 3600 }
+        ),
         ...(fullRebuild()
           ? [kv.set(`scan:lastFull:${state.season}`, doneTs, { ex: 180 * 24 * 3600 })]
           : []),

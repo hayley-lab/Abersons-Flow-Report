@@ -35,6 +35,25 @@ export default async function handler(req, res) {
 
   const seasons = currentSeasons();
 
+  // Advance the store-wide sales cache ONCE up front (sequentially), so the
+  // per-season deltas below — which run in parallel — only PROJECT from the
+  // shared aggregate and never race each other advancing the same store keys.
+  // Bounded so the delta cron stays well under its maxDuration; the store is
+  // version-incremental so each run pages only the handful of new sales.
+  if (process.env.ENABLE_SALES_STORE !== "0") {
+    const salesDeadline = Date.now() + 120 * 1000;
+    do {
+      try {
+        const r = await fetch(`${base}/api/scan/sales-cache`, { method: "POST", headers });
+        const body = await r.json().catch(() => null);
+        if (!r.ok || body?.cacheComplete) break;
+      } catch (e) {
+        console.error("[cron/delta] sales drive failed:", e.message);
+        break;
+      }
+    } while (Date.now() < salesDeadline);
+  }
+
   // Check job states in parallel, then fire all delta scans in parallel
   const jobs = await Promise.all(seasons.map((s) => kv.get(`scan:job:${s}`)));
 
