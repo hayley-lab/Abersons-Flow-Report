@@ -13,7 +13,7 @@ import { makeLsFetch } from "../../../lib/ls-fetch";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { SEASONS } from "../../../lib/seasons";
-import { syncCatalogCache, writeSeasonBuckets } from "../../../lib/catalog-store";
+import { loadCatalogMeta, syncCatalogCache, writeSeasonBuckets } from "../../../lib/catalog-store";
 
 // Per-call work budget, kept under the 60s function maxDuration.
 const CHUNK_MS = 45000;
@@ -64,12 +64,17 @@ export default async function handler(req, res) {
       bucketed = seasons.length;
     }
 
+    // Surface the durable cursor so the cold build's convergence is observable
+    // across calls (buildOffset advances toward the full catalog size).
+    const meta = await loadCatalogMeta(kv);
+
     return res.json({
       complete: result.done,
       cacheComplete: result.complete,
       version: result.version,
       added: result.added,
       pages: result.pages,
+      buildOffset: meta ? meta.buildOffset : null,
       bucketed,
       calls: lsFetch.callStats,
     });
