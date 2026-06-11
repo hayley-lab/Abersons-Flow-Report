@@ -53,9 +53,11 @@ import {
 } from "../../../lib/consignment-ledger";
 import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
 import {
+  handleForSku,
   pidsMissingSku,
   recoverSkuMetadata,
   selectCostBackfillPids,
+  shouldFetchHandle,
 } from "../../../lib/product-metadata";
 
 const CHUNK_MS = 6000;
@@ -341,6 +343,7 @@ export default async function handler(req, res) {
       state.variantNeedsFixup = {};
       state.productStats = {};
       state.costDone = {};
+      state.deadHandles = {};
 
       state.phase = "products_seed";
       state.progress = `Loaded ${cats.length} depts — seeding products…`;
@@ -361,6 +364,7 @@ export default async function handler(req, res) {
         state._costPids = [];
         state._costIdx = 0;
         if (!state.costDone) state.costDone = {};
+        if (!state.deadHandles) state.deadHandles = {};
         const priorPidSet = new Set(state.seasonPids);
 
         // 1. Restore pid maps from lightweight scan:pids key (avoids loading full scan:data blob)
@@ -386,6 +390,7 @@ export default async function handler(req, res) {
               Object.assign(state.pidToSku, source.pidToSku || {});
               Object.assign(state.pidToVariant, source.pidToVariant || {});
               Object.assign(state.costDone, source.costDone || {});
+              Object.assign(state.deadHandles, source.deadHandles || {});
             }
           }
         } catch (e) {}
@@ -416,8 +421,11 @@ export default async function handler(req, res) {
                   state.pidToSupplier[state.skuToPid[sku]] = state.skuToVendorOverride[sku];
                 }
               }
-              // Only fetch if this SKU isn't already mapped to a PID
-              if (sku && !state.skuToPid[sku]) handleSet.add(sku.replace("/", ""));
+              // Fetch only SKUs not already mapped to a PID and not previously
+              // found to be dead (no in-season LS product) — avoids re-fetching
+              // hundreds of unresolved RMH handles on every scan.
+              if (shouldFetchHandle(sku, { skuToPid: state.skuToPid, deadHandles: state.deadHandles }))
+                handleSet.add(handleForSku(sku));
             }
           }
           state._seedHandles = [...handleSet];
@@ -457,19 +465,27 @@ export default async function handler(req, res) {
       // Fetch only NEW override handles not covered by the prior scan
       while (state._handleIdx < state._seedHandles.length && Date.now() < deadline) {
         const handle = state._seedHandles[state._handleIdx];
+        let fetchOk = false;
+        let matchedSeason = false;
         try {
           const data = await lsFetch(
             "2.0/products?handle=" + encodeURIComponent(handle) + "&page_size=10"
           );
+          fetchOk = true;
           for (const prod of data.data || []) {
-            if (prod && prod.id && !pidSet.has(prod.id)) {
-              if (skuMatchesSeason(prod.sku, season)) {
+            if (prod && skuMatchesSeason(prod.sku, season)) {
+              matchedSeason = true;
+              if (prod.id && !pidSet.has(prod.id)) {
                 registerProduct(state, prod);
                 pidSet.add(prod.id);
               }
             }
           }
         } catch (e) {}
+        // Only record a handle as dead on a clean response with no in-season
+        // product — never on a transient fetch error, which would drop a real
+        // product permanently.
+        if (fetchOk && !matchedSeason) state.deadHandles[handle] = 1;
         state._handleIdx++;
         if (state._handleIdx % 20 === 0)
           state.progress = `Fetching new datatail products (${state._handleIdx}/${state._seedHandles.length})…`;
@@ -967,6 +983,7 @@ export default async function handler(req, res) {
         pidToSku: state.pidToSku || {},
         pidToVariant: state.pidToVariant || {},
         costDone: state.costDone || {},
+        deadHandles: state.deadHandles || {},
         salesState: state.salesState
           ? { maxVersion: state.salesState.maxVersion, ts: state.salesState.ts }
           : null,
@@ -989,6 +1006,7 @@ export default async function handler(req, res) {
             pidToSku: state.pidToSku || {},
             pidToVariant: state.pidToVariant || {},
             costDone: state.costDone || {},
+            deadHandles: state.deadHandles || {},
           },
           { ex: 48 * 3600 }
         ),
