@@ -429,7 +429,11 @@ export default async function handler(req, res) {
         //     the bucket is the season's slice in the same shape as scan:pids.
         try {
           const bucket = await kv.get(seasonBucketKey(season));
-          if (bucket && Array.isArray(bucket.seasonPids) && bucket.seasonPids.length > 0) {
+          // A present bucket means the shared catalog finished and bucketed this
+          // season — authoritative even when empty (a future season with no
+          // products). Record that so the per-season /search fallback is skipped.
+          if (bucket && Array.isArray(bucket.seasonPids)) {
+            state._catalogSeeded = true;
             for (const pid of bucket.seasonPids) {
               if (!priorPidSet.has(pid)) {
                 state.seasonPids.push(pid);
@@ -444,6 +448,10 @@ export default async function handler(req, res) {
             Object.assign(state.pidToName, bucket.pidToName || {});
             Object.assign(state.pidToSku, bucket.pidToSku || {});
             Object.assign(state.pidToVariant, bucket.pidToVariant || {});
+            // The bucket's cost comes from /search (the catalog source of truth),
+            // so mark these pids cost-resolved to skip the per-scan cost backfill
+            // — that's the bulk of the legacy per-season product API calls.
+            for (const pid of bucket.seasonPids) state.costDone[pid] = 1;
           }
         } catch (e) {}
 
@@ -506,6 +514,7 @@ export default async function handler(req, res) {
           searchEnabled: searchEnabled(),
           fullRebuild: fullRebuild(),
           priorPidCount: state.seasonPids.length,
+          catalogSeeded: state._catalogSeeded,
           force: catalogForce,
         });
 
