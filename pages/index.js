@@ -232,6 +232,7 @@ const TD = ({ children, right, mono, style: extraStyle }) => (
 );
 
 import { SEASONS } from "../lib/seasons";
+import { resolveFallbackScreen } from "../lib/screen-nav";
 
 function slugify(value) {
   return String(value || "")
@@ -448,27 +449,22 @@ export default function FlowReport() {
     if (authed === true) loadData(season);
   }, [authed, loadData, season]);
 
-  // When season data reloads, fall back if the current dept/vendor no longer exists
+  // When season data reloads, fall back if the drilled-in department/vendor no
+  // longer exists. Uses the pure resolver so the screen ids stay consistent —
+  // setting a non-existent screen blanks the page (header only, empty body).
   useEffect(() => {
-    if (screen === "dept" && summaryRows.length > 0 && currentDept) {
-      const deptExists = summaryRows.some(
-        (r) => r.id === currentDept.id || r.name === currentDept.name
-      );
-      if (!deptExists) {
-        setScreen("summary");
-        pushRoute(summaryRoute(season));
-      }
-    }
-  }, [summaryRows, screen, currentDept, pushRoute, season]);
-
-  useEffect(() => {
-    if (screen === "vendors" && vendorRows.length > 0 && currentVendor) {
-      const match = vendorRows.find(
-        (r) => r.id === currentVendor.id || r.name === currentVendor.name
-      );
-      if (!match) setScreen("dept");
-    }
-  }, [vendorRows, screen, currentVendor]);
+    const next = resolveFallbackScreen({
+      screen,
+      currentDept,
+      currentVendor,
+      summaryRows,
+      vendorRows,
+    });
+    if (!next || next === screen) return;
+    setScreen(next);
+    if (next === "summary") pushRoute(summaryRoute(season));
+    else if (next === "vendors" && currentDept) pushRoute(deptRoute(season, currentDept));
+  }, [summaryRows, vendorRows, screen, currentDept, currentVendor, pushRoute, season]);
 
   // Reload after a completed scan
   const reloadAfterScan = useCallback(() => loadData(season), [loadData, season]);
