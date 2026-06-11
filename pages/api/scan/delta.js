@@ -24,7 +24,7 @@ import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sale
 import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
-const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY === "1";
+const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY !== "0";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();

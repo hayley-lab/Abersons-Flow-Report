@@ -61,7 +61,11 @@ import {
 } from "../../../lib/product-metadata";
 
 const CHUNK_MS = 6000;
-const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY === "1";
+// Bulk inventory is the default on Vercel Pro (300s maxDuration); set
+// ENABLE_BULK_INVENTORY=0 to force the per-product fallback. The bulk path is
+// chunked by the step deadline and the store-wide cache is version-incremental,
+// so it no longer risks the Hobby-runtime timeout that originally gated it.
+const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY !== "0";
 // Cost is the only product field we cannot recover by inverting skuToPid — it
 // needs a live LS fetch (supply_price). Backfill it in bounded per-scan chunks
 // so the scan always finalizes; remaining products fill in over later scans.
@@ -716,8 +720,11 @@ export default async function handler(req, res) {
 
         if (ENABLE_BULK_INVENTORY && !state.inventoryBulkFailed) {
           try {
+            // No reset: the store-wide cache is kept current by the version
+            // cursor, so a full rebuild reuses it (and concurrent seasons share
+            // one forward pull) instead of each season wiping and re-pulling.
             const result = await syncInventoryCache(kv, season, lsFetch, {
-              reset: fullRebuild() && !state.inventoryResetDone,
+              reset: false,
               deadline,
             });
             state.inventoryResetDone = true;
