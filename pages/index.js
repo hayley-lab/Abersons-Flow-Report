@@ -233,6 +233,7 @@ const TD = ({ children, right, mono, style: extraStyle }) => (
 
 import { SEASONS } from "../lib/seasons";
 import { resolveFallbackScreen } from "../lib/screen-nav";
+import { productMatchesVendor } from "../lib/vendor-match";
 
 function slugify(value) {
   return String(value || "")
@@ -729,7 +730,7 @@ export default function FlowReport() {
         const targetIds = seasonPids.filter(function (id) {
           const sup = pidToSupplier[id];
           const typ = pidToType[id];
-          return sup && (sup.i || sup.id) === vendor.id && (typ === dept.id || typ === "__none__");
+          return productMatchesVendor(sup, vendor) && (typ === dept.id || typ === "__none__");
         });
 
         const skuToPid = (scanData && scanData.skuToPid) || {};
@@ -799,7 +800,7 @@ export default function FlowReport() {
 
         const targetIds = seasonPids.filter(function (id) {
           const sup = pidToSupplier[id];
-          return sup && (sup.i || sup.id) === vendorInfo.id;
+          return productMatchesVendor(sup, vendorInfo);
         });
 
         const overrideProducts = allEntries.flatMap(function (v) {

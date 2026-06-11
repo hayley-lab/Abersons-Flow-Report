@@ -60,6 +60,12 @@ import {
   shouldFetchHandle,
 } from "../../../lib/product-metadata";
 import { searchEnabled, searchPages, SEARCH_PAGE_SIZE } from "../../../lib/ls-search";
+import {
+  isResolvedSupplier,
+  supplierId,
+  supplierName,
+  vendorBucketKey,
+} from "../../../lib/vendor-match";
 
 const CHUNK_MS = 6000;
 // Bulk inventory is the default on Vercel Pro (300s maxDuration); set
@@ -965,10 +971,15 @@ export default async function handler(req, res) {
         ps.onOrder = Math.max(0, ps.qtyOrdered - ps.qtyReceived);
         ps.inventoryMismatch = ps.liveOnHand != null && ps.liveOnHand !== derivedStock;
         if (!deptVendorData[cid]) deptVendorData[cid] = {};
-        const vendorId = sup?.i && sup.i !== "__none__" ? sup.i : "__unassigned__";
-        const vendorName = sup?.i && sup.i !== "__none__" ? sup.n : "Unassigned";
-        if (!deptVendorData[cid][vendorId]) {
-          deptVendorData[cid][vendorId] = {
+        // Bucket by brand (normalized name), reading both supplier formats, so a
+        // brand whose products carry the datatail numeric id and the LS uuid roll
+        // into one vendor row instead of leaking into "Unassigned".
+        const resolved = isResolvedSupplier(sup);
+        const vendorKey = vendorBucketKey(sup);
+        const vendorId = resolved ? supplierId(sup) : "__unassigned__";
+        const vendorName = resolved ? supplierName(sup) : "Unassigned";
+        if (!deptVendorData[cid][vendorKey]) {
+          deptVendorData[cid][vendorKey] = {
             id: vendorId,
             name: vendorName,
             ordered: 0,
@@ -980,7 +991,7 @@ export default async function handler(req, res) {
             sold: 0,
           };
         }
-        const v = deptVendorData[cid][vendorId];
+        const v = deptVendorData[cid][vendorKey];
         v.ordered += netOrderedValue(ps, price);
         v.orderedCost += Math.max(0, ((ps.qtyOrdered || 0) - (ps.retQty || 0)) * cost);
         v.received += netReceivedRetail(ps, price);
