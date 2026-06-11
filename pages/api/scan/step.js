@@ -194,6 +194,18 @@ export default async function handler(req, res) {
   const deadline = Date.now() + CHUNK_MS;
   const lsFetch = makeLsFetch({ base, headers });
 
+  // Fold this step's request tally into the season's cumulative counter so a
+  // full scan reports total LS calls per endpoint family (rate-limit budget).
+  function accumulateCalls() {
+    if (!state.callCounts) state.callCounts = { total: 0, byFamily: {} };
+    const s = lsFetch.callStats;
+    state.callCounts.total += s.total;
+    for (const [k, v] of Object.entries(s.byFamily)) {
+      state.callCounts.byFamily[k] = (state.callCounts.byFamily[k] || 0) + v;
+    }
+    return state.callCounts;
+  }
+
   async function lsFetchAll(path) {
     const results = [];
     let after = null;
@@ -344,6 +356,7 @@ export default async function handler(req, res) {
       state.productStats = {};
       state.costDone = {};
       state.deadHandles = {};
+      state.callCounts = { total: 0, byFamily: {} };
 
       state.phase = "products_seed";
       state.progress = `Loaded ${cats.length} depts — seeding products…`;
@@ -1024,6 +1037,11 @@ export default async function handler(req, res) {
       ]);
       await kv.del(bigKey);
 
+      const finalCounts = accumulateCalls();
+      console.warn(
+        `[step] ${state.season} DONE — LS calls total=${finalCounts.total} byFamily=${JSON.stringify(finalCounts.byFamily)}`
+      );
+
       return res.json({
         phase: "done",
         season: state.season,
@@ -1067,6 +1085,11 @@ export default async function handler(req, res) {
       "_consignReady",
       "_returnReady",
     ]);
+    const cumulative = accumulateCalls();
+    console.warn(
+      `[step] ${season} phase=${state.phase} LS calls this step=${lsFetch.callStats.total} cumulative=${cumulative.total} byFamily=${JSON.stringify(cumulative.byFamily)}`
+    );
+
     const small = {},
       big = {};
     for (const [k, v] of Object.entries(state)) {
