@@ -25,7 +25,7 @@ import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { getLsToken, lsBase } from "../../../lib/ls-auth";
 import { isLsDeadlineError, makeLsFetch } from "../../../lib/ls-fetch";
-import { buildAllRows, rowsForVendor } from "../../../lib/flow-rollup";
+import { buildAllRows, rollup, rowsForVendor } from "../../../lib/flow-rollup";
 import { seasonScanDateRange } from "../../../lib/flow-math";
 import { loadConsignEntries, seasonConsignmentBuckets } from "../../../lib/consignment-store";
 import { loadSalesAgg, projectSeasonSales } from "../../../lib/sales-store";
@@ -130,18 +130,17 @@ export default async function handler(req, res) {
   const sampleCap = full ? 0 : Math.max(1, parseInt(req.query.sample, 10) || DEFAULT_SAMPLE);
 
   // 1. Canonical rows — same source the report serves (data.js path).
-  const [rawData, override] = await Promise.all([
-    loadScanData(kv, season),
-    loadOverride(season),
-  ]);
+  const [rawData, override] = await Promise.all([loadScanData(kv, season), loadOverride(season)]);
   if (!rawData && !override) {
     return res.status(404).json({ error: "No scan data for season" });
   }
 
   let rows;
   let allRows;
+  let rollupResult;
   try {
-    allRows = buildAllRows(rawData, override);
+    allRows = buildAllRows(rawData, override, { season });
+    rollupResult = rollup(allRows, rawData, override, { season });
     rows = allRows;
   } catch (e) {
     return res.status(500).json({ error: "rows build failed: " + e.message });
@@ -228,6 +227,7 @@ export default async function handler(req, res) {
   const report = buildValidationReport({
     season,
     rows,
+    rollupResult,
     freshOnHand,
     freshConsign,
     freshSales,

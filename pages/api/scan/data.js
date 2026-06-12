@@ -74,13 +74,29 @@ export default async function handler(req, res) {
   // mismatch, since grouping now happens here at request time).
   if (rawData || override) {
     try {
-      const rows = buildAllRows(rawData, override);
-      const { summaryRows, deptVendors } = rollup(rows, rawData, override);
-      data = { ...(rawData || {}), summaryRows, deptVendors, rows };
+      const rows = buildAllRows(rawData, override, { season });
+      const { summaryRows, deptVendors } = rollup(rows, rawData, override, { season });
+      data = { ...(rawData || {}), season, summaryRows, deptVendors, rows };
     } catch (e) {
       console.error("rollup error", e);
       mergeError = e.message;
-      data = rawData || null;
+      data = rawData
+        ? {
+            ...rawData,
+            mergeError,
+            rollupDegraded: true,
+            totalsDegraded: true,
+          }
+        : {
+            season,
+            ts: null,
+            summaryRows: [],
+            deptVendors: {},
+            rows: [],
+            mergeError,
+            rollupDegraded: true,
+            totalsDegraded: true,
+          };
     }
   }
 
@@ -92,6 +108,9 @@ export default async function handler(req, res) {
       deptVendors: data.deptVendors || {},
       isDelta: data.isDelta || false,
       salesState: data.salesState || null,
+      mergeError: data.mergeError || null,
+      rollupDegraded: !!data.rollupDegraded,
+      totalsDegraded: !!data.totalsDegraded,
     };
   }
 
@@ -100,5 +119,7 @@ export default async function handler(req, res) {
     job: job ? { phase: job.phase, progress: job.progress, error: job.error } : null,
     hasOverride: !!override,
     mergeError,
+    rollupDegraded: !!data?.rollupDegraded,
+    totalsDegraded: !!data?.totalsDegraded,
   });
 }

@@ -179,8 +179,8 @@ Each level's numbers are the sum of the level below it. If a number looks wrong 
 - `retVal` / `retCost` = vendor return retail/cost dollars. Used in header totals.
 - `returned` = customer return quantity from sales. **Never displayed in the Returned column.** Kept only for future on-hand reconciliation indicator.
 - `sold` and `onSale` are mutually exclusive (discounted sales go ONLY to onSale, not both)
-- Customer returns subtract from whichever bucket the item sold from (discounted → onSale, full price → sold). They do NOT affect `retQty` or the Returned column.
-- `saleAmt` = actual discounted sale dollars (used in color key, NOT retail price × qty)
+- Customer returns subtract from whichever bucket the item sold from (discounted → onSale, full price → sold). Discounted return lines also subtract from `saleAmt` using the negative refund amount so a discounted sale + return nets on-sale dollars back to $0. They do NOT affect `retQty` or the Returned column.
+- `saleAmt` = actual discounted sale dollars net of discounted customer returns (used in color key, NOT retail price × qty)
 - `soldAmt` = net sale dollars (can be negative for net-return products)
 
 ### Override / Datatail Vendors — Special Notes
@@ -188,6 +188,7 @@ Each level's numbers are the sum of the level below it. If a number looks wrong 
 - **Root-cause fix (Jun 2026, step.js):** `registerProduct` now upgrades `pidToPrice`/`pidToCost` from $0 to a real catalog price (`preferPositive` in `lib/flow-math.js`) instead of locking in the first value — a $0 first-seen price no longer poisons every dollar column for that pid.
 - **Request-time fallback (Jun 2026, flow-rollup.js):** `buildAllRows` maps each LS-matched pid to the datatail import's `op.price`/`op.cost` (via `skuToPid`) and uses it when the catalog price is $0 (no live LS fetch in the request path). This keeps Returned/Received retail and cost non-$0 for consignment/datatail vendors. The color key (`pages/index.js`) and the Returned (retail) header both use `returnedRetailValue`, so they always agree. (The old `computeReturnedFromSkus`/`override-merge.js` helpers were removed.)
 - **Season gate (Jun 2026, flow-rollup.js):** override products are filtered by `skuMatchesSeason` (folding rs/ps→spring, pf→fall for 2025/26) in both `buildAllRows` and the vendor-level ordered fold, so a datatail import done while on the wrong season cannot pollute another season's totals.
+- **Mixed LS/datatail Ordered (retail) (Jun 2026):** vendor ordered dollars are LS PO ordered plus datatail ordered dollars only for override SKUs with no LS PO/return activity. Overlapping SKUs stay LS-only to avoid double-counting; old override rows without usable per-product ordered dollars fall back to the guarded vendor-level combine.
 - Consignment vendors (e.g. Judi Powers) have `receivedCost = 0` because no upfront cost is charged. LS may still record a cost on their return consignments. **Do not show negative Received (cost) — cap at $0.**
 
 ### Cron / Scan Loop
@@ -224,8 +225,8 @@ The scan pipeline is working end-to-end. Key things confirmed working:
 - scan:job kept on completion so cron interval check works correctly
 - Nightly workflow uses ?restart=1 on first call to force fresh rescan past 1-hour interval
 
-## Vendor Header — How Totals Are Computed (Jun 10, 2026)
-All numbers in the vendor product drilldown header are computed from the individual product rows using live prices fetched from LS. This guarantees the header always matches the product list and color key, regardless of any scan-time price computation issues.
+## Vendor Header — How Totals Are Computed (Jun 2026)
+All numbers in the vendor product drilldown header, vendor list, and store summary read the same request-time `lib/flow-rollup.js` output. This guarantees the header matches the list row and product rows instead of diverging through separate math paths.
 
 Formulas (per product row, summed across all products):
 - **Ordered (retail)** = sum(qtyOrdered × price)
@@ -241,6 +242,12 @@ Formulas (per product row, summed across all products):
 **Why (Jun 2026, Q2):** the old `netReceivedUnits = onHand + sold + onSale` meant a manual LS on-hand correction (physical count, manual adjustment) silently moved Received and sell-through. Received now reads the PO's `qtyReceived` (net of `retQty`); consignment/migrated products with no PO keep the live-derived fallback so they don't show 0 received or get falsely flagged as adjustments.
 
 Note: the vendor LIST table and store SUMMARY read the same `lib/flow-rollup.js` rollup, so they always agree with the drilldown header.
+
+### Validation / Data Health (Jun 2026)
+- `/api/scan/validate` now samples only fresh live on-hand LS product calls. Cache-only checks for LS POs, vendor returns, sales, and rollup/header dollar invariants run across all verifiable rows, so nightly validation can be broad without thousands of product inventory calls.
+- Data Health reports coverage percentages: datatail-only rows, manual-count differences, on-hand sampled %, cache-checked %, retail verified %, rollup dollar mismatches, and data-gap counts. A green validation badge means "within threshold for the reported coverage", not that every historical/datatail dollar is independently LS-verifiable.
+- Rollup failures surface as `rollupDegraded`/`totalsDegraded` with a visible warning banner; do not trust fallback totals until Data Health is checked and the rollup error is fixed.
+- Deep validation that re-pages LS sales/consignments live is still deferred. Current validation re-projects the store caches independently from `scan:data`, but it does not prove the caches themselves are complete.
 
 ### Manual-count differences (`≠`) — demoted + gated (Jun 2026, Q1)
 - The per-product `≠` icon + tooltip stays in the product table (LS on-hand differs from the flow math → usually a Lightspeed inventory count/correction; LS is the source of truth).
@@ -258,6 +265,7 @@ The vendor list and the department summary list in `pages/index.js` hide rows wh
 1. **Staud spring26 return** — Carrie may have entered a return in the wrong season. Needs investigation.
 2. **Ordered (cost) = $0 for datatail-only vendors** — no LS cost data on old RMH POs. Data gap, not a code bug. Spring 2026 ordered cost is low for this reason.
 3. **scan retVal still 0 for some LS-native variant products** — scan:data may still store 0 for returned retail on these products. This is now mitigated end-to-end at request time: `registerProduct` upgrades a $0 `pidToPrice`/`pidToCost` to the real catalog price, and `buildAllRows` falls back to the datatail `op.price`/`op.cost` for matched rows, so the vendor list, store summary, and drilldown header (all derived from the same rollup) use `returnedRetailValue`/`returnedCostValue` rather than a stored 0.
+4. **Customer return bucket inference is heuristic** — LS return lines do not currently provide reliable original-sale linkage in this codebase. The classifier uses return-line discount fields, pricebook markers, zero-dollar lines, and unit-vs-retail comparison. If LS exposes original sale references later, prefer that over heuristics.
 
 ### Undated consignments (Jun 2026)
 `seasonConsignmentBuckets` (`lib/consignment-store.js`) no longer projects an undated SUPPLIER/RETURN entry into every season whose pid set contains the pid. Undated entries can't be date-filtered, so each pid is attributed only to the unique season whose SKU set owns it; pids shared by more than one season are ambiguous and excluded (with a logged count) instead of inflating Ordered/Received/Returned across seasons. When `pidToSku` is available, both dated and undated projection are SKU-anchored: the pid must be in the season's projection set and `skuMatchesSeason(pidToSku[pid], season)` must pass. Unknown-SKU pids keep the historical pid-set fallback. The consignment cache endpoint projects from catalog pids plus prior `scan:data` pids, and the validation endpoint derives `pidToSku` from canonical rows so re-validation uses the same gate.

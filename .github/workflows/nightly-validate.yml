@@ -2,9 +2,11 @@ name: Nightly Validate
 
 # Accuracy-assurance plan §4 Layer 4 — unattended backstop. Calls
 # GET /api/scan/validate for each active season and fails / annotates the run
-# when drift exceeds the threshold (any hard verifiable qty mismatch, >0.5%
-# drifted verifiable products, or >0.5% season retail-$ drift). GitHub's built-in
-# notifications email the repo owner on failure, so no SMTP infra is needed.
+# when drift exceeds the threshold. The endpoint runs full cheap cache checks
+# (POs, vendor returns, sales, rollup dollars) and keeps live on-hand bounded to
+# a deterministic sample, so nightly validation does not issue thousands of LS
+# product inventory calls. GitHub's built-in notifications email the repo owner
+# on failure, so no SMTP infra is needed.
 # In-app Data Health remains the PRIMARY surface; this is the automated backstop.
 
 on:
@@ -57,7 +59,7 @@ jobs:
           for season in $SEASONS; do
             echo "--- Validating $season ($(date -u +%H:%M:%S) UTC) ---"
             RESPONSE=$(curl -sS --max-time 120 \
-              "$BASE/api/scan/validate?season=$season" \
+              "$BASE/api/scan/validate?season=$season&sample=150" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Accept: application/json")
             CURL_RC=$?

@@ -908,8 +908,13 @@ export default function FlowReport() {
   );
   const effectiveValidation = validation || validationLatest;
   const healthBadge = useMemo(
-    () => deriveHealthBadge({ rowsHealth, validation: effectiveValidation }),
-    [rowsHealth, effectiveValidation]
+    () =>
+      deriveHealthBadge({
+        rowsHealth,
+        validation: effectiveValidation,
+        rollupDegraded: !!scanData?.rollupDegraded,
+      }),
+    [rowsHealth, effectiveValidation, scanData]
   );
   // Season-wide manual-count differences (material live-vs-derived on-hand
   // deltas), surfaced on the Data Health screen instead of the vendor header.
@@ -1205,6 +1210,25 @@ export default function FlowReport() {
     </div>
   ) : null;
 
+  const RollupWarning = scanData?.totalsDegraded ? (
+    <div
+      style={{
+        background: "#fef3e2",
+        border: "1px solid #f5d9a0",
+        borderRadius: 8,
+        padding: "10px 16px",
+        marginBottom: "1rem",
+        fontSize: 13,
+        color: "#92600a",
+        lineHeight: 1.5,
+      }}
+    >
+      <strong>Report totals are degraded.</strong> The request-time rollup failed, so summary and
+      vendor totals may be incomplete. Open Data Health before relying on this report.
+      {scanData.mergeError ? " Rollup error: " + scanData.mergeError : ""}
+    </div>
+  ) : null;
+
   // ── render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -1364,6 +1388,7 @@ export default function FlowReport() {
       </header>
 
       <div style={s.main}>
+        {RollupWarning}
         {/* ── SUMMARY ── */}
         {screen === "summary" && (
           <>
@@ -2455,6 +2480,16 @@ export default function FlowReport() {
                       value: rowsHealth.datatailOnly,
                       sub: "not LS-verifiable",
                     },
+                    {
+                      label: "Ordered cost gaps",
+                      value: rowsHealth.orderedCostGaps,
+                      sub: "old POs without LS cost",
+                    },
+                    {
+                      label: "$0 price gaps",
+                      value: rowsHealth.zeroPriceGaps,
+                      sub: "dollar validation limited",
+                    },
                   ]}
                 />
                 {seasonAdjustedCount > 0 && (
@@ -2574,11 +2609,11 @@ export default function FlowReport() {
                           validation || validationLoading || validationError ? "1rem" : 0,
                       }}
                     >
-                      Lightspeed is the only independent ground truth. Validation re-derives live
-                      on-hand, PO ordered/received, vendor returns and sales directly from LS and
-                      compares them to what this report shows. Datatail-only products and manual LS
-                      inventory adjustments are reported as <strong>skipped</strong>, never
-                      failures.
+                      Lightspeed is the only independent ground truth. Validation fetches live
+                      on-hand for the sampled LS products and checks PO ordered/received, vendor
+                      returns, sales and rollup dollars across the cache-verifiable season.
+                      Datatail-only products and manual LS inventory adjustments are reported as{" "}
+                      <strong>coverage limits</strong>, never failures.
                     </div>
 
                     {mounted && validationHistory.length > 0 && (
@@ -2718,12 +2753,18 @@ export default function FlowReport() {
                         <KpiRow
                           items={[
                             {
-                              label: "Checked products",
+                              label: "Cache-checked products",
                               value: validation.counts?.checkedProducts ?? 0,
                               sub:
-                                validation.mode === "sample"
-                                  ? "sampled of " + (validation.counts?.verifiableProducts ?? 0)
-                                  : "full season",
+                                ((validation.counts?.cacheCheckedPct || 0) * 100).toFixed(1) +
+                                "% of verifiable",
+                            },
+                            {
+                              label: "On-hand sampled",
+                              value: validation.counts?.onHandCheckedProducts ?? 0,
+                              sub:
+                                ((validation.counts?.onHandSampledPct || 0) * 100).toFixed(1) +
+                                "% of verifiable",
                             },
                             {
                               label: "Drifted products",
@@ -2734,6 +2775,10 @@ export default function FlowReport() {
                               value: validation.counts?.hardQtyMismatches ?? 0,
                             },
                             {
+                              label: "Rollup dollar mismatches",
+                              value: validation.counts?.rollupMismatches ?? 0,
+                            },
+                            {
                               label: "Season retail drift",
                               value:
                                 ((validation.counts?.seasonRetailDriftRatio || 0) * 100).toFixed(
@@ -2742,15 +2787,46 @@ export default function FlowReport() {
                               sub: fmt(validation.counts?.seasonRetailDrift || 0) + " of retail",
                             },
                             {
-                              label: "Skipped (datatail-only)",
-                              value: validation.counts?.datatailOnly ?? 0,
+                              label: "Retail verified",
+                              value:
+                                ((validation.counts?.retailVerifiablePct || 0) * 100).toFixed(1) +
+                                "%",
+                              sub: "excludes data gaps/manual counts",
                             },
                             {
-                              label: "Skipped (manual adj.)",
+                              label: "Datatail-only",
+                              value: validation.counts?.datatailOnly ?? 0,
+                              sub:
+                                ((validation.counts?.datatailOnlyPct || 0) * 100).toFixed(1) +
+                                "% of rows",
+                            },
+                            {
+                              label: "Manual adjustments",
                               value: validation.counts?.manualAdjustment ?? 0,
+                              sub:
+                                ((validation.counts?.manualAdjustmentPct || 0) * 100).toFixed(1) +
+                                "% of rows",
+                            },
+                            {
+                              label: "Data gaps",
+                              value: validation.counts?.dataGaps?.total ?? 0,
+                              sub: "cost/price/ops checklist",
                             },
                           ]}
                         />
+
+                        {Array.isArray(validation.dataGaps) && validation.dataGaps.length > 0 && (
+                          <div style={{ fontSize: 12, color: "#92600a", marginBottom: "0.75rem" }}>
+                            Data gaps:{" "}
+                            {validation.dataGaps
+                              .slice(0, 5)
+                              .map((g) => g.detail)
+                              .join(" ")}
+                            {validation.dataGaps.length > 5
+                              ? " Showing first 5 of " + validation.dataGaps.length + "."
+                              : ""}
+                          </div>
+                        )}
 
                         {(validation.onHandBudgetExhausted ||
                           validation.lsError ||
