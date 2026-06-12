@@ -10,6 +10,10 @@ on:
         description: "Force a cold rebuild of the store-wide consignment cache"
         type: boolean
         default: false
+      sales_reset:
+        description: "Force a cold rebuild of the store-wide sales cache (fixes sale vs on-sale classification)"
+        type: boolean
+        default: false
 
 jobs:
   scan:
@@ -42,6 +46,13 @@ jobs:
               # false so consignment paging stays incremental.
               if [ "${{ inputs.consign_reset }}" = "true" ]; then
                 QUERY="$QUERY&consign=1"
+              fi
+              # A manual dispatch with sales_reset=true cold-rebuilds the
+              # store-wide sales cache (driveSales resets on ?sales=1, then loops
+              # to cacheComplete), correcting sale vs on-sale classification. The
+              # scheduled cron leaves this false so sales paging stays incremental.
+              if [ "${{ inputs.sales_reset }}" = "true" ]; then
+                QUERY="$QUERY&sales=1"
               fi
             else
               QUERY=""
