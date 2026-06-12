@@ -1,7 +1,7 @@
 // pages/index.js
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/router";
-import { derivedOnHand, displayOnHand, netReceivedCost, netReceivedRetail } from "../lib/flow-math";
+import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", {
@@ -233,7 +233,6 @@ const TD = ({ children, right, mono, style: extraStyle }) => (
 
 import { SEASONS } from "../lib/seasons";
 import { resolveFallbackScreen } from "../lib/screen-nav";
-import { productMatchesVendor } from "../lib/vendor-match";
 
 function slugify(value) {
   return String(value || "")
@@ -593,114 +592,11 @@ export default function FlowReport() {
   );
 
   // ── vendor drilldown ───────────────────────────────────────────────────────
-
-  // Compute vendor-row-compatible totals from a product rows array so they can
-  // be flowed up into vendorRows, which drives the dept-level summary header.
-  const flowUpVendorTotals = useCallback(function (vendor, rows) {
-    const t = {
-      ordered: 0,
-      orderedCost: 0,
-      received: 0,
-      cost: 0,
-      returned: 0,
-      returnedCost: 0,
-      sold: 0,
-    };
-    rows.forEach(function (p) {
-      const price = p.price || 0,
-        c = p.cost || 0;
-      const ret = p.returned || 0;
-      const rawOrdered = p.orderedRaw != null ? p.orderedRaw : p.qtyOrdered || 0;
-      const rowStats = {
-        qtyReceived: p.receivedRaw || 0,
-        liveOnHand: p.liveOnHand,
-        onHand: p.onHand || 0,
-        sold: p.sold || 0,
-        onSale: p.onSale || 0,
-        retQty: ret,
-      };
-      t.ordered += Math.max(0, rawOrdered - ret) * price;
-      t.orderedCost += Math.max(0, rawOrdered - ret) * c;
-      t.received += netReceivedRetail(rowStats, price);
-      t.cost += netReceivedCost(rowStats, c);
-      t.returned += ret * price;
-      t.returnedCost += ret * c;
-      t.sold += (p.sold || 0) * price;
-    });
-    setVendorRows(function (prev) {
-      return prev.map(function (r) {
-        return r.id === vendor.id || r.name === vendor.name ? Object.assign({}, r, t) : r;
-      });
-    });
-  }, []);
-
-  const productRowFromPid = useCallback(
-    function (pid, fallback) {
-      fallback = fallback || {};
-      const productStats = (scanData && scanData.productStats) || {};
-      const stats = productStats[pid] || {};
-      const pidToQtyOrdered = (scanData && scanData.pidToQtyOrdered) || {};
-      const pidToQtyReceived = (scanData && scanData.pidToQtyReceived) || {};
-      const pidToQtyReturned = (scanData && scanData.pidToQtyReturned) || {};
-      const pidToPrice = (scanData && scanData.pidToPrice) || {};
-      const pidToCost = (scanData && scanData.pidToCost) || {};
-      const pidToName = (scanData && scanData.pidToName) || {};
-      const pidToSku = (scanData && scanData.pidToSku) || {};
-      const pidToVariant = (scanData && scanData.pidToVariant) || {};
-      const orderedRaw =
-        stats.qtyOrdered != null
-          ? stats.qtyOrdered
-          : pid && pidToQtyOrdered[pid] != null
-            ? pidToQtyOrdered[pid]
-            : fallback.qtyOrdered || 0;
-      const receivedRaw =
-        stats.qtyReceived != null
-          ? stats.qtyReceived
-          : pid && pidToQtyReceived[pid] != null
-            ? pidToQtyReceived[pid]
-            : fallback.qtyReceived || fallback.qtyStock || 0;
-      const returned =
-        stats.retQty != null
-          ? stats.retQty
-          : pid && pidToQtyReturned[pid] != null
-            ? pidToQtyReturned[pid]
-            : fallback.qtyReturned || 0;
-      const sold = stats.sold != null ? stats.sold : fallback.qtySold || 0;
-      const onSale = stats.onSale != null ? stats.onSale : fallback.qtySale || 0;
-      const rowStats = {
-        qtyReceived: receivedRaw,
-        sold,
-        onSale,
-        retQty: returned,
-        liveOnHand: stats.liveOnHand,
-      };
-      const derivedStock = derivedOnHand(rowStats);
-      const onHand = displayOnHand(rowStats);
-      const onOrder = Math.max(0, orderedRaw - receivedRaw);
-      return {
-        name: pidToName[pid] || fallback.description || "",
-        sku: pidToSku[pid] || fallback.style || "",
-        variant:
-          pidToVariant[pid] ||
-          [fallback.color, fallback.fabric, fallback.size].filter(Boolean).join(" / "),
-        cost: pidToCost[pid] != null ? pidToCost[pid] : fallback.cost || 0,
-        price: pidToPrice[pid] != null ? pidToPrice[pid] : fallback.price || 0,
-        qtyOrdered: onOrder,
-        orderedRaw,
-        receivedRaw,
-        onHand,
-        sold,
-        onSale,
-        returned,
-        saleAmt: stats.saleAmt || 0,
-        inventoryMismatch:
-          stats.inventoryMismatch ||
-          (stats.liveOnHand != null && stats.liveOnHand !== derivedStock),
-        liveOnHand: stats.liveOnHand,
-      };
-    },
-    [scanData]
-  );
+  //
+  // Product rows come straight from the canonical rows the server built and
+  // shipped (scanData.rows) via the shared lib/flow-rollup helpers. The vendor
+  // list/dept tables read the SAME rollup (scanData.deptVendors), so the header,
+  // the vendor list row, and the sum of the product rows are always identical.
 
   const openVendor = useCallback(
     async function (vendor, options = {}) {
@@ -722,48 +618,13 @@ export default function FlowReport() {
       if (!options.skipRoute) pushRoute(vendorRoute(season, dept, vendor));
 
       try {
-        // Find this vendor's product IDs in this dept from the pre-scanned data
-        const seasonPids = (scanData && scanData.seasonPids) || [];
-        const pidToType = (scanData && scanData.pidToType) || {};
-        const pidToSupplier = (scanData && scanData.pidToSupplier) || {};
-
-        const targetIds = seasonPids.filter(function (id) {
-          const sup = pidToSupplier[id];
-          const typ = pidToType[id];
-          return productMatchesVendor(sup, vendor) && (typ === dept.id || typ === "__none__");
-        });
-
-        const skuToPid = (scanData && scanData.skuToPid) || {};
-        const lsRows = targetIds.map(function (pid) {
-          return productRowFromPid(pid);
-        });
-        const seen = new Set(
-          lsRows
-            .map((row) =>
-              String(row.sku || "")
-                .toLowerCase()
-                .trim()
-            )
-            .filter(Boolean)
-        );
-        const overrideRows = (vendor.overrideProducts || [])
-          .map(function (p) {
-            const sku = (p.style || "").toLowerCase().trim();
-            if (sku && seen.has(sku)) return null;
-            if (sku) seen.add(sku);
-            const pid = skuToPid[sku];
-            return productRowFromPid(pid, p);
-          })
-          .filter(Boolean);
-        const rows = lsRows.concat(overrideRows);
-        setProductRows(rows);
-        flowUpVendorTotals(vendor, rows);
+        setProductRows(rowsForVendor((scanData && scanData.rows) || [], vendor, dept));
       } catch (e) {
         setProductError(e.message);
       }
       setProductLoading(false);
     },
-    [currentDept, flowUpVendorTotals, productRowFromPid, pushRoute, scanData, season]
+    [currentDept, pushRoute, scanData, season]
   );
 
   // ── vendor all-departments drilldown (from summary vendor list) ──────────────
@@ -779,61 +640,13 @@ export default function FlowReport() {
       if (!options.skipRoute) pushRoute(allVendorRoute(season, vendorInfo));
 
       try {
-        const skuToPid = (scanData && scanData.skuToPid) || {};
-        const deptVendors = (scanData && scanData.deptVendors) || {};
-
-        // Collect all vendor entries across departments matching this vendor
-        const normVendorName = (vendorInfo.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-        const allEntries = [];
-        Object.values(deptVendors).forEach(function (vendors) {
-          vendors.forEach(function (v) {
-            const vNorm = (v.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-            if (String(v.id) === String(vendorInfo.id) || vNorm === normVendorName) {
-              allEntries.push(v);
-            }
-          });
-        });
-
-        // LS scan path — filter seasonPids by vendor only (no dept filter)
-        const seasonPids = (scanData && scanData.seasonPids) || [];
-        const pidToSupplier = (scanData && scanData.pidToSupplier) || {};
-
-        const targetIds = seasonPids.filter(function (id) {
-          const sup = pidToSupplier[id];
-          return productMatchesVendor(sup, vendorInfo);
-        });
-
-        const overrideProducts = allEntries.flatMap(function (v) {
-          return v.overrideProducts || [];
-        });
-        const lsRows = targetIds.map(function (pid) {
-          return productRowFromPid(pid);
-        });
-        const seen = new Set(
-          lsRows
-            .map((row) =>
-              String(row.sku || "")
-                .toLowerCase()
-                .trim()
-            )
-            .filter(Boolean)
-        );
-        const overrideRows = overrideProducts
-          .map(function (p) {
-            const sku = (p.style || "").toLowerCase().trim();
-            if (sku && seen.has(sku)) return null;
-            if (sku) seen.add(sku);
-            const pid = skuToPid[sku];
-            return productRowFromPid(pid, p);
-          })
-          .filter(Boolean);
-        setProductRows(lsRows.concat(overrideRows));
+        setProductRows(rowsForVendor((scanData && scanData.rows) || [], vendorInfo));
       } catch (e) {
         setProductError(e.message);
       }
       setProductLoading(false);
     },
-    [productRowFromPid, pushRoute, scanData, season]
+    [pushRoute, scanData, season]
   );
 
   useEffect(() => {
@@ -957,7 +770,7 @@ export default function FlowReport() {
     productRows.forEach(function (p) {
       const price = p.price || 0;
       // sold and onSale are now mutually exclusive buckets (onSale items not in sold)
-      const notReceived = p.qtyOrdered || 0;
+      const notReceived = p.onOrderQty || 0;
       if (p.sold > 0) {
         b.sold.n++;
         b.sold.v += price * p.sold;
@@ -970,9 +783,9 @@ export default function FlowReport() {
         b.stock.n++;
         b.stock.v += price * p.onHand;
       }
-      if (p.returned > 0) {
+      if (p.retQty > 0) {
         b.returned.n++;
-        b.returned.v += price * p.returned;
+        b.returned.v += price * p.retQty;
       }
       if (notReceived > 0) {
         b.ordered.n++;
@@ -982,39 +795,15 @@ export default function FlowReport() {
     return b;
   })();
 
-  // Product-level totals for vendor header — computed from live prices so they
-  // always match the product list and color key regardless of scan-time price accuracy.
-  const productTotals = (function () {
-    const t = {
-      orderedRetail: 0,
-      orderedCost: 0,
-      receivedRetail: 0,
-      receivedCost: 0,
-      returnedRetail: 0,
-      returnedCost: 0,
-      soldRetail: 0,
-    };
-    productRows.forEach(function (p) {
-      const price = p.price || 0;
-      const cost = p.cost || 0;
-      const rawOrdered = p.orderedRaw != null ? p.orderedRaw : p.qtyOrdered || 0;
-      const rowStats = {
-        qtyReceived: p.receivedRaw || 0,
-        liveOnHand: p.liveOnHand,
-        sold: p.sold || 0,
-        onSale: p.onSale || 0,
-        retQty: p.returned || 0,
-      };
-      t.orderedRetail += Math.max(0, rawOrdered - (p.returned || 0)) * price;
-      t.orderedCost += Math.max(0, rawOrdered - (p.returned || 0)) * cost;
-      t.receivedRetail += netReceivedRetail(rowStats, price);
-      t.receivedCost += netReceivedCost(rowStats, cost);
-      t.returnedRetail += (p.returned || 0) * price;
-      t.returnedCost += (p.returned || 0) * cost;
-      t.soldRetail += (p.sold || 0) * price;
-    });
-    return t;
-  })();
+  // Vendor header totals come straight from the authoritative rollup
+  // (scanData.deptVendors) so the header always equals the vendor list row.
+  // Received/Sold also equal the sum of the product rows below (bottom-up);
+  // Ordered uses the vendor-level datatail figure that per-product data lacks.
+  const productTotals = vendorRollupTotals(
+    (scanData && scanData.deptVendors) || {},
+    currentVendor,
+    currentVendor && currentVendor.allDepts ? null : currentDept
+  );
 
   let seasonLabel = "";
   for (let sIdx = 0; sIdx < SEASONS.length; sIdx++) {
@@ -1135,12 +924,12 @@ export default function FlowReport() {
         ordered: "#aaa",
         returned: "#000000",
       };
-      const notReceived = p.qtyOrdered || 0;
+      const notReceived = p.onOrderQty || 0;
       const marks = [
         { color: C.sold, n: p.sold || 0 },
         { color: C.sale, n: p.onSale || 0 },
         { color: C.stock, n: p.onHand || 0 },
-        { color: C.returned, n: p.returned || 0 },
+        { color: C.returned, n: p.retQty || 0 },
         { color: C.ordered, n: notReceived },
       ];
       const dots = [];
@@ -2291,11 +2080,11 @@ export default function FlowReport() {
                     if (col === "variant") return (p.variant || "").toLowerCase();
                     if (col === "cost") return p.cost || 0;
                     if (col === "price") return p.price || 0;
-                    if (col === "qtyOrdered") return p.qtyOrdered || 0;
+                    if (col === "qtyOrdered") return p.onOrderQty || 0;
                     if (col === "onHand") return p.onHand || 0;
                     if (col === "sold") return p.sold || 0;
                     if (col === "onSale") return p.onSale || 0;
-                    if (col === "returned") return p.returned || 0;
+                    if (col === "returned") return p.retQty || 0;
                     return 0;
                   };
                   const sorted = productSort.col
@@ -2404,7 +2193,7 @@ export default function FlowReport() {
                                   </TD>
                                   <TD right>{p.cost > 0 ? fmt(p.cost) : ""}</TD>
                                   <TD right>{p.price > 0 ? fmt(p.price) : ""}</TD>
-                                  <TD right>{p.qtyOrdered > 0 ? p.qtyOrdered : ""}</TD>
+                                  <TD right>{p.onOrderQty > 0 ? p.onOrderQty : ""}</TD>
                                   <TD right>
                                     {p.onHand > 0 ? p.onHand : ""}
                                     {p.inventoryMismatch && (
@@ -2425,7 +2214,7 @@ export default function FlowReport() {
                                     {p.onSale > 0 ? p.onSale : ""}
                                   </TD>
                                   <TD right style={{ color: "#000000" }}>
-                                    {p.returned > 0 ? p.returned : ""}
+                                    {p.retQty > 0 ? p.retQty : ""}
                                   </TD>
                                 </tr>
                               );

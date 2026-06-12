@@ -290,16 +290,13 @@ export default async function handler(req, res) {
     }
     const summaryRows = Object.values(catMap).sort((a, b) => b.ordered - a.ordered);
 
-    const deptVendors = {};
-    for (const [deptId, vendors] of Object.entries(deptVendorData)) {
-      deptVendors[deptId] = Object.values(vendors).sort((a, b) => b.ordered - a.ordered);
-    }
-
+    // deptVendors is rebuilt authoritatively at request time by
+    // pages/api/scan/data.js (from productStats + the datatail override), so the
+    // delta no longer stores its own redundant copy.
     const result = {
       ...existing,
       ts: Date.now(),
       summaryRows,
-      deptVendors,
       productStats,
       isDelta: true, // flag so UI can show "quick refresh" label if desired
       salesPages: pages,

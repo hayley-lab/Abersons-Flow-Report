@@ -1182,19 +1182,16 @@ export default async function handler(req, res) {
           catMap[deptId].sold += v.sold;
         }
       }
+      // summaryRows carries the department id→name map (and zero-filled totals
+      // for legacy debug tools). The authoritative per-vendor/department totals
+      // are rebuilt at request time by pages/api/scan/data.js from productStats +
+      // the datatail override, so this scan no longer stores deptVendors.
       const summaryRows = Object.values(catMap).sort((a, b) => b.ordered - a.ordered);
-
-      // deptVendors: { deptId: [{id,name,ordered,received,sold,cost,...}] }
-      const deptVendors = {};
-      for (const [deptId, vendors] of Object.entries(deptVendorData)) {
-        deptVendors[deptId] = Object.values(vendors).sort((a, b) => b.ordered - a.ordered);
-      }
 
       const result = {
         ts: Date.now(),
         season: state.season,
         summaryRows,
-        deptVendors,
         productStats: state.productStats,
         seasonPids: state.seasonPids,
         pidToType: state.pidToType,

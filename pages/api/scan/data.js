@@ -4,7 +4,7 @@
 import { kv } from "@vercel/kv";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
-import { mergeOverride } from "../../../lib/override-merge";
+import { buildAllRows, rollup } from "../../../lib/flow-rollup";
 
 function parseKv(val) {
   if (!val) return null;
@@ -66,12 +66,20 @@ export default async function handler(req, res) {
     });
   }
 
-  if (override) {
+  // Authoritative rollup: derive summary/department/vendor totals bottom-up from
+  // one canonical set of per-product rows (lib/flow-rollup.js). Runs for every
+  // season — with or without a datatail override — so all three pages share the
+  // same math and grouping (also fixes the full-scan-vs-delta vendor grouping
+  // mismatch, since grouping now happens here at request time).
+  if (rawData || override) {
     try {
-      data = mergeOverride(rawData, override);
+      const rows = buildAllRows(rawData, override);
+      const { summaryRows, deptVendors } = rollup(rows, rawData, override);
+      data = { ...(rawData || {}), summaryRows, deptVendors, rows };
     } catch (e) {
-      console.error("merge error", e);
+      console.error("rollup error", e);
       mergeError = e.message;
+      data = rawData || null;
     }
   }
 
