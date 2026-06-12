@@ -44,6 +44,18 @@ function globalConsignDateFrom(seasons) {
   );
 }
 
+function parseKv(val) {
+  if (!val) return null;
+  if (typeof val === "string") {
+    try {
+      return JSON.parse(val);
+    } catch {
+      return null;
+    }
+  }
+  return val;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
 
@@ -76,16 +88,25 @@ export default async function handler(req, res) {
     // pid set (the season's product universe) and its scan date range.
     let bucketed = 0;
     if (result.done) {
-      const catalogBuckets = await Promise.all(
-        seasons.map((s) => kv.get(seasonBucketKey(s)))
-      );
+      const [catalogBuckets, priorScanData] = await Promise.all([
+        Promise.all(seasons.map((s) => kv.get(seasonBucketKey(s)))),
+        Promise.all(seasons.map((s) => kv.get(`scan:data:${s}`))),
+      ]);
       const seasonPidSets = {};
       const scanRanges = {};
+      const pidToSku = {};
       seasons.forEach((s, i) => {
-        seasonPidSets[s] = new Set((catalogBuckets[i] && catalogBuckets[i].seasonPids) || []);
+        const catalogBucket = parseKv(catalogBuckets[i]);
+        const priorData = parseKv(priorScanData[i]);
+        seasonPidSets[s] = new Set([
+          ...((catalogBucket && catalogBucket.seasonPids) || []),
+          ...((priorData && priorData.seasonPids) || []),
+        ]);
+        Object.assign(pidToSku, (catalogBucket && catalogBucket.pidToSku) || {});
+        Object.assign(pidToSku, (priorData && priorData.pidToSku) || {});
         scanRanges[s] = seasonScanDateRange(s);
       });
-      await writeSeasonConsignBuckets(kv, seasons, { seasonPidSets, scanRanges });
+      await writeSeasonConsignBuckets(kv, seasons, { seasonPidSets, scanRanges, pidToSku });
       bucketed = seasons.length;
     }
 

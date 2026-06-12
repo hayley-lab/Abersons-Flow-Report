@@ -129,7 +129,7 @@ KV keys:
 - `scan:job:{season}` — small operational state (phase, cursors, progress). On completion: `{ phase: "done", season, ts }` with 2h TTL (kept so cron skip logic works).
 - `scan:job:big:{season}` — large data blobs (pidMaps, productStats) during scan, 6h TTL. Deleted after finalizing.
 - `scan:data:{season}` — final report blob, 48h TTL.
-- `scan:pids:{season}` — lightweight pid maps saved after each full scan: `{ seasonPids, pidToType, pidToSupplier, skuToPid, pidToPrice }`, 48h TTL. Used by products_seed to restore product maps without loading the full 5-10MB scan:data blob.
+- `scan:pids:{season}` — lightweight pid maps saved after each full scan: `{ seasonPids, pidToType, pidToSupplier, skuToPid, pidToPrice, pidToSku }`, 48h TTL. Used by products_seed to restore product maps without loading the full 5-10MB scan:data blob.
 
 ### SKU Structure
 Every product SKU follows this format: `{item_code}/{season_code}{variant_number}`
@@ -153,7 +153,7 @@ Season codes (2 digits at end = year):
 ### Product Identification — products_seed phase
 Products are discovered from three targeted sources (in order, deduplicating by PID):
 
-1. **Prior scan** (`scan:pids:{season}` KV key) — restores `seasonPids`, `pidToType`, `pidToSupplier`, `skuToPid`, `pidToPrice` directly. No API calls. Fastest path when prior data exists.
+1. **Prior scan** (`scan:pids:{season}` KV key) — restores `seasonPids`, `pidToType`, `pidToSupplier`, `skuToPid`, `pidToPrice`, and `pidToSku` directly. Restored pids are SKU-gated when the SKU is known (`skuMatchesSeason(pidToSku[pid], season)`); unknown-SKU pids still restore so older caches and later metadata backfill remain compatible. No API calls. Fastest path when prior data exists.
 2. **Datatail override SKUs** (`scan:override:{season}:v:*` in KV) — `style` field = full LS SKU (e.g. `cafmrhalo/s2601`). Derives handle by removing the slash (`cafmrhalos2601`) and looks up via `?handle=`. Only fetches handles NOT already in skuToPid.
 3. **LS PO line items** (lazy registration during consignments phase) — when a product appears in a PO but wasn't found by sources 1 or 2, fetches it by ID and checks its SKU against season codes before registering.
 
@@ -162,6 +162,7 @@ Products are discovered from three targeted sources (in order, deduplicating by 
 - Deduplication is automatic: `registerProduct` is a no-op if the PID is already in `seasonPids`
 - `state.negPids` caches non-season product IDs to avoid re-fetching on each step call
 - `pidToPrice` is critical for retVal/retCost in the returns phase — always save it to `scan:pids`
+- Store-wide consignment projection uses the union of `scan:catalog:season:{season}.seasonPids` and prior `scan:data:{season}.seasonPids`; this keeps same-season consignment-only/archived products while the SKU gate prevents wrong-season drift.
 
 ### Data Flow — Bottom Up (CRITICAL)
 All totals are calculated at the individual product/SKU level first, then flowed up through each report level. Never calculate totals top-down.
@@ -258,7 +259,7 @@ The vendor list and the department summary list in `pages/index.js` hide rows wh
 3. **scan retVal still 0 for some LS-native variant products** — scan:data may still store 0 for returned retail on these products. This is now mitigated end-to-end at request time: `registerProduct` upgrades a $0 `pidToPrice`/`pidToCost` to the real catalog price, and `buildAllRows` falls back to the datatail `op.price`/`op.cost` for matched rows, so the vendor list, store summary, and drilldown header (all derived from the same rollup) use `returnedRetailValue`/`returnedCostValue` rather than a stored 0.
 
 ### Undated consignments (Jun 2026)
-`seasonConsignmentBuckets` (`lib/consignment-store.js`) no longer projects an undated SUPPLIER/RETURN entry into every season whose pid set contains the pid. Undated entries can't be date-filtered, so each pid is attributed only to the unique season whose SKU set owns it; pids shared by more than one season are ambiguous and excluded (with a logged count) instead of inflating Ordered/Received/Returned across seasons.
+`seasonConsignmentBuckets` (`lib/consignment-store.js`) no longer projects an undated SUPPLIER/RETURN entry into every season whose pid set contains the pid. Undated entries can't be date-filtered, so each pid is attributed only to the unique season whose SKU set owns it; pids shared by more than one season are ambiguous and excluded (with a logged count) instead of inflating Ordered/Received/Returned across seasons. When `pidToSku` is available, both dated and undated projection are SKU-anchored: the pid must be in the season's projection set and `skuMatchesSeason(pidToSku[pid], season)` must pass. Unknown-SKU pids keep the historical pid-set fallback. The consignment cache endpoint projects from catalog pids plus prior `scan:data` pids, and the validation endpoint derives `pidToSku` from canonical rows so re-validation uses the same gate.
 
 ## Stable Checkpoint — Revert Instructions
 If the scan breaks again, the last known-good commit is the one that merged `Fix Returned (retail) header for datatail-only vendors` to main (Jun 7, 2026). To find it:

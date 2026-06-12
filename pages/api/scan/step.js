@@ -60,6 +60,7 @@ import {
   selectCostBackfillPids,
   shouldFetchHandle,
 } from "../../../lib/product-metadata";
+import { filterRestoredSeasonPids, pidToSkuFromSources } from "../../../lib/product-seed";
 import { searchEnabled, searchPages, SEARCH_PAGE_SIZE } from "../../../lib/ls-search";
 import { shouldFullCatalogScan } from "../../../lib/catalog-gate";
 import { seasonBucketKey } from "../../../lib/catalog-store";
@@ -176,6 +177,40 @@ function registerProduct(state, p) {
   state.pidToSku[p.id] = state.pidToSku[p.id] || p.sku || "";
   state.pidToVariant[p.id] = state.pidToVariant[p.id] || productVariant(p);
   if (skuKey && !state.skuToPid[skuKey]) state.skuToPid[skuKey] = p.id;
+}
+
+function restorePriorPidMaps(state, sources, allowedPids) {
+  for (const source of sources) {
+    if (!source) continue;
+    for (const [pid, value] of Object.entries(source.pidToType || {})) {
+      if (allowedPids.has(String(pid))) state.pidToType[pid] = value;
+    }
+    for (const [pid, value] of Object.entries(source.pidToSupplier || {})) {
+      if (allowedPids.has(String(pid))) state.pidToSupplier[pid] = value;
+    }
+    for (const [sku, pid] of Object.entries(source.skuToPid || {})) {
+      if (allowedPids.has(String(pid))) state.skuToPid[sku] = pid;
+    }
+    for (const [pid, value] of Object.entries(source.pidToPrice || {})) {
+      if (allowedPids.has(String(pid))) state.pidToPrice[pid] = value;
+    }
+    for (const [pid, value] of Object.entries(source.pidToCost || {})) {
+      if (allowedPids.has(String(pid))) state.pidToCost[pid] = value;
+    }
+    for (const [pid, value] of Object.entries(source.pidToName || {})) {
+      if (allowedPids.has(String(pid))) state.pidToName[pid] = value;
+    }
+    for (const [pid, value] of Object.entries(source.pidToSku || {})) {
+      if (allowedPids.has(String(pid))) state.pidToSku[pid] = value;
+    }
+    for (const [pid, value] of Object.entries(source.pidToVariant || {})) {
+      if (allowedPids.has(String(pid))) state.pidToVariant[pid] = value;
+    }
+    for (const [pid, value] of Object.entries(source.costDone || {})) {
+      if (allowedPids.has(String(pid))) state.costDone[pid] = value;
+    }
+    Object.assign(state.deadHandles, source.deadHandles || {});
+  }
 }
 
 export default async function handler(req, res) {
@@ -419,25 +454,21 @@ export default async function handler(req, res) {
           const [priorPidMaps, priorData] = await Promise.all([kv.get(pidsKey), kv.get(dataKey)]);
           const priorPids = priorPidMaps || priorData; // fallback for first run
           if (priorPids && Array.isArray(priorPids.seasonPids) && priorPids.seasonPids.length > 0) {
-            for (const pid of priorPids.seasonPids) {
+            const priorSources = [priorData, priorPidMaps];
+            const restoredPidToSku = pidToSkuFromSources(...priorSources);
+            const restoredSeasonPids = filterRestoredSeasonPids(
+              priorPids.seasonPids,
+              season,
+              restoredPidToSku
+            );
+            const allowedPids = new Set(restoredSeasonPids.map(String));
+            for (const pid of restoredSeasonPids) {
               if (!priorPidSet.has(pid)) {
                 state.seasonPids.push(pid);
                 priorPidSet.add(pid);
               }
             }
-            for (const source of [priorData, priorPidMaps]) {
-              if (!source) continue;
-              Object.assign(state.pidToType, source.pidToType || {});
-              Object.assign(state.pidToSupplier, source.pidToSupplier || {});
-              Object.assign(state.skuToPid, source.skuToPid || {});
-              Object.assign(state.pidToPrice, source.pidToPrice || {});
-              Object.assign(state.pidToCost, source.pidToCost || {});
-              Object.assign(state.pidToName, source.pidToName || {});
-              Object.assign(state.pidToSku, source.pidToSku || {});
-              Object.assign(state.pidToVariant, source.pidToVariant || {});
-              Object.assign(state.costDone, source.costDone || {});
-              Object.assign(state.deadHandles, source.deadHandles || {});
-            }
+            restorePriorPidMaps(state, priorSources, allowedPids);
           }
         } catch (e) {}
 
@@ -956,7 +987,11 @@ export default async function handler(req, res) {
           if (meta && meta.complete) {
             const agg = await loadSalesAgg(kv);
             const perPid = projectSeasonSales(agg, state.seasonPids);
-            state.salesState = { maxVersion: meta.version || null, perPid, pidSet: state.seasonPids };
+            state.salesState = {
+              maxVersion: meta.version || null,
+              perPid,
+              pidSet: state.seasonPids,
+            };
             await saveSalesState(kv, season, state.salesState, seasonPidSet);
             applySalesTotals(state.productStats, perPid);
             console.warn(

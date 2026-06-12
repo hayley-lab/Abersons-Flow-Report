@@ -33,6 +33,7 @@ import {
   buildValidationReport,
   DEFAULT_THRESHOLDS,
   evaluateDrift,
+  pidToSkuFromRows,
   samplePids,
 } from "../../../lib/report-validate";
 import { loadValidationHistory, persistValidation } from "../../../lib/validation-history";
@@ -137,11 +138,14 @@ export default async function handler(req, res) {
   }
 
   let rows;
+  let allRows;
   try {
-    rows = buildAllRows(rawData, override);
+    allRows = buildAllRows(rawData, override);
+    rows = allRows;
   } catch (e) {
     return res.status(500).json({ error: "rows build failed: " + e.message });
   }
+  const pidToSku = pidToSkuFromRows(allRows);
   if (vendor) rows = rowsForVendor(rows, { id: vendor, name: vendor }, null);
 
   // 2. Verifiable LS pids -> deterministic sample (full season unless capped).
@@ -166,6 +170,7 @@ export default async function handler(req, res) {
       seasons: [season],
       seasonPidSets,
       scanRanges,
+      pidToSku,
     });
     freshConsign = buildFreshConsign(buckets[season]);
   } catch (e) {
