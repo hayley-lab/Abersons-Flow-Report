@@ -324,6 +324,8 @@ export default function FlowReport() {
   const [scanError, setScanError] = useState(null);
   const [scanInterrupted, setScanInterrupted] = useState(false);
   const scanAbort = useRef(false);
+  const scanInProgress = scanning || scanInterrupted;
+  const fullScanLabel = hasOverride ? "Full Sync from LS" : "Refresh (full rescan)";
 
   const [currentDept, setCurrentDept] = useState(null);
   const [vendorRows, setVendorRows] = useState([]);
@@ -1422,7 +1424,7 @@ export default function FlowReport() {
                   title={"Store Summary — " + seasonLabel}
                   right={
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {dataTs && !scanning && mounted && (
+                      {dataTs && !scanInProgress && mounted && (
                         <span style={{ fontSize: 11, color: "#9e9892" }}>
                           updated{" "}
                           {new Date(dataTs).toLocaleString("en-US", {
@@ -1433,45 +1435,50 @@ export default function FlowReport() {
                           })}
                         </span>
                       )}
-                      {scanInterrupted && !scanning && (
-                        <button
-                          onClick={() => runScan()}
+                      {scanInProgress && (
+                        <span
+                          title="A sync is already running or waiting to be refreshed."
                           style={{
-                            background: "none",
-                            border: "1px solid #f5c842",
-                            borderRadius: 6,
-                            padding: "5px 11px",
-                            fontSize: 12,
-                            fontWeight: 500,
-                            color: "#9a7d0a",
-                            cursor: "pointer",
+                            background: "#f0ede6",
+                            border: "1px solid #e2ddd5",
+                            borderRadius: 20,
+                            padding: "4px 10px",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: "#6b6560",
+                            whiteSpace: "nowrap",
                           }}
                         >
-                          ↺ Resume interrupted scan
-                        </button>
+                          Sync in progress...
+                        </span>
                       )}
-                      {dataTs && !scanning && (
+                      {(dataTs || scanInProgress) && (
                         <button
+                          type="button"
                           onClick={runDelta}
+                          disabled={scanInProgress || !dataTs}
+                          title="Quick Refresh loads recent sales only. Fast."
                           style={{
                             background: "none",
-                            border: "1px solid #b8d4b8",
+                            border: "1px solid " + (scanInProgress ? "#e2ddd5" : "#b8d4b8"),
                             borderRadius: 6,
                             padding: "5px 11px",
                             fontSize: 12,
                             fontWeight: 500,
-                            color: "#3a7a3a",
-                            cursor: "pointer",
+                            color: scanInProgress ? "#b0aba5" : "#3a7a3a",
+                            cursor: scanInProgress || !dataTs ? "default" : "pointer",
                           }}
                         >
-                          ⚡ Quick Refresh
+                          ⚡ Quick Refresh (sales only)
                         </button>
                       )}
                       <button
+                        type="button"
                         onClick={() => {
-                          if (!scanning) runScan();
+                          if (!scanInProgress) runScan();
                         }}
-                        disabled={scanning}
+                        disabled={scanInProgress}
+                        title="Full Sync rescans products, POs, vendor returns, and sales. Slower."
                         style={{
                           background: "none",
                           border: "1px solid #e2ddd5",
@@ -1479,15 +1486,61 @@ export default function FlowReport() {
                           padding: "5px 11px",
                           fontSize: 12,
                           fontWeight: 500,
-                          color: scanning ? "#b0aba5" : "#6b6560",
-                          cursor: scanning ? "default" : "pointer",
+                          color: scanInProgress ? "#b0aba5" : "#6b6560",
+                          cursor: scanInProgress ? "default" : "pointer",
                           display: "flex",
                           alignItems: "center",
                           gap: 5,
                         }}
                       >
-                        {scanning ? "↺ Scanning…" : hasOverride ? "↺ Sync from LS" : "↺ Refresh"}
+                        ↺ {fullScanLabel}
                       </button>
+                      {scanInProgress && (
+                        <button
+                          type="button"
+                          onClick={() => loadData(season)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "#9e9892",
+                            cursor: "pointer",
+                            fontFamily: "'DM Sans',sans-serif",
+                            fontSize: 12,
+                            padding: 0,
+                            textDecoration: "underline",
+                            textUnderlineOffset: 2,
+                          }}
+                        >
+                          Refresh status
+                        </button>
+                      )}
+                      {scanInProgress && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                "A sync appears to already be in progress. Start a new full sync anyway?"
+                              )
+                            ) {
+                              runScan();
+                            }
+                          }}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "#9e9892",
+                            cursor: "pointer",
+                            fontFamily: "'DM Sans',sans-serif",
+                            fontSize: 12,
+                            padding: 0,
+                            textDecoration: "underline",
+                            textUnderlineOffset: 2,
+                          }}
+                        >
+                          Start full sync anyway
+                        </button>
+                      )}
                     </div>
                   }
                 >
@@ -1502,13 +1555,13 @@ export default function FlowReport() {
                     >
                       {hasOverride ? (
                         <>
-                          Historical data imported. Click <strong>↺ Sync from LS</strong> to pull
+                          Historical data imported. Click <strong>↺ {fullScanLabel}</strong> to pull
                           live sales &amp; stock.
                         </>
                       ) : (
                         <>
-                          No scan data yet for {seasonLabel}. Click <strong>↺ Refresh</strong> to
-                          run the first scan.
+                          No scan data yet for {seasonLabel}. Click <strong>↺ {fullScanLabel}</strong>{" "}
+                          to run the first scan.
                         </>
                       )}
                     </div>
