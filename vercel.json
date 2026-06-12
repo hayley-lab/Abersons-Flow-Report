@@ -24,6 +24,12 @@
     "pages/api/scan/inventory-cache.js": {
       "maxDuration": 60
     },
+    "pages/api/scan/sales-cache.js": {
+      "maxDuration": 60
+    },
+    "pages/api/scan/consign-cache.js": {
+      "maxDuration": 60
+    },
     "pages/api/cron/delta.js": {
       "maxDuration": 300
     }
