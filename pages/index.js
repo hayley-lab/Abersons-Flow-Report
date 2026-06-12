@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/router";
 import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
+import { returnedRetailValue } from "../lib/flow-math";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", {
@@ -785,7 +786,10 @@ export default function FlowReport() {
       }
       if (p.retQty > 0) {
         b.returned.n++;
-        b.returned.v += price * p.retQty;
+        // Use the same returned-retail rule as the Returned (retail) header
+        // (prefers scan-time retVal, else retQty × price) so the color key and
+        // header never disagree for zero-price / datatail vendor returns.
+        b.returned.v += returnedRetailValue(p, price);
       }
       if (notReceived > 0) {
         b.ordered.n++;
