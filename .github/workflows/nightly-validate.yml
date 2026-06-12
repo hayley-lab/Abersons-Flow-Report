@@ -1,0 +1,110 @@
+name: Nightly Validate
+
+# Accuracy-assurance plan §4 Layer 4 — unattended backstop. Calls
+# GET /api/scan/validate for each active season and fails / annotates the run
+# when drift exceeds the threshold (any hard verifiable qty mismatch, >0.5%
+# drifted verifiable products, or >0.5% season retail-$ drift). GitHub's built-in
+# notifications email the repo owner on failure, so no SMTP infra is needed.
+# In-app Data Health remains the PRIMARY surface; this is the automated backstop.
+
+on:
+  schedule:
+    # 7:30am UTC = ~2:30am Central — after the nightly full scan has settled.
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Validate active seasons against Lightspeed
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        # No `set -e`: a transient curl timeout or non-JSON body (e.g. a Vercel
+        # function-timeout page) must NOT crash the job — only a genuine drift
+        # result fails the run. Mirrors the hardened curl/jq pattern in
+        # weekly-full-scan.yml.
+        run: |
+          set +e
+          BASE="https://abersons-flow-report.vercel.app"
+
+          # Active seasons = current year ±1 (matches lib/seasons currentSeasons():
+          # any season whose year >= currentYear-1). Computed from the clock so
+          # this stays correct across years without editing the workflow.
+          Y=$(date -u +%Y)
+          SEASONS=""
+          for y in $((Y-1)) $Y $((Y+1)); do
+            if [ "$y" -lt 2025 ]; then continue; fi
+            yy=$(printf '%02d' $((y % 100)))
+            if [ "$y" -le 2026 ]; then
+              SEASONS="$SEASONS fall$yy spring$yy"
+            else
+              SEASONS="$SEASONS fall$yy prefall$yy spring$yy prespring$yy"
+            fi
+          done
+          echo "Active seasons:$SEASONS"
+
+          TRIPPED=0
+          ERRORED=0
+          {
+            echo "# Nightly Validate"
+            echo ""
+            echo "| Season | Drift | Checked | Drifted | Hard qty | Retail drift |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for season in $SEASONS; do
+            echo "--- Validating $season ($(date -u +%H:%M:%S) UTC) ---"
+            RESPONSE=$(curl -sS --max-time 120 \
+              "$BASE/api/scan/validate?season=$season" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Accept: application/json")
+            CURL_RC=$?
+            if [ "$CURL_RC" -ne 0 ]; then
+              echo "::warning::curl failed for $season (rc=$CURL_RC) — skipping (not counted as drift)."
+              echo "| $season | ⚠️ unreachable | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+              ERRORED=$((ERRORED+1))
+              continue
+            fi
+            if ! printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+              echo "::warning::Non-JSON response for $season: ${RESPONSE:0:200}"
+              echo "| $season | ⚠️ bad response | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+              ERRORED=$((ERRORED+1))
+              continue
+            fi
+
+            # 404 = no scan data for this season yet (e.g. future season) — not drift.
+            ERRMSG=$(printf '%s' "$RESPONSE" | jq -r '.error // empty')
+            if [ -n "$ERRMSG" ]; then
+              echo "::notice::$season: $ERRMSG (skipped)"
+              echo "| $season | – (no data) | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            DRIFT=$(printf '%s' "$RESPONSE" | jq -r '.drift.tripped // false')
+            CHECKED=$(printf '%s' "$RESPONSE" | jq -r '.counts.checkedProducts // 0')
+            DRIFTED=$(printf '%s' "$RESPONSE" | jq -r '.counts.driftedProducts // 0')
+            HARD=$(printf '%s' "$RESPONSE" | jq -r '.counts.hardQtyMismatches // 0')
+            RETAIL=$(printf '%s' "$RESPONSE" | jq -r '(.counts.seasonRetailDriftRatio // 0) * 100 | (. * 100 | round) / 100')
+
+            if [ "$DRIFT" = "true" ]; then
+              REASONS=$(printf '%s' "$RESPONSE" | jq -r '[.drift.reasons[]?.detail] | join("; ")')
+              echo "::error::Drift in $season: $REASONS"
+              echo "| $season | ❌ DRIFT | $CHECKED | $DRIFTED | $HARD | ${RETAIL}% |" >> "$GITHUB_STEP_SUMMARY"
+              TRIPPED=$((TRIPPED+1))
+            else
+              echo "$season OK (checked=$CHECKED drifted=$DRIFTED hard=$HARD retail=${RETAIL}%)"
+              echo "| $season | ✅ ok | $CHECKED | $DRIFTED | $HARD | ${RETAIL}% |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Seasons with drift: $TRIPPED; unreachable/errored: $ERRORED" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TRIPPED" -gt 0 ]; then
+            echo "Drift detected in $TRIPPED season(s) — failing the run."
+            exit 1
+          fi
+          echo "No drift detected."
+          exit 0

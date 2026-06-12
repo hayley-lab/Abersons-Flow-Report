@@ -1,8 +1,15 @@
 // pages/index.js
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
 import { returnedRetailValue } from "../lib/flow-math";
+import {
+  HEALTH_LEVEL,
+  summarizeRowsHealth,
+  deriveHealthBadge,
+  inventoryMismatchBreakdown,
+  adjustedCount,
+} from "../lib/health-status";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", {
@@ -318,6 +325,12 @@ export default function FlowReport() {
   const [vendorSort, setVendorSort] = useState({ col: "name", dir: 1 });
   const [summarySort, setSummarySort] = useState({ col: "name", dir: 1 });
 
+  // Data Health (accuracy-assurance Layer 4): on-demand validation report for
+  // the current season, consumed from GET /api/scan/validate.
+  const [validation, setValidation] = useState(null);
+  const [validationLoading, setValidationLoading] = useState(false);
+  const [validationError, setValidationError] = useState(null);
+
   const routeForSeason = useCallback(
     function (seasonId) {
       if (screen === "products" && currentVendor?.allDepts) {
@@ -469,6 +482,35 @@ export default function FlowReport() {
 
   // Reload after a completed scan
   const reloadAfterScan = useCallback(() => loadData(season), [loadData, season]);
+
+  // A validation report is season-specific; drop it whenever the season changes
+  // so the Data Health surface never shows stale drift for the wrong season.
+  useEffect(() => {
+    setValidation(null);
+    setValidationError(null);
+  }, [season]);
+
+  // Run the LS-based validation harness on demand for the current season and
+  // cache the report shape (lib/report-validate.js) for the Data Health surface.
+  const runValidation = useCallback(async () => {
+    setValidationLoading(true);
+    setValidationError(null);
+    try {
+      const r = await fetch(`/api/scan/validate?season=${encodeURIComponent(season)}`);
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 401) {
+          setAuthed(false);
+          return;
+        }
+        throw new Error(d.error || "HTTP " + r.status);
+      }
+      setValidation(await r.json());
+    } catch (e) {
+      setValidationError(e.message);
+    }
+    setValidationLoading(false);
+  }, [season]);
 
   // ── auto-poll: silently refresh data when a newer scan is available ─────────
   useEffect(() => {
@@ -818,6 +860,18 @@ export default function FlowReport() {
   }
   if (!seasonLabel) seasonLabel = season;
 
+  // Cheap, network-free health signal from the loaded rows + the optional
+  // on-demand validation report (drives the nav badge and Data Health page).
+  const rowsHealth = useMemo(
+    () => summarizeRowsHealth((scanData && scanData.rows) || []),
+    [scanData]
+  );
+  const healthBadge = useMemo(
+    () => deriveHealthBadge({ rowsHealth, validation }),
+    [rowsHealth, validation]
+  );
+  const vendorAdjustedCount = useMemo(() => adjustedCount(productRows), [productRows]);
+
   const goToSummary = useCallback(() => {
     setCurrentDept(null);
     setCurrentVendor(null);
@@ -1112,6 +1166,62 @@ export default function FlowReport() {
           <span style={s.logoImg} aria-hidden="true" />
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {mounted && (
+            <button
+              type="button"
+              onClick={() => setScreen("health")}
+              title={
+                healthBadge.level === HEALTH_LEVEL.DRIFT
+                  ? "Drift detected — open Data Health"
+                  : healthBadge.level === HEALTH_LEVEL.WARN
+                    ? "Data coverage warning — open Data Health"
+                    : "Data Health"
+              }
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                background:
+                  healthBadge.level === HEALTH_LEVEL.DRIFT
+                    ? "#fdeaea"
+                    : healthBadge.level === HEALTH_LEVEL.WARN
+                      ? "#fef3e2"
+                      : "#eef3ee",
+                border:
+                  "1px solid " +
+                  (healthBadge.level === HEALTH_LEVEL.DRIFT
+                    ? "#f0b8b8"
+                    : healthBadge.level === HEALTH_LEVEL.WARN
+                      ? "#f5d9a0"
+                      : "#cfe0cf"),
+                color:
+                  healthBadge.level === HEALTH_LEVEL.DRIFT
+                    ? "#8b2020"
+                    : healthBadge.level === HEALTH_LEVEL.WARN
+                      ? "#92600a"
+                      : "#3a7a3a",
+                borderRadius: 20,
+                padding: "4px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "'DM Sans',sans-serif",
+              }}
+            >
+              <span style={{ fontSize: 13, lineHeight: 1 }}>
+                {healthBadge.level === HEALTH_LEVEL.DRIFT
+                  ? "▲"
+                  : healthBadge.level === HEALTH_LEVEL.WARN
+                    ? "●"
+                    : "✓"}
+              </span>
+              {healthBadge.level === HEALTH_LEVEL.DRIFT
+                ? "Drift"
+                : healthBadge.level === HEALTH_LEVEL.WARN
+                  ? "Check data"
+                  : "Health"}
+            </button>
+          )}
           <div style={s.seasonPill}>
             {(function () {
               const idx = SEASONS.findIndex(function (s2) {
@@ -1960,6 +2070,27 @@ export default function FlowReport() {
               <span style={{ color: "#1a1816", fontWeight: 500 }}>
                 {currentVendor ? currentVendor.name : ""}
               </span>
+              {vendorAdjustedCount > 0 && (
+                <span
+                  title={
+                    vendorAdjustedCount +
+                    " product(s) have a manual LS inventory adjustment (live on-hand ≠ derived flow stock)"
+                  }
+                  style={{
+                    marginLeft: 10,
+                    background: "#fef3e2",
+                    color: "#92600a",
+                    border: "1px solid #f5d9a0",
+                    borderRadius: 20,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "2px 9px",
+                    cursor: "help",
+                  }}
+                >
+                  ≠ {vendorAdjustedCount} adjusted
+                </span>
+              )}
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
@@ -2200,18 +2331,41 @@ export default function FlowReport() {
                                   <TD right>{p.onOrderQty > 0 ? p.onOrderQty : ""}</TD>
                                   <TD right>
                                     {p.onHand > 0 ? p.onHand : ""}
-                                    {p.inventoryMismatch && (
-                                      <span
-                                        title={
-                                          "LS inventory: " +
-                                          (p.liveOnHand ?? "unknown") +
-                                          " (derived flow stock differs)"
-                                        }
-                                        style={{ color: "#92600a", marginLeft: 4, fontWeight: 700 }}
-                                      >
-                                        !=
-                                      </span>
-                                    )}
+                                    {p.inventoryMismatch &&
+                                      (function () {
+                                        const b = inventoryMismatchBreakdown(p);
+                                        const deltaLabel =
+                                          b.delta == null ? "" : (b.delta > 0 ? "+" : "") + b.delta;
+                                        return (
+                                          <span
+                                            title={
+                                              "Manual LS inventory adjustment\n" +
+                                              "LS live on-hand: " +
+                                              (b.live ?? "unknown") +
+                                              "\nDerived flow stock: " +
+                                              b.derived +
+                                              " (received " +
+                                              b.received +
+                                              " − sold " +
+                                              b.sold +
+                                              " − on sale " +
+                                              b.onSale +
+                                              " − returned " +
+                                              b.returned +
+                                              ")" +
+                                              (deltaLabel ? "\nΔ " + deltaLabel : "")
+                                            }
+                                            style={{
+                                              color: "#92600a",
+                                              marginLeft: 4,
+                                              fontWeight: 700,
+                                              cursor: "help",
+                                            }}
+                                          >
+                                            ≠
+                                          </span>
+                                        );
+                                      })()}
                                   </TD>
                                   <TD right>{p.sold > 0 ? p.sold : ""}</TD>
                                   <TD right style={{ color: "#6c3483" }}>
@@ -2230,6 +2384,236 @@ export default function FlowReport() {
                   );
                 })()}
               </TableWrap>
+            )}
+          </>
+        )}
+
+        {/* ── DATA HEALTH ── */}
+        {screen === "health" && (
+          <>
+            <button style={s.backBtn} onClick={goToSummary}>
+              ← Store Summary
+            </button>
+            {dataLoading && <Spinner label={"Loading " + seasonLabel + " data…"} />}
+            {dataError && <ErrBox msg={dataError} />}
+            {!dataLoading && (
+              <>
+                <KpiRow
+                  items={[
+                    {
+                      label: "Store-cache completeness",
+                      value: (rowsHealth.cacheCompletePct * 100).toFixed(1) + "%",
+                      sub:
+                        rowsHealth.missingLiveOnHand > 0
+                          ? rowsHealth.missingLiveOnHand + " LS product(s) missing live on-hand"
+                          : "all LS products have live on-hand",
+                    },
+                    {
+                      label: "Inventory adjustments (≠)",
+                      value: rowsHealth.inventoryMismatch,
+                      sub: "manual LS adjustments (expected)",
+                    },
+                    {
+                      label: "LS-verifiable products",
+                      value: rowsHealth.lsRows,
+                      sub: "checked against Lightspeed",
+                    },
+                    {
+                      label: "Datatail-only products",
+                      value: rowsHealth.datatailOnly,
+                      sub: "not LS-verifiable",
+                    },
+                  ]}
+                />
+                <TableWrap
+                  title={"Data Health — " + seasonLabel}
+                  right={
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {validation && validation.checkedAt && mounted && (
+                        <span style={{ fontSize: 11, color: "#9e9892" }}>
+                          validated{" "}
+                          {new Date(validation.checkedAt).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (!validationLoading) runValidation();
+                        }}
+                        disabled={validationLoading}
+                        style={{
+                          background: "none",
+                          border: "1px solid #b8cce4",
+                          borderRadius: 6,
+                          padding: "5px 11px",
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: validationLoading ? "#b0aba5" : "#3a5a8c",
+                          cursor: validationLoading ? "default" : "pointer",
+                        }}
+                      >
+                        {validationLoading ? "Validating…" : "Validate against Lightspeed"}
+                      </button>
+                    </div>
+                  }
+                >
+                  <div style={{ padding: "1.1rem" }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "#6b6560",
+                        lineHeight: 1.6,
+                        marginBottom:
+                          validation || validationLoading || validationError ? "1rem" : 0,
+                      }}
+                    >
+                      Lightspeed is the only independent ground truth. Validation re-derives live
+                      on-hand, PO ordered/received, vendor returns and sales directly from LS and
+                      compares them to what this report shows. Datatail-only products and manual LS
+                      inventory adjustments are reported as <strong>skipped</strong>, never
+                      failures.
+                    </div>
+
+                    {validationLoading && <Spinner label="Re-deriving from Lightspeed…" />}
+                    {validationError && <ErrBox msg={validationError} />}
+
+                    {!validationLoading && validation && (
+                      <>
+                        <div
+                          style={{
+                            background: validation.drift?.tripped ? "#fdeaea" : "#eef3ee",
+                            border:
+                              "1px solid " + (validation.drift?.tripped ? "#f0b8b8" : "#cfe0cf"),
+                            borderRadius: 8,
+                            padding: "10px 14px",
+                            marginBottom: "1rem",
+                            color: validation.drift?.tripped ? "#8b2020" : "#2d6a4f",
+                            fontSize: 13,
+                          }}
+                        >
+                          <strong>
+                            {validation.drift?.tripped
+                              ? "▲ Drift detected — exceeds threshold"
+                              : "✓ Within threshold — no drift"}
+                          </strong>
+                          {validation.drift?.tripped && Array.isArray(validation.drift.reasons) && (
+                            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                              {validation.drift.reasons.map((rsn, i) => (
+                                <li key={i}>{rsn.detail || rsn.code}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+
+                        <KpiRow
+                          items={[
+                            {
+                              label: "Checked products",
+                              value: validation.counts?.checkedProducts ?? 0,
+                              sub:
+                                validation.mode === "sample"
+                                  ? "sampled of " + (validation.counts?.verifiableProducts ?? 0)
+                                  : "full season",
+                            },
+                            {
+                              label: "Drifted products",
+                              value: validation.counts?.driftedProducts ?? 0,
+                            },
+                            {
+                              label: "Hard qty mismatches",
+                              value: validation.counts?.hardQtyMismatches ?? 0,
+                            },
+                            {
+                              label: "Season retail drift",
+                              value:
+                                ((validation.counts?.seasonRetailDriftRatio || 0) * 100).toFixed(
+                                  2
+                                ) + "%",
+                              sub: fmt(validation.counts?.seasonRetailDrift || 0) + " of retail",
+                            },
+                            {
+                              label: "Skipped (datatail-only)",
+                              value: validation.counts?.datatailOnly ?? 0,
+                            },
+                            {
+                              label: "Skipped (manual adj.)",
+                              value: validation.counts?.manualAdjustment ?? 0,
+                            },
+                          ]}
+                        />
+
+                        {(validation.onHandBudgetExhausted ||
+                          validation.lsError ||
+                          validation.consignError ||
+                          validation.salesError) && (
+                          <div style={{ fontSize: 12, color: "#92600a", marginBottom: "0.75rem" }}>
+                            {validation.onHandBudgetExhausted &&
+                              "Live on-hand check stopped early at the time budget (" +
+                                (validation.onHandFetched || 0) +
+                                " fetched). "}
+                            {validation.lsError && "LS error: " + validation.lsError + ". "}
+                            {validation.consignError &&
+                              "Consignment error: " + validation.consignError + ". "}
+                            {validation.salesError && "Sales error: " + validation.salesError + "."}
+                          </div>
+                        )}
+
+                        {Array.isArray(validation.mismatches) &&
+                        validation.mismatches.length > 0 ? (
+                          <div style={{ overflowX: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr>
+                                  <TH>SKU</TH>
+                                  <TH>Field</TH>
+                                  <TH>Source</TH>
+                                  <TH right>Report</TH>
+                                  <TH right>Lightspeed</TH>
+                                  <TH right>Δ</TH>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {validation.mismatches.slice(0, 100).map((m, i) => (
+                                  <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
+                                    <TD mono>{m.sku || m.pid}</TD>
+                                    <TD>{m.field}</TD>
+                                    <TD>{m.source}</TD>
+                                    <TD right>{m.expected}</TD>
+                                    <TD right>{m.actual}</TD>
+                                    <TD right style={{ color: "#8b2020", fontWeight: 600 }}>
+                                      {m.delta > 0 ? "+" + m.delta : m.delta}
+                                    </TD>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {validation.mismatches.length > 100 && (
+                              <div style={{ fontSize: 12, color: "#9e9892", padding: "8px 12px" }}>
+                                Showing first 100 of {validation.mismatches.length} mismatches.
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 13, color: "#2d6a4f" }}>
+                            No mismatches on the checked verifiable products.
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {!validationLoading && !validation && !validationError && (
+                      <div style={{ fontSize: 13, color: "#9e9892" }}>
+                        Click <strong>Validate against Lightspeed</strong> to run an on-demand
+                        accuracy check for {seasonLabel}.
+                      </div>
+                    )}
+                  </div>
+                </TableWrap>
+              </>
             )}
           </>
         )}
