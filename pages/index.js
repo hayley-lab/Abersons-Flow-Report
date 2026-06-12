@@ -1,7 +1,7 @@
 // pages/index.js
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
-import { rowsForVendor, vendorHasActivity, vendorRollupTotals } from "../lib/flow-rollup";
+import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
 import { returnedRetailValue } from "../lib/flow-math";
 import {
   HEALTH_LEVEL,
@@ -10,6 +10,7 @@ import {
   inventoryMismatchBreakdown,
   adjustedCount,
   adjustedBadgeTooltip,
+  uncategorizedRows,
 } from "../lib/health-status";
 
 const fmt = (n) =>
@@ -915,6 +916,10 @@ export default function FlowReport() {
   const seasonAdjustedCount = useMemo(
     () => adjustedCount((scanData && scanData.rows) || []),
     [scanData]
+  );
+  const uncategorized = useMemo(
+    () => uncategorizedRows((scanData && scanData.rows) || [], season),
+    [scanData, season]
   );
 
   const goToSummary = useCallback(() => {
