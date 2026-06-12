@@ -4,7 +4,7 @@
   "framework": "nextjs",
   "functions": {
     "pages/api/scan/step.js": {
-      "maxDuration": 60
+      "maxDuration": 300
     },
     "pages/api/scan/catalog.js": {
       "maxDuration": 60
