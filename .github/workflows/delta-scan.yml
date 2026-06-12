@@ -13,7 +13,23 @@ jobs:
       - name: Trigger delta scan
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        # No `set -e`: a transient curl timeout or a non-JSON body (e.g. a Vercel
+        # function-timeout page) must NOT flip the run red. Handle failures
+        # explicitly and only parse when the body is valid JSON.
         run: |
-          curl -s -X POST "https://abersons-flow-report.vercel.app/api/cron/delta" \
+          set +e
+          RESPONSE=$(curl -sS --max-time 295 -X POST "https://abersons-flow-report.vercel.app/api/cron/delta" \
             -H "Authorization: Bearer $CRON_SECRET" \
-            -H "Content-Type: application/json" | jq .
+            -H "Content-Type: application/json")
+          CURL_RC=$?
+          if [ "$CURL_RC" -ne 0 ]; then
+            echo "curl failed (rc=$CURL_RC) — likely a function timeout; treating as a soft failure."
+            exit 0
+          fi
+          # Parse only when the body is valid JSON; otherwise log a snippet so a
+          # non-JSON timeout page never crashes the job with a jq parse error.
+          if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+            printf '%s' "$RESPONSE" | jq .
+          else
+            echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
+          fi
