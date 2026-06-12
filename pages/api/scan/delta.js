@@ -4,6 +4,11 @@
 //
 // Requires a completed scan:data:{season} to exist. If none exists, returns
 // an error so the caller knows to run a full scan first.
+//
+// The ENTIRE handler body runs inside one try/catch so it ALWAYS responds with
+// JSON. A swallowed throw used to make Vercel return the generic 500 HTML page
+// ("An error occurred with this application."), which cron/delta then surfaced
+// as `Unexpected token 'A' ... is not valid JSON`.
 import { kv } from "@vercel/kv";
 import { getLsToken, lsBase } from "../../../lib/ls-auth";
 import { makeLsFetch } from "../../../lib/ls-fetch";
@@ -21,7 +26,7 @@ import {
   returnedRetailValue,
 } from "../../../lib/flow-math";
 import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sales-ledger";
-import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
+import { liveOnHandFromCache, loadInventoryCache } from "../../../lib/inventory-ledger";
 import { loadSalesAgg, loadSalesStoreMeta, projectSeasonSales } from "../../../lib/sales-store";
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
@@ -33,47 +38,47 @@ const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
 
-  const cronAuth =
-    process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
-  const session = cronAuth ? { authed: true } : await getIronSession(req, res, sessionOptions);
-  if (!session.authed) return res.status(401).json({ error: "Not authenticated" });
-
-  const { season } = req.query;
-  if (!season) return res.status(400).json({ error: "season required" });
-
-  const dataKey = `scan:data:${season}`;
-
-  // Load existing full scan data — abort if none (caller should run full scan)
-  const existing = await kv.get(dataKey);
-  if (!existing || !existing.productStats || !existing.seasonPids) {
-    return res.status(409).json({ error: "No base scan data found. Run a full scan first." });
-  }
-
-  let token;
   try {
-    token = await getLsToken();
-  } catch (e) {
-    return res.status(503).json({ error: "LS auth failed: " + e.message });
-  }
+    const cronAuth =
+      process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
+    const session = cronAuth ? { authed: true } : await getIronSession(req, res, sessionOptions);
+    if (!session.authed) return res.status(401).json({ error: "Not authenticated" });
 
-  const base = lsBase();
-  const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
-  const deadline = Date.now() + MAX_DURATION_MS;
-  const lsFetch = makeLsFetch({ base, headers });
+    const { season } = req.query;
+    if (!season) return res.status(400).json({ error: "season required" });
 
-  async function fetchLiveOnHand(pid) {
-    const inv = await lsFetch(`2.0/products/${pid}/inventory`);
-    const d = inv.data || inv;
-    return Array.isArray(d)
-      ? d.reduce((s, r) => s + (r.current_amount || 0), 0)
-      : d.current_amount != null
-        ? d.current_amount
-        : d.count != null
-          ? d.count
-          : null;
-  }
+    const dataKey = `scan:data:${season}`;
 
-  try {
+    // Load existing full scan data — abort if none (caller should run full scan)
+    const existing = await kv.get(dataKey);
+    if (!existing || !existing.productStats || !existing.seasonPids) {
+      return res.status(409).json({ error: "No base scan data found. Run a full scan first." });
+    }
+
+    let token;
+    try {
+      token = await getLsToken();
+    } catch (e) {
+      return res.status(503).json({ error: "LS auth failed: " + e.message });
+    }
+
+    const base = lsBase();
+    const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+    const deadline = Date.now() + MAX_DURATION_MS;
+    const lsFetch = makeLsFetch({ base, headers });
+
+    async function fetchLiveOnHand(pid) {
+      const inv = await lsFetch(`2.0/products/${pid}/inventory`);
+      const d = inv.data || inv;
+      return Array.isArray(d)
+        ? d.reduce((s, r) => s + (r.current_amount || 0), 0)
+        : d.current_amount != null
+          ? d.current_amount
+          : d.count != null
+            ? d.count
+            : null;
+    }
+
     // Clone productStats and reset sales-derived fields; ledger totals are applied below.
     const productStats = {};
     for (const [pid, ps] of Object.entries(existing.productStats)) {
@@ -113,6 +118,19 @@ export default async function handler(req, res) {
     const touchedPids = new Set();
     let salesMaxVersion = null;
 
+    async function refreshTouchedInventory() {
+      const changedPids = Array.from(touchedPids).filter((pid) => productStats[pid]);
+      for (let i = 0; i < changedPids.length && Date.now() < deadline; i += 5) {
+        const batch = changedPids.slice(i, i + 5);
+        const liveValues = await Promise.all(
+          batch.map((pid) => fetchLiveOnHand(pid).catch(() => productStats[pid].liveOnHand ?? null))
+        );
+        batch.forEach((pid, idx) => {
+          if (liveValues[idx] != null) productStats[pid].liveOnHand = liveValues[idx];
+        });
+      }
+    }
+
     // Store-wide projection: cron/delta advances the shared sales cache once
     // before firing per-season deltas, so here we just filter that aggregate to
     // this season's pids — no per-season 2.0/sales paging, and edited/voided
@@ -150,7 +168,8 @@ export default async function handler(req, res) {
           for (const sale of saleItems) {
             await reconcileSale(kv, season, salesState, sale, seasonPidSet, pidToPrice);
             for (const li of sale.line_items || []) {
-              if (li?.product_id && seasonPidSet.has(li.product_id)) touchedPids.add(li.product_id);
+              if (li?.product_id && seasonPidSet.has(li.product_id))
+                touchedPids.add(li.product_id);
             }
           }
         },
@@ -160,32 +179,26 @@ export default async function handler(req, res) {
       salesMaxVersion = salesState.maxVersion;
     }
 
+    // Live on-hand comes from the store-wide inventory cache, which cron/delta
+    // advances ONCE before fanning out. Per-season delta only READS it — paging
+    // 2.0/inventory here meant every season pulling the full store inventory in
+    // parallel, exhausting the LS rate limit. A single rate-limited fetch can
+    // back off longer than the 60s function cap (the deadline is only checked
+    // between pages, not during an in-flight sleep), which Vercel kills as a
+    // generic 500 HTML page instead of JSON.
     if (ENABLE_BULK_INVENTORY) {
       try {
-        const inventoryResult = await syncInventoryCache(kv, season, lsFetch, { deadline });
+        const cache = await loadInventoryCache(kv, season);
         for (const pid of existing.seasonPids || []) {
-          const live = liveOnHandFromCache(inventoryResult.cache, pid);
+          const live = liveOnHandFromCache(cache, pid);
           if (live != null && productStats[pid]) productStats[pid].liveOnHand = live;
         }
       } catch (e) {
-        console.warn(`[delta] ${season} bulk inventory sync failed, falling back:`, e.message);
+        console.warn(`[delta] ${season} inventory cache read failed, falling back:`, e.message);
         await refreshTouchedInventory();
       }
     } else {
       await refreshTouchedInventory();
-    }
-
-    async function refreshTouchedInventory() {
-      const changedPids = Array.from(touchedPids).filter((pid) => productStats[pid]);
-      for (let i = 0; i < changedPids.length && Date.now() < deadline; i += 5) {
-        const batch = changedPids.slice(i, i + 5);
-        const liveValues = await Promise.all(
-          batch.map((pid) => fetchLiveOnHand(pid).catch(() => productStats[pid].liveOnHand ?? null))
-        );
-        batch.forEach((pid, idx) => {
-          if (liveValues[idx] != null) productStats[pid].liveOnHand = liveValues[idx];
-        });
-      }
     }
 
     // Roll up productStats → deptVendorData

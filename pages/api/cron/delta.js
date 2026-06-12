@@ -54,6 +54,25 @@ export default async function handler(req, res) {
     } while (Date.now() < salesDeadline);
   }
 
+  // Advance the store-wide INVENTORY cache ONCE up front too, for the same
+  // reason: the per-season deltas below only READ this shared cache. Driving it
+  // here (sequentially, version-incremental) avoids every season re-pulling the
+  // full 2.0/inventory stream in parallel — the thundering herd that previously
+  // rate-limited LS and timed the per-season delta function out.
+  if (process.env.ENABLE_BULK_INVENTORY !== "0") {
+    const invDeadline = Date.now() + 120 * 1000;
+    do {
+      try {
+        const r = await fetch(`${base}/api/scan/inventory-cache`, { method: "POST", headers });
+        const body = await r.json().catch(() => null);
+        if (!r.ok || body?.cacheComplete) break;
+      } catch (e) {
+        console.error("[cron/delta] inventory drive failed:", e.message);
+        break;
+      }
+    } while (Date.now() < invDeadline);
+  }
+
   // Check job states in parallel, then fire all delta scans in parallel
   const jobs = await Promise.all(seasons.map((s) => kv.get(`scan:job:${s}`)));
 
