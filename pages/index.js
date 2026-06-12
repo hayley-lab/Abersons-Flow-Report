@@ -9,6 +9,7 @@ import {
   deriveHealthBadge,
   inventoryMismatchBreakdown,
   adjustedCount,
+  adjustedBadgeTooltip,
 } from "../lib/health-status";
 
 const fmt = (n) =>
@@ -2114,10 +2115,7 @@ export default function FlowReport() {
               </span>
               {vendorAdjustedCount > 0 && (
                 <span
-                  title={
-                    vendorAdjustedCount +
-                    " product(s) have a manual LS inventory adjustment (live on-hand ≠ derived flow stock)"
-                  }
+                  title={adjustedBadgeTooltip(vendorAdjustedCount)}
                   style={{
                     marginLeft: 10,
                     background: "#fef3e2",
