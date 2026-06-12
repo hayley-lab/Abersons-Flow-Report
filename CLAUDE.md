@@ -188,7 +188,7 @@ Each level's numbers are the sum of the level below it. If a number looks wrong 
 - **Root-cause fix (Jun 2026, step.js):** `registerProduct` now upgrades `pidToPrice`/`pidToCost` from $0 to a real catalog price (`preferPositive` in `lib/flow-math.js`) instead of locking in the first value — a $0 first-seen price no longer poisons every dollar column for that pid.
 - **Request-time fallback (Jun 2026, flow-rollup.js):** `buildAllRows` maps each LS-matched pid to the datatail import's `op.price`/`op.cost` (via `skuToPid`) and uses it when the catalog price is $0 (no live LS fetch in the request path). This keeps Returned/Received retail and cost non-$0 for consignment/datatail vendors. The color key (`pages/index.js`) and the Returned (retail) header both use `returnedRetailValue`, so they always agree. (The old `computeReturnedFromSkus`/`override-merge.js` helpers were removed.)
 - **Season gate (Jun 2026, flow-rollup.js):** override products are filtered by `skuMatchesSeason` (folding rs/ps→spring, pf→fall for 2025/26) in both `buildAllRows` and the vendor-level ordered fold, so a datatail import done while on the wrong season cannot pollute another season's totals.
-- **Mixed LS/datatail Ordered (retail) (Jun 2026):** vendor ordered dollars are LS PO ordered plus datatail ordered dollars only for override SKUs with no LS PO/return activity. Overlapping SKUs stay LS-only to avoid double-counting; old override rows without usable per-product ordered dollars fall back to the guarded vendor-level combine.
+- **Mixed LS/datatail Ordered (retail + cost) (Jun 2026):** vendor ordered dollars are LS PO ordered plus datatail ordered dollars only for override SKUs with no LS PO/return activity. Overlapping SKUs stay LS-only to avoid double-counting; old override rows without usable per-product ordered dollars fall back to the guarded vendor-level combine. Ordered cost follows the same overlap rule and is calculated from imported product `qtyOrdered × cost` (or a reliable matched LS row cost) when available; missing costs stay a data gap instead of being fabricated.
 - Consignment vendors (e.g. Judi Powers) have `receivedCost = 0` because no upfront cost is charged. LS may still record a cost on their return consignments. **Do not show negative Received (cost) — cap at $0.**
 
 ### Cron / Scan Loop
@@ -230,7 +230,7 @@ All numbers in the vendor product drilldown header, vendor list, and store summa
 
 Formulas (per product row, summed across all products):
 - **Ordered (retail)** = sum(qtyOrdered × price)
-- **Ordered (cost)** = sum(qtyOrdered × cost)
+- **Ordered (cost)** = LS PO sum(qtyOrdered × cost), plus imported/datatail product `qtyOrdered × cost` for non-overlapping override SKUs when product-level cost is available.
 - **Received (retail)** = sum(receivedUnits × price), where `receivedUnits = qtyReceived − retQty` (PO `qtyReceived` net of vendor returns). **Consignment/migrated fallback:** when `qtyReceived === 0` (consignment or goods migrated with no LS PO record), `receivedUnits` falls back to the live-derived `onHand + sold + onSale`.
   — still net received (returns subtracted); now driven by the PO rather than live on-hand, so a manual LS on-hand edit can't distort Received or sell-through. (`lib/flow-math.js` `netReceivedUnits`.)
 - **Received (cost)** = sum(receivedUnits × cost), capped at $0 (consignment vendors have cost 0 → $0).
@@ -263,7 +263,7 @@ The vendor list and the department summary list in `pages/index.js` hide rows wh
 
 ## Known Remaining Issues
 1. **Staud spring26 return** — Carrie may have entered a return in the wrong season. Needs investigation.
-2. **Ordered (cost) = $0 for datatail-only vendors** — no LS cost data on old RMH POs. Data gap, not a code bug. Spring 2026 ordered cost is low for this reason.
+2. **Ordered (cost) data gaps for some datatail rows** — imported/datatail ordered cost now calculates from product-level cost when available, including matched LS row costs. Rows with no reliable product cost remain data gaps; Spring 2026 ordered cost may still be low for those rows.
 3. **scan retVal still 0 for some LS-native variant products** — scan:data may still store 0 for returned retail on these products. This is now mitigated end-to-end at request time: `registerProduct` upgrades a $0 `pidToPrice`/`pidToCost` to the real catalog price, and `buildAllRows` falls back to the datatail `op.price`/`op.cost` for matched rows, so the vendor list, store summary, and drilldown header (all derived from the same rollup) use `returnedRetailValue`/`returnedCostValue` rather than a stored 0.
 4. **Customer return bucket inference is heuristic** — LS return lines do not currently provide reliable original-sale linkage in this codebase. The classifier uses return-line discount fields, pricebook markers, zero-dollar lines, and unit-vs-retail comparison. If LS exposes original sale references later, prefer that over heuristics.
 
