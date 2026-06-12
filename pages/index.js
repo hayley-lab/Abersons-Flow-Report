@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
 import { returnedRetailValue } from "../lib/flow-math";
+import { normVendorName } from "../lib/vendor-match";
 import {
   HEALTH_LEVEL,
   summarizeRowsHealth,
@@ -1740,7 +1741,9 @@ export default function FlowReport() {
                 {/* ── Vendor Index ── */}
                 {(function () {
                   if (!scanData || !scanData.deptVendors) return null;
-                  // Build map: vendorId → {name, bestDept (highest ordered)}
+                  // Build map: normalized vendor name → {name, bestDept (highest ordered)}
+                  // Vendor clicks show the brand across all departments, so duplicate
+                  // supplier/import IDs should collapse into one brand link.
                   const vendorMap = {};
                   const deptVendors = scanData.deptVendors;
                   Object.keys(deptVendors).forEach(function (deptId) {
@@ -1749,16 +1752,19 @@ export default function FlowReport() {
                     });
                     deptVendors[deptId].forEach(function (v) {
                       if (!v.name) return;
-                      if (!vendorMap[v.id]) {
-                        vendorMap[v.id] = {
+                      const vendorKey = normVendorName(v.name) || String(v.id);
+                      if (!vendorMap[vendorKey]) {
+                        vendorMap[vendorKey] = {
                           id: v.id,
                           name: v.name,
                           bestDept: dept,
                           bestOrdered: v.ordered || 0,
                         };
-                      } else if ((v.ordered || 0) > vendorMap[v.id].bestOrdered) {
-                        vendorMap[v.id].bestDept = dept;
-                        vendorMap[v.id].bestOrdered = v.ordered || 0;
+                      } else if ((v.ordered || 0) > vendorMap[vendorKey].bestOrdered) {
+                        vendorMap[vendorKey].id = v.id;
+                        vendorMap[vendorKey].name = v.name;
+                        vendorMap[vendorKey].bestDept = dept;
+                        vendorMap[vendorKey].bestOrdered = v.ordered || 0;
                       }
                     });
                   });
