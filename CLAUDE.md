@@ -83,7 +83,7 @@ Pull ordered and received quantities and dollars from LS purchase orders. These 
 
 **Caveat:** If inventory is manually adjusted in LS (e.g. during a physical inventory count or a manual correction), the on-hand count in the flow report will reflect that adjustment. This means on-hand can diverge from what the received/sold/returned columns would mathematically imply. This is expected behavior — LS is the source of truth for inventory. Worth noting to staff: manual LS inventory adjustments will show up here.
 
-**DEFERRED — On-hand reconciliation indicator:** When the LS on-hand qty doesn't reconcile with `received_qty − vendor_return_qty − sold − on_sale + customer_returns`, show a small indicator (e.g. `≠` icon with tooltip) next to the on-hand number so staff know a manual adjustment occurred. Requires storing received qty and vendor return qty per product in the scan (currently only stored as dollars). Build after the product-finding bug is fixed.
+**On-hand reconciliation indicator (IMPLEMENTED Jun 2026):** When the LS on-hand qty doesn't reconcile with the derived flow stock (`received − vendor returns − sold − on sale`), a small `≠` icon + tooltip shows next to the on-hand number in the product table. The materially-different count is surfaced on Data Health ("Manual-count differences"), gated to `MATERIAL_UNIT_DELTA`/`MATERIAL_DOLLAR_DELTA`. Consignment/migrated no-PO products (`qtyReceived === 0`) are excluded. See the "Manual-count differences" subsection below.
 
 
 ### 3. Vendor Returns (consignments in LS API, type=SUPPLIER_RETURN)
@@ -228,13 +228,29 @@ All numbers in the vendor product drilldown header are computed from the individ
 Formulas (per product row, summed across all products):
 - **Ordered (retail)** = sum(qtyOrdered × price)
 - **Ordered (cost)** = sum(qtyOrdered × cost)
-- **Received (retail)** = sum((onHand + sold + onSale) × price)
-  — this is net received: items received minus vendor returns (returned items are not in any of onHand/sold/onSale)
-- **Received (cost)** = sum((onHand + sold + onSale) × cost − returned × cost), capped at $0
+- **Received (retail)** = sum(receivedUnits × price), where `receivedUnits = qtyReceived − retQty` (PO `qtyReceived` net of vendor returns). **Consignment/migrated fallback:** when `qtyReceived === 0` (consignment or goods migrated with no LS PO record), `receivedUnits` falls back to the live-derived `onHand + sold + onSale`.
+  — still net received (returns subtracted); now driven by the PO rather than live on-hand, so a manual LS on-hand edit can't distort Received or sell-through. (`lib/flow-math.js` `netReceivedUnits`.)
+- **Received (cost)** = sum(receivedUnits × cost), capped at $0 (consignment vendors have cost 0 → $0).
 - **Returned (retail)** = sum(returned × price)
 - **Sold (retail)** = sum(sold × price) — full-price sales only; on-sale items are tracked separately in the color key
 
-Note: the vendor LIST table and store SUMMARY still use scan:data aggregated values. These should match the above for most vendors but may differ if the scan had price computation issues for specific variant products.
+**On Hand stays live:** the On Hand column is still sourced directly from LS live inventory (`displayOnHand`/`liveOnHand`), never recomputed. Only the Received column and the Received%/Sold% denominators changed to PO-based.
+
+**Why (Jun 2026, Q2):** the old `netReceivedUnits = onHand + sold + onSale` meant a manual LS on-hand correction (physical count, manual adjustment) silently moved Received and sell-through. Received now reads the PO's `qtyReceived` (net of `retQty`); consignment/migrated products with no PO keep the live-derived fallback so they don't show 0 received or get falsely flagged as adjustments.
+
+Note: the vendor LIST table and store SUMMARY read the same `lib/flow-rollup.js` rollup, so they always agree with the drilldown header.
+
+### Manual-count differences (`≠`) — demoted + gated (Jun 2026, Q1)
+- The per-product `≠` icon + tooltip stays in the product table (LS on-hand differs from the flow math → usually a Lightspeed inventory count/correction; LS is the source of truth).
+- The old vendor-header `≠ N adjusted` pill was **removed**. The count now lives on the **Data Health** screen ("Manual-count differences"), reworded away from "adjusted" toward "counts reconciled in Lightspeed".
+- The count is **gated to MATERIAL deltas** via named constants in `lib/health-status.js`: `MATERIAL_UNIT_DELTA = 2` and `MATERIAL_DOLLAR_DELTA = 25`. A product counts only when `|live − derived| ≥ 2` units OR `|delta| × price ≥ $25` (`isMaterialMismatch`/`adjustedCount`).
+- Consignment/migrated no-PO products (`qtyReceived === 0`) are never flagged: `mismatchDerivedStock`/`derivedFlowStock` track live on-hand for them (Q1b).
+
+### Zero-activity vendors hidden (Jun 2026, Q3)
+The vendor list and the department summary list in `pages/index.js` hide rows where `ordered === 0 && sold === 0` (legacy datatailor omitted no-activity vendors). The greyed-zero row styling was removed since those rows no longer render.
+
+### "Other" department → Data Health (Jun 2026, Q4)
+"Other" = uncategorized LS products (`deptId === "__none__"`, i.e. no `product_type_id`). Its summary row is clickable and opens the Data Health screen, which lists those products (SKU, vendor, season, ordered/received/sold qty via the pure `uncategorizedRows(rows, season)` helper) so staff can assign product types in Lightspeed.
 
 ## Known Remaining Issues
 1. **Staud spring26 return** — Carrie may have entered a return in the wrong season. Needs investigation.
