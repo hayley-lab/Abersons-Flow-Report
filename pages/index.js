@@ -1,7 +1,7 @@
 // pages/index.js
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
-import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
+import { rowsForVendor, vendorHasActivity, vendorRollupTotals } from "../lib/flow-rollup";
 import { returnedRetailValue } from "../lib/flow-math";
 import {
   HEALTH_LEVEL,
@@ -910,7 +910,12 @@ export default function FlowReport() {
     () => deriveHealthBadge({ rowsHealth, validation: effectiveValidation }),
     [rowsHealth, effectiveValidation]
   );
-  const vendorAdjustedCount = useMemo(() => adjustedCount(productRows), [productRows]);
+  // Season-wide manual-count differences (material live-vs-derived on-hand
+  // deltas), surfaced on the Data Health screen instead of the vendor header.
+  const seasonAdjustedCount = useMemo(
+    () => adjustedCount((scanData && scanData.rows) || []),
+    [scanData]
+  );
 
   const goToSummary = useCallback(() => {
     setCurrentDept(null);
@@ -1598,7 +1603,7 @@ export default function FlowReport() {
                         </thead>
                         <tbody>
                           {summaryRows
-                            .filter((r) => r.ordered > 0 || r.received > 0 || r.sold > 0)
+                            .filter((r) => r.ordered > 0 || r.sold > 0)
                             .map(function (r) {
                               const netReceived = r.received || 0;
                               const recPct = r.ordered > 0 ? (netReceived / r.ordered) * 100 : 0;
@@ -1994,6 +1999,7 @@ export default function FlowReport() {
                       </thead>
                       <tbody>
                         {vendorRows
+                          .filter((r) => r.ordered > 0 || r.sold > 0)
                           .map(function (r) {
                             const vNetReceived = r.received || 0;
                             const recPct = r.ordered > 0 ? (vNetReceived / r.ordered) * 100 : 0;
@@ -2007,13 +2013,12 @@ export default function FlowReport() {
                             return av < bv ? -vendorSort.dir : av > bv ? vendorSort.dir : 0;
                           })
                           .map(function (r) {
-                            const zero = r.ordered === 0 && r.sold === 0;
                             return (
                               <tr
                                 key={r.id}
-                                style={s.tableRow(!zero, zero)}
+                                style={s.tableRow(true, false)}
                                 onClick={function () {
-                                  if (!zero) openVendor(r);
+                                  openVendor(r);
                                 }}
                               >
                                 <TD>
@@ -2028,10 +2033,10 @@ export default function FlowReport() {
                                 <TD right>{r.cost > 0 ? fmt(r.cost) : ""}</TD>
                                 <TD right>{r.sold > 0 ? fmt(r.sold) : ""}</TD>
                                 <TD right>
-                                  <PctBadge pct={r.recPct} zero={zero} />
+                                  <PctBadge pct={r.recPct} zero={false} />
                                 </TD>
                                 <TD right>
-                                  <PctBadge pct={r.soldPct} zero={zero} />
+                                  <PctBadge pct={r.soldPct} zero={false} />
                                 </TD>
                               </tr>
                             );
@@ -2113,24 +2118,6 @@ export default function FlowReport() {
               <span style={{ color: "#1a1816", fontWeight: 500 }}>
                 {currentVendor ? currentVendor.name : ""}
               </span>
-              {vendorAdjustedCount > 0 && (
-                <span
-                  title={adjustedBadgeTooltip(vendorAdjustedCount)}
-                  style={{
-                    marginLeft: 10,
-                    background: "#fef3e2",
-                    color: "#92600a",
-                    border: "1px solid #f5d9a0",
-                    borderRadius: 20,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    padding: "2px 9px",
-                    cursor: "help",
-                  }}
-                >
-                  ≠ {vendorAdjustedCount} adjusted
-                </span>
-              )}
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: "1.25rem" }}>
               {[
@@ -2449,9 +2436,9 @@ export default function FlowReport() {
                           : "all LS products have live on-hand",
                     },
                     {
-                      label: "Inventory adjustments (≠)",
-                      value: rowsHealth.inventoryMismatch,
-                      sub: "manual LS adjustments (expected)",
+                      label: "Manual-count differences",
+                      value: seasonAdjustedCount,
+                      sub: "counts reconciled in Lightspeed (material only)",
                     },
                     {
                       label: "LS-verifiable products",
@@ -2465,6 +2452,77 @@ export default function FlowReport() {
                     },
                   ]}
                 />
+                {seasonAdjustedCount > 0 && (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#6b6560",
+                      lineHeight: 1.6,
+                      marginBottom: "1rem",
+                    }}
+                  >
+                    {adjustedBadgeTooltip(seasonAdjustedCount)}
+                  </div>
+                )}
+                <TableWrap title={"Uncategorized (Other) — " + seasonLabel}>
+                  <div style={{ padding: "1.1rem" }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "#6b6560",
+                        lineHeight: 1.6,
+                        marginBottom: uncategorized.length > 0 ? "1rem" : 0,
+                      }}
+                    >
+                      Products with no Lightspeed product type land in <strong>Other</strong>.
+                      Assign each a product type in Lightspeed so it rolls up to the right
+                      department here.
+                    </div>
+                    {uncategorized.length > 0 ? (
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr>
+                              <TH>SKU</TH>
+                              <TH>Vendor</TH>
+                              <TH>Season</TH>
+                              <TH right>Ordered</TH>
+                              <TH right>Received</TH>
+                              <TH right>Sold</TH>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {uncategorized.slice(0, 200).map(function (u, i) {
+                              return (
+                                <tr
+                                  key={u.pid ?? u.sku ?? i}
+                                  style={{ borderBottom: "1px solid #e2ddd5" }}
+                                >
+                                  <TD mono>{u.sku}</TD>
+                                  <TD>{u.vendorName}</TD>
+                                  <TD>{u.season}</TD>
+                                  <TD right>{u.ordered > 0 ? u.ordered : ""}</TD>
+                                  <TD right>{u.received > 0 ? u.received : ""}</TD>
+                                  <TD right>{u.sold > 0 ? u.sold : ""}</TD>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        {uncategorized.length > 200 && (
+                          <div style={{ fontSize: 12, color: "#9e9892", padding: "8px 12px" }}>
+                            Showing first 200 of {uncategorized.length} uncategorized products.
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 13, color: "#2d6a4f" }}>
+                        No uncategorized products — every product has a Lightspeed product type.
+                      </div>
+                    )}
+                  </div>
+                </TableWrap>
+                <div style={{ marginTop: "1.5rem" }} />
                 <TableWrap
                   title={"Data Health — " + seasonLabel}
                   right={
