@@ -2,6 +2,7 @@
 import { getIronSession } from "iron-session";
 import { kv } from "@vercel/kv";
 import { sessionOptions } from "../../../lib/session";
+import { loadScanData } from "../../../lib/scan-data-store";
 
 export default async function handler(req, res) {
   const session = await getIronSession(req, res, sessionOptions);
@@ -15,7 +16,7 @@ export default async function handler(req, res) {
     kv.get(`scan:override:${season}:vendorIndex`),
   ]);
 
-  const scanData = await kv.get(`scan:data:${season}`);
+  const scanData = await loadScanData(kv, season);
 
   const index = indexRaw ? (typeof indexRaw === "string" ? JSON.parse(indexRaw) : indexRaw) : null;
   const stores = storesRaw

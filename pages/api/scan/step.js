@@ -63,9 +63,18 @@ import {
 import { filterRestoredSeasonPids, pidToSkuFromSources } from "../../../lib/product-seed";
 import { searchEnabled, searchPages, SEARCH_PAGE_SIZE } from "../../../lib/ls-search";
 import { shouldFullCatalogScan } from "../../../lib/catalog-gate";
-import { seasonBucketKey } from "../../../lib/catalog-store";
+import { loadSeasonBucket } from "../../../lib/catalog-store";
 import { loadSalesAgg, loadSalesStoreMeta, projectSeasonSales } from "../../../lib/sales-store";
 import { consignSeasonKey } from "../../../lib/consignment-store";
+import {
+  deleteScanBig,
+  loadScanBig,
+  loadScanData,
+  loadScanPids,
+  saveScanBig,
+  saveScanData,
+  saveScanPids,
+} from "../../../lib/scan-data-store";
 import {
   isResolvedSupplier,
   supplierId,
@@ -228,15 +237,14 @@ export default async function handler(req, res) {
   const catalogForce = req.query.catalog === "1";
 
   const jobKey = `scan:job:${season}`;
-  const bigKey = `scan:job:big:${season}`;
-  const dataKey = `scan:data:${season}`;
 
   // Load small + big state and merge
   const restart = req.query.restart === "1";
   const requestedMode = !restart && req.query.mode === "incremental" ? "incremental" : "full";
+  if (restart) await deleteScanBig(kv, season).catch(() => {});
   const [smallState, bigData] = restart
     ? [null, null]
-    : await Promise.all([kv.get(jobKey), kv.get(bigKey)]);
+    : await Promise.all([kv.get(jobKey), loadScanBig(kv, season)]);
   let state = smallState ? { ...smallState, ...(bigData || {}) } : null;
 
   if (!state || state.phase === "done" || state.phase === "error") {
@@ -450,8 +458,10 @@ export default async function handler(req, res) {
 
         // 1. Restore pid maps from lightweight scan:pids key (avoids loading full scan:data blob)
         try {
-          const pidsKey = `scan:pids:${season}`;
-          const [priorPidMaps, priorData] = await Promise.all([kv.get(pidsKey), kv.get(dataKey)]);
+          const [priorPidMaps, priorData] = await Promise.all([
+            loadScanPids(kv, season),
+            loadScanData(kv, season),
+          ]);
           const priorPids = priorPidMaps || priorData; // fallback for first run
           if (priorPids && Array.isArray(priorPids.seasonPids) && priorPids.seasonPids.length > 0) {
             const priorSources = [priorData, priorPidMaps];
@@ -476,7 +486,7 @@ export default async function handler(req, res) {
         //     (zero API calls). The store-wide catalog cache holds every product;
         //     the bucket is the season's slice in the same shape as scan:pids.
         try {
-          const bucket = await kv.get(seasonBucketKey(season));
+          const bucket = await loadSeasonBucket(kv, season);
           // A present bucket means the shared catalog finished and bucketed this
           // season — authoritative even when empty (a future season with no
           // products). Record that so the per-season /search fallback is skipped.
@@ -1250,27 +1260,22 @@ export default async function handler(req, res) {
           : null,
       };
 
-      const pidsKey = `scan:pids:${state.season}`;
       const doneTs = Date.now();
       await Promise.all([
-        kv.set(dataKey, result, { ex: 48 * 3600 }),
-        kv.set(
-          pidsKey,
-          {
-            seasonPids: state.seasonPids,
-            pidToType: state.pidToType,
-            pidToSupplier: state.pidToSupplier,
-            skuToPid: state.skuToPid || {},
-            pidToPrice,
-            pidToCost,
-            pidToName: state.pidToName || {},
-            pidToSku: state.pidToSku || {},
-            pidToVariant: state.pidToVariant || {},
-            costDone: state.costDone || {},
-            deadHandles: state.deadHandles || {},
-          },
-          { ex: 48 * 3600 }
-        ),
+        saveScanData(kv, state.season, result),
+        saveScanPids(kv, state.season, {
+          seasonPids: state.seasonPids,
+          pidToType: state.pidToType,
+          pidToSupplier: state.pidToSupplier,
+          skuToPid: state.skuToPid || {},
+          pidToPrice,
+          pidToCost,
+          pidToName: state.pidToName || {},
+          pidToSku: state.pidToSku || {},
+          pidToVariant: state.pidToVariant || {},
+          costDone: state.costDone || {},
+          deadHandles: state.deadHandles || {},
+        }),
         // Keep job key with done+ts so cron/scan can check recency without loading scan:data.
         // Embed scanMode and (for full rebuilds) lastFull so a SINGLE scan:job read is
         // authoritative — the orchestrator must not re-restart a just-finished full season
@@ -1290,7 +1295,7 @@ export default async function handler(req, res) {
           ? [kv.set(`scan:lastFull:${state.season}`, doneTs, { ex: 180 * 24 * 3600 })]
           : []),
       ]);
-      await kv.del(bigKey);
+      await deleteScanBig(kv, state.season);
 
       const finalCounts = accumulateCalls();
       console.warn(
@@ -1360,7 +1365,7 @@ export default async function handler(req, res) {
     // instead of letting it expire and silently reinitializing.
     await Promise.all([
       kv.set(jobKey, small, { ex: 72 * 3600 }),
-      kv.set(bigKey, big, { ex: 72 * 3600 }),
+      saveScanBig(kv, season, big),
     ]);
     return res.json({
       phase: state.phase,

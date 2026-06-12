@@ -29,6 +29,7 @@ import { buildAllRows, rowsForVendor } from "../../../lib/flow-rollup";
 import { seasonScanDateRange } from "../../../lib/flow-math";
 import { loadConsignEntries, seasonConsignmentBuckets } from "../../../lib/consignment-store";
 import { loadSalesAgg, projectSeasonSales } from "../../../lib/sales-store";
+import { loadScanData } from "../../../lib/scan-data-store";
 import {
   buildValidationReport,
   DEFAULT_THRESHOLDS,
@@ -130,7 +131,7 @@ export default async function handler(req, res) {
 
   // 1. Canonical rows — same source the report serves (data.js path).
   const [rawData, override] = await Promise.all([
-    kv.get(`scan:data:${season}`),
+    loadScanData(kv, season),
     loadOverride(season),
   ]);
   if (!rawData && !override) {

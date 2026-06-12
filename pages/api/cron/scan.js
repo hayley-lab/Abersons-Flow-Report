@@ -16,6 +16,7 @@ import {
   planSeasonWork,
   resolveLastFullTs,
 } from "../../../lib/scan-orchestrator";
+import { loadScanData } from "../../../lib/scan-data-store";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -289,7 +290,7 @@ export default async function handler(req, res) {
       seasons.map((season) =>
         Promise.all([
           kv.get(`scan:job:${season}`),
-          force ? Promise.resolve(null) : kv.get(`scan:data:${season}`),
+          force ? Promise.resolve(null) : loadScanData(kv, season),
           kv.get(`scan:lastFull:${season}`),
         ])
       )

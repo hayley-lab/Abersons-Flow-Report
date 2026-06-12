@@ -5,6 +5,7 @@ import { kv } from "@vercel/kv";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { buildAllRows, rollup } from "../../../lib/flow-rollup";
+import { loadScanData } from "../../../lib/scan-data-store";
 
 function parseKv(val) {
   if (!val) return null;
@@ -49,7 +50,7 @@ export default async function handler(req, res) {
   if (!season) return res.status(400).json({ error: "season required" });
 
   const [rawData, job, override] = await Promise.all([
-    kv.get(`scan:data:${season}`),
+    loadScanData(kv, season),
     kv.get(`scan:job:${season}`),
     loadOverride(season),
   ]);

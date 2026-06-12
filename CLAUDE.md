@@ -127,9 +127,10 @@ The old catalog-scan phases (`products`, `products_slow`, `products_slow_done`, 
 
 KV keys:
 - `scan:job:{season}` — small operational state (phase, cursors, progress). On completion: `{ phase: "done", season, ts }` with 2h TTL (kept so cron skip logic works).
-- `scan:job:big:{season}` — large data blobs (pidMaps, productStats) during scan, 6h TTL. Deleted after finalizing.
-- `scan:data:{season}` — final report blob, 48h TTL.
-- `scan:pids:{season}` — lightweight pid maps saved after each full scan: `{ seasonPids, pidToType, pidToSupplier, skuToPid, pidToPrice, pidToSku }`, 48h TTL. Used by products_seed to restore product maps without loading the full 5-10MB scan:data blob.
+- `scan:job:big:{season}` — large data blobs (pidMaps, productStats) during scan, 72h TTL. Stored through the sharded KV helper (`lib/kv-sharded.js`) as a small marker plus per-PID shard keys (`:shard:{i}`), with an 8MB preflight size guard. Deleted after finalizing, including its shards.
+- `scan:data:{season}` — final report data, 48h TTL. Stored sharded by PID with the same helper; loaders still return the legacy monolithic shape to callers and transparently read old unsharded production values.
+- `scan:pids:{season}` — lightweight pid maps saved after each full scan: `{ seasonPids, pidToType, pidToSupplier, skuToPid, pidToPrice, pidToSku }`, 48h TTL. Stored sharded by PID and used by products_seed to restore product maps without loading full report data.
+- Large store-wide helper caches that can exceed a safe KV request size (`scan:inv:store` and `scan:catalog:season:{season}`) are also sharded by PID. Public loaders preserve the old `{ byOutlet, onHand }` inventory shape and scan:pids-shaped catalog bucket shape, and legacy monolithic values remain readable until rewritten by the next sync.
 
 ### SKU Structure
 Every product SKU follows this format: `{item_code}/{season_code}{variant_number}`

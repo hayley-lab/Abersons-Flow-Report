@@ -14,12 +14,13 @@ import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { SEASONS } from "../../../lib/seasons";
 import { seasonScanDateRange } from "../../../lib/flow-math";
-import { seasonBucketKey } from "../../../lib/catalog-store";
+import { loadSeasonBucket } from "../../../lib/catalog-store";
 import {
   loadConsignMeta,
   syncConsignmentStore,
   writeSeasonConsignBuckets,
 } from "../../../lib/consignment-store";
+import { loadScanData } from "../../../lib/scan-data-store";
 
 const CHUNK_MS = 45000;
 
@@ -89,8 +90,8 @@ export default async function handler(req, res) {
     let bucketed = 0;
     if (result.done) {
       const [catalogBuckets, priorScanData] = await Promise.all([
-        Promise.all(seasons.map((s) => kv.get(seasonBucketKey(s)))),
-        Promise.all(seasons.map((s) => kv.get(`scan:data:${s}`))),
+        Promise.all(seasons.map((s) => loadSeasonBucket(kv, s))),
+        Promise.all(seasons.map((s) => loadScanData(kv, s))),
       ]);
       const seasonPidSets = {};
       const scanRanges = {};

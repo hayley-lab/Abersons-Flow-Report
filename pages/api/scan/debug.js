@@ -5,8 +5,10 @@ import { getLsToken, lsBase } from "../../../lib/ls-auth";
 import {
   CATALOG_META_KEY,
   loadCatalogProducts,
-  seasonBucketKey,
+  loadSeasonBucket,
 } from "../../../lib/catalog-store";
+import { loadInventoryCache } from "../../../lib/inventory-ledger";
+import { loadScanBig, loadScanData } from "../../../lib/scan-data-store";
 
 export default async function handler(req, res) {
   const session = await getIronSession(req, res, sessionOptions);
@@ -25,7 +27,7 @@ export default async function handler(req, res) {
       .filter(Boolean);
     const buckets = {};
     for (const s of seasons) {
-      const b = await kv.get(seasonBucketKey(s));
+      const b = await loadSeasonBucket(kv, s);
       buckets[s] = b && Array.isArray(b.seasonPids) ? b.seasonPids.length : 0;
     }
     let cachedProducts = null;
@@ -45,8 +47,8 @@ export default async function handler(req, res) {
     if (!season) return res.status(400).json({ error: "season required" });
     const [job, big, inv] = await Promise.all([
       kv.get(`scan:job:${season}`),
-      kv.get(`scan:job:big:${season}`),
-      kv.get("scan:inv:store"),
+      loadScanBig(kv, season),
+      loadInventoryCache(kv, season),
     ]);
     return res.json({
       job: job || null,
@@ -209,7 +211,7 @@ export default async function handler(req, res) {
   if (action === "skumatch") {
     if (!season) return res.status(400).json({ error: "season required" });
     const { style } = req.query;
-    const data = await kv.get(`scan:data:${season}`);
+    const data = await loadScanData(kv, season);
     if (!data) return res.json({ error: "No scan data" });
     const skuToPid = data.skuToPid || {};
     if (style) {
@@ -227,7 +229,7 @@ export default async function handler(req, res) {
   // ── Original KV scan data debug ─────────────────────────────────────────────
   if (!season) return res.status(400).json({ error: "season or action required" });
 
-  const data = await kv.get(`scan:data:${season}`);
+  const data = await loadScanData(kv, season);
   if (!data) return res.json({ error: "No scan data in KV for this season" });
 
   const { pidToSupplier, pidToType, seasonPids, deptVendors, summaryRows } = data;

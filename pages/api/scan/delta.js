@@ -28,6 +28,7 @@ import {
 import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sales-ledger";
 import { liveOnHandFromCache, loadInventoryCache } from "../../../lib/inventory-ledger";
 import { loadSalesAgg, loadSalesStoreMeta, projectSeasonSales } from "../../../lib/sales-store";
+import { loadScanData, saveScanData } from "../../../lib/scan-data-store";
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
 const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY !== "0";
@@ -47,10 +48,8 @@ export default async function handler(req, res) {
     const { season } = req.query;
     if (!season) return res.status(400).json({ error: "season required" });
 
-    const dataKey = `scan:data:${season}`;
-
     // Load existing full scan data — abort if none (caller should run full scan)
-    const existing = await kv.get(dataKey);
+    const existing = await loadScanData(kv, season);
     if (!existing || !existing.productStats || !existing.seasonPids) {
       return res.status(409).json({ error: "No base scan data found. Run a full scan first." });
     }
@@ -303,7 +302,7 @@ export default async function handler(req, res) {
       salesState: { maxVersion: salesMaxVersion, ts: Date.now() },
     };
 
-    await kv.set(dataKey, result, { ex: 48 * 3600 });
+    await saveScanData(kv, season, result);
     return res.json({ ok: true, ts: result.ts, pages });
   } catch (e) {
     return res.status(500).json({ error: e.message });

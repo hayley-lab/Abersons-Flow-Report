@@ -3,6 +3,7 @@ import { kv } from "@vercel/kv";
 import { getLsToken, lsBase } from "../../lib/ls-auth";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../lib/session";
+import { loadScanData } from "../../lib/scan-data-store";
 
 export default async function handler(req, res) {
   const session = await getIronSession(req, res, sessionOptions);
@@ -12,7 +13,7 @@ export default async function handler(req, res) {
   if (!season) return res.status(400).json({ error: "season required" });
 
   // scan:data has: ts, summaryRows, deptVendors, productStats, seasonPids, pidToType, pidToSupplier, pidToQtyOrdered, skuToPid
-  const data = await kv.get(`scan:data:${season}`);
+  const data = await loadScanData(kv, season);
 
   // Find vendor in deptVendors
   const vendorMatches = [];

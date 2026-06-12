@@ -67,6 +67,7 @@ jest.mock("../../../lib/inventory-ledger", () => {
 import { kv as mockKv } from "@vercel/kv";
 import { loadSalesStoreMeta, loadSalesAgg } from "../../../lib/sales-store";
 import { syncInventoryCache } from "../../../lib/inventory-ledger";
+import { loadScanData } from "../../../lib/scan-data-store";
 import handler from "../../../pages/api/scan/delta";
 
 function makeRes() {
@@ -158,7 +159,7 @@ describe("scan/delta handler", () => {
       expect.objectContaining({ ok: true, ts: expect.any(Number) })
     );
 
-    const stored = mockKv._store.get("scan:data:fall26");
+    const stored = await loadScanData(mockKv, "fall26");
     expect(stored.isDelta).toBe(true);
     expect(stored.productStats.p1.sold).toBe(2);
     expect(stored.productStats.p1.onSale).toBe(1);
