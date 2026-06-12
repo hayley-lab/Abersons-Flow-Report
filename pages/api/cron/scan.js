@@ -348,7 +348,7 @@ export default async function handler(req, res) {
       }
       ss.restart = "0";
       if (!r.ok) {
-        ss.done = true;
+        ss.done = !loopInternally;
         ss.action = "error";
         ss.phase = json.phase || ss.phase || null;
         return {
@@ -362,8 +362,13 @@ export default async function handler(req, res) {
       }
       ss.phase = json.phase;
       ss.mode = json.mode || ss.mode;
-      if (json.phase === "done" || json.phase === "error") ss.done = true;
-      ss.action = "advanced";
+      if (json.phase === "done") ss.done = true;
+      if (json.phase === "error") {
+        ss.done = !loopInternally;
+        ss.action = "error";
+      } else {
+        ss.action = "advanced";
+      }
       return {
         season: ss.season,
         action: ss.action,
@@ -372,7 +377,7 @@ export default async function handler(req, res) {
         progress: json.progress,
       };
     } catch (e) {
-      ss.done = true;
+      ss.done = !loopInternally;
       ss.action = "error";
       return { season: ss.season, action: "error", error: e.message };
     }

@@ -72,11 +72,17 @@ jobs:
               printf '%s' "$RESPONSE" | jq -c '{ok, allDone, catalogBuilding, catalog, results}' 2>/dev/null \
                 || printf '%s\n' "$RESPONSE"
               ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null)
+              HAS_ERROR=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; (.action == "error") or (.phase == "error"))' 2>/dev/null)
             else
               echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
               ALL_DONE=false
+              HAS_ERROR=false
             fi
             if [ "$ALL_DONE" = "true" ]; then
+              if [ "$HAS_ERROR" = "true" ]; then
+                echo "Scan reported completion with errored season(s); failing."
+                exit 1
+              fi
               echo "All seasons complete. Done."
               exit 0
             fi
@@ -84,3 +90,4 @@ jobs:
             sleep 3
           done
           echo "Reached time budget — scan may still be in progress."
+          exit 1
