@@ -5,6 +5,11 @@ on:
     # 5:30am UTC Sunday = ~12:30am Central
     - cron: "30 5 * * 0"
   workflow_dispatch:
+    inputs:
+      consign_reset:
+        description: "Force a cold rebuild of the store-wide consignment cache"
+        type: boolean
+        default: false
 
 jobs:
   scan:
@@ -32,6 +37,12 @@ jobs:
             # once the shared catalog finishes building.
             if [ "$i" = "1" ]; then
               QUERY="?restart=1"
+              # A manual dispatch with consign_reset=true cold-rebuilds the
+              # store-wide consignment cache; the scheduled cron leaves this
+              # false so consignment paging stays incremental.
+              if [ "${{ inputs.consign_reset }}" = "true" ]; then
+                QUERY="$QUERY&consign=1"
+              fi
             else
               QUERY=""
             fi
