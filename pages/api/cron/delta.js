@@ -35,14 +35,21 @@ export default async function handler(req, res) {
 
   const seasons = currentSeasons();
 
+  // One shared budget for the whole cron run (mirrors cron/scan's 230s loop
+  // deadline, well under the 300s maxDuration). Each cache chunk is ~45s, so we
+  // only START a chunk when it can finish inside the remaining budget; the
+  // parallel per-season fan-out below (projection-only, fast) then runs in
+  // whatever budget is left.
+  const overallDeadline = Date.now() + 230 * 1000;
+  const CACHE_CHUNK_MS = 45000;
+
   // Advance the store-wide sales cache ONCE up front (sequentially), so the
   // per-season deltas below — which run in parallel — only PROJECT from the
   // shared aggregate and never race each other advancing the same store keys.
-  // Bounded so the delta cron stays well under its maxDuration; the store is
-  // version-incremental so each run pages only the handful of new sales.
+  // The store is version-incremental so each run pages only the handful of new
+  // sales.
   if (process.env.ENABLE_SALES_STORE !== "0") {
-    const salesDeadline = Date.now() + 120 * 1000;
-    do {
+    while (Date.now() + CACHE_CHUNK_MS < overallDeadline) {
       try {
         const r = await fetch(`${base}/api/scan/sales-cache`, { method: "POST", headers });
         const body = await r.json().catch(() => null);
@@ -51,7 +58,7 @@ export default async function handler(req, res) {
         console.error("[cron/delta] sales drive failed:", e.message);
         break;
       }
-    } while (Date.now() < salesDeadline);
+    }
   }
 
   // Advance the store-wide INVENTORY cache ONCE up front too, for the same
@@ -60,8 +67,7 @@ export default async function handler(req, res) {
   // full 2.0/inventory stream in parallel — the thundering herd that previously
   // rate-limited LS and timed the per-season delta function out.
   if (process.env.ENABLE_BULK_INVENTORY !== "0") {
-    const invDeadline = Date.now() + 120 * 1000;
-    do {
+    while (Date.now() + CACHE_CHUNK_MS < overallDeadline) {
       try {
         const r = await fetch(`${base}/api/scan/inventory-cache`, { method: "POST", headers });
         const body = await r.json().catch(() => null);
@@ -70,7 +76,7 @@ export default async function handler(req, res) {
         console.error("[cron/delta] inventory drive failed:", e.message);
         break;
       }
-    } while (Date.now() < invDeadline);
+    }
   }
 
   // Check job states in parallel, then fire all delta scans in parallel
