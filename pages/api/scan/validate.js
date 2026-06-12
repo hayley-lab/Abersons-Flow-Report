@@ -35,6 +35,7 @@ import {
   evaluateDrift,
   samplePids,
 } from "../../../lib/report-validate";
+import { loadValidationHistory, persistValidation } from "../../../lib/validation-history";
 
 // Under the 60s maxDuration; leaves headroom for KV reads + JSON serialization.
 const BUDGET_MS = 50000;
@@ -111,6 +112,17 @@ export default async function handler(req, res) {
 
   const { season, vendor } = req.query;
   if (!season) return res.status(400).json({ error: "season required" });
+
+  // Read path: return the persisted drift trend without re-running the harness
+  // (the Data Health trend + nav "last validated" age consume this).
+  if (req.query.history === "1" || req.query.history === "true") {
+    try {
+      const { latest, history } = await loadValidationHistory(kv, season);
+      return res.json({ season, latest, history });
+    } catch (e) {
+      return res.status(500).json({ error: "history read failed: " + e.message });
+    }
+  }
 
   const full = req.query.full === "1" || req.query.sample === "all";
   const sampleCap = full ? 0 : Math.max(1, parseInt(req.query.sample, 10) || DEFAULT_SAMPLE);
@@ -219,12 +231,27 @@ export default async function handler(req, res) {
   });
   report.drift = evaluateDrift(report);
 
+  // 6. Persist the compact drift record so the Data Health trend + nightly
+  //    GitHub Action both populate history. Only whole-season runs are stored
+  //    (a vendor-filtered run is a partial slice and would pollute the trend).
+  //    Best-effort: a KV hiccup must never fail the validation response.
+  let persisted = false;
+  if (!vendor) {
+    try {
+      await persistValidation(kv, season, report);
+      persisted = true;
+    } catch {
+      persisted = false;
+    }
+  }
+
   return res.json({
     ...report,
     vendor: vendor || null,
     sampleSize: sampled.length,
     onHandFetched,
     onHandBudgetExhausted,
+    persisted,
     consignError,
     salesError,
     lsError,

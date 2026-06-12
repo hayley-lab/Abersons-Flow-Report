@@ -18,6 +18,17 @@ const fmt = (n) =>
     maximumFractionDigits: 0,
   }).format(n || 0);
 
+// Compact "time since" for the last validation run (nav badge + Data Health).
+const fmtAge = (ts) => {
+  if (!ts) return null;
+  const mins = Math.max(0, Math.round((Date.now() - ts) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+};
+
 const pctColor = (pct, zero) => {
   if (zero || pct === 0) return { bg: "#f0ede6", color: "#9e9892" };
   if (pct >= 80) return { bg: "#e8f5ee", color: "#2d6a4f" };
@@ -330,6 +341,9 @@ export default function FlowReport() {
   const [validation, setValidation] = useState(null);
   const [validationLoading, setValidationLoading] = useState(false);
   const [validationError, setValidationError] = useState(null);
+  // Persisted drift trend for the current season (GET /api/scan/validate?history=1).
+  const [validationHistory, setValidationHistory] = useState([]);
+  const [validationLatest, setValidationLatest] = useState(null);
 
   const routeForSeason = useCallback(
     function (seasonId) {
@@ -488,7 +502,27 @@ export default function FlowReport() {
   useEffect(() => {
     setValidation(null);
     setValidationError(null);
+    setValidationHistory([]);
+    setValidationLatest(null);
   }, [season]);
+
+  // Read the persisted drift trend for the current season (no LS paging — just
+  // a KV read) so the trend + "last validated" age show without a manual run.
+  const loadValidationHistory = useCallback(async (seasonId) => {
+    try {
+      const r = await fetch(`/api/scan/validate?season=${encodeURIComponent(seasonId)}&history=1`);
+      if (!r.ok) return;
+      const d = await r.json();
+      setValidationHistory(Array.isArray(d.history) ? d.history : []);
+      setValidationLatest(d.latest || null);
+    } catch {
+      // Trend is best-effort; on-demand validation still works without it.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (authed === true && season) loadValidationHistory(season);
+  }, [authed, season, loadValidationHistory]);
 
   // Run the LS-based validation harness on demand for the current season and
   // cache the report shape (lib/report-validate.js) for the Data Health surface.
@@ -506,11 +540,13 @@ export default function FlowReport() {
         throw new Error(d.error || "HTTP " + r.status);
       }
       setValidation(await r.json());
+      // The run just persisted a new record — refresh the trend.
+      loadValidationHistory(season);
     } catch (e) {
       setValidationError(e.message);
     }
     setValidationLoading(false);
-  }, [season]);
+  }, [season, loadValidationHistory]);
 
   // ── auto-poll: silently refresh data when a newer scan is available ─────────
   useEffect(() => {
@@ -862,13 +898,16 @@ export default function FlowReport() {
 
   // Cheap, network-free health signal from the loaded rows + the optional
   // on-demand validation report (drives the nav badge and Data Health page).
+  // Fall back to the persisted latest record so the badge reflects the last
+  // nightly run before any on-demand validation happens this session.
   const rowsHealth = useMemo(
     () => summarizeRowsHealth((scanData && scanData.rows) || []),
     [scanData]
   );
+  const effectiveValidation = validation || validationLatest;
   const healthBadge = useMemo(
-    () => deriveHealthBadge({ rowsHealth, validation }),
-    [rowsHealth, validation]
+    () => deriveHealthBadge({ rowsHealth, validation: effectiveValidation }),
+    [rowsHealth, effectiveValidation]
   );
   const vendorAdjustedCount = useMemo(() => adjustedCount(productRows), [productRows]);
 
@@ -1171,11 +1210,14 @@ export default function FlowReport() {
               type="button"
               onClick={() => setScreen("health")}
               title={
-                healthBadge.level === HEALTH_LEVEL.DRIFT
+                (healthBadge.level === HEALTH_LEVEL.DRIFT
                   ? "Drift detected — open Data Health"
                   : healthBadge.level === HEALTH_LEVEL.WARN
                     ? "Data coverage warning — open Data Health"
-                    : "Data Health"
+                    : "Data Health") +
+                (effectiveValidation && effectiveValidation.checkedAt
+                  ? ` · last validated ${fmtAge(effectiveValidation.checkedAt)}`
+                  : "")
               }
               style={{
                 display: "flex",
@@ -2429,10 +2471,10 @@ export default function FlowReport() {
                   title={"Data Health — " + seasonLabel}
                   right={
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {validation && validation.checkedAt && mounted && (
+                      {effectiveValidation && effectiveValidation.checkedAt && mounted && (
                         <span style={{ fontSize: 11, color: "#9e9892" }}>
                           validated{" "}
-                          {new Date(validation.checkedAt).toLocaleString("en-US", {
+                          {new Date(effectiveValidation.checkedAt).toLocaleString("en-US", {
                             month: "short",
                             day: "numeric",
                             hour: "numeric",
@@ -2477,6 +2519,109 @@ export default function FlowReport() {
                       inventory adjustments are reported as <strong>skipped</strong>, never
                       failures.
                     </div>
+
+                    {mounted && validationHistory.length > 0 && (
+                      <div style={{ marginBottom: "1rem" }}>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "#6b6560",
+                            marginBottom: 6,
+                          }}
+                        >
+                          Drift trend — last {validationHistory.length} run
+                          {validationHistory.length === 1 ? "" : "s"}
+                        </div>
+                        {/* Sparkline: one bar per run, height ∝ season retail-$ drift %,
+                            red when that run tripped the drift threshold. */}
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "flex-end",
+                            gap: 3,
+                            height: 40,
+                            marginBottom: 8,
+                          }}
+                        >
+                          {validationHistory.slice(-24).map((h, i) => {
+                            const ratio = h.counts?.seasonRetailDriftRatio || 0;
+                            const tripped = !!h.drift?.tripped;
+                            const pct = Math.min(100, (ratio / 0.01) * 100);
+                            return (
+                              <div
+                                key={i}
+                                title={
+                                  new Date(h.checkedAt).toLocaleString("en-US", {
+                                    month: "short",
+                                    day: "numeric",
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  }) +
+                                  ` — ${(ratio * 100).toFixed(2)}% retail drift, ` +
+                                  `${h.counts?.driftedProducts ?? 0} drifted` +
+                                  (tripped ? " (drift tripped)" : "")
+                                }
+                                style={{
+                                  flex: "1 1 0",
+                                  minWidth: 4,
+                                  maxWidth: 14,
+                                  height: Math.max(2, pct) + "%",
+                                  background: tripped ? "#cf5b5b" : "#9bb38f",
+                                  borderRadius: 2,
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                        <div style={{ overflowX: "auto" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                            <thead>
+                              <tr>
+                                <TH>Run</TH>
+                                <TH>Status</TH>
+                                <TH right>Drifted</TH>
+                                <TH right>Hard qty</TH>
+                                <TH right>Retail drift</TH>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {validationHistory
+                                .slice(-8)
+                                .reverse()
+                                .map((h, i) => (
+                                  <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
+                                    <TD>
+                                      {new Date(h.checkedAt).toLocaleString("en-US", {
+                                        month: "short",
+                                        day: "numeric",
+                                        hour: "numeric",
+                                        minute: "2-digit",
+                                      })}
+                                      {h.mode === "sample" ? " (sampled)" : ""}
+                                    </TD>
+                                    <TD>
+                                      <span
+                                        style={{
+                                          color: h.drift?.tripped ? "#8b2020" : "#2d6a4f",
+                                          fontWeight: 600,
+                                        }}
+                                      >
+                                        {h.drift?.tripped ? "▲ drift" : "✓ ok"}
+                                      </span>
+                                    </TD>
+                                    <TD right>{h.counts?.driftedProducts ?? 0}</TD>
+                                    <TD right>{h.counts?.hardQtyMismatches ?? 0}</TD>
+                                    <TD right>
+                                      {((h.counts?.seasonRetailDriftRatio || 0) * 100).toFixed(2)}%
+                                    </TD>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
 
                     {validationLoading && <Spinner label="Re-deriving from Lightspeed…" />}
                     {validationError && <ErrBox msg={validationError} />}
