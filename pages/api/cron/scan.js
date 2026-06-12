@@ -2,9 +2,11 @@
 // Scheduled to fire hourly via vercel.json crons.
 //
 // Behavior differs by caller:
-//   Vercel cron scheduler (CRON_SECRET header, no ?force) — loops internally
-//     for its full time budget, advancing all seasons as many steps as possible.
+//   Vercel cron scheduler (CRON_SECRET header, no ?force/?driver) — loops
+//     internally for its time budget, advancing all seasons as many steps as possible.
 //     This lets one cron invocation complete an entire scan rather than one step per firing.
+//   GitHub Actions driver (CRON_SECRET header, ?driver=1) — one bounded pass per
+//     call, preserving shared-cache gates while returning frequent progress JSON.
 //   UI "Sync from LS" button (?force=1, session auth) — one pass per call so the
 //     browser loop can show live progress between calls.
 import { kv } from "@vercel/kv";
@@ -16,7 +18,7 @@ import {
   planSeasonWork,
   resolveLastFullTs,
 } from "../../../lib/scan-orchestrator";
-import { loadScanData } from "../../../lib/scan-data-store";
+import { loadScanDataSummary } from "../../../lib/scan-data-store";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -30,7 +32,7 @@ const REBUILD_TS_TTL_SECONDS = 12 * 3600;
 // season loop. Vercel kills this route at 300s, so stop starting child requests
 // early enough that a slow child response can finish and we can still serialize
 // JSON for the workflow driver.
-const CRON_LOOP_DEADLINE_MS = 240 * 1000;
+const CRON_LOOP_DEADLINE_MS = 120 * 1000;
 const CACHE_REQUEST_TIMEOUT_MS = 55 * 1000;
 const STEP_REQUEST_TIMEOUT_MS = 70 * 1000;
 const RESPONSE_OVERHEAD_MS = 5 * 1000;
@@ -38,15 +40,15 @@ const RESPONSE_OVERHEAD_MS = 5 * 1000;
 // it finished, or to the next firing if not). Incremental syncs finish in ~1
 // call; only the first-ever cold build approaches this cap, and it resumes
 // across firings via buildOffset. Must be < CRON_LOOP_DEADLINE_MS.
-const CATALOG_DRIVE_MS = 150 * 1000;
+const CATALOG_DRIVE_MS = 75 * 1000;
 // Same idea for the store-wide sales cache: drive it to completion before
 // stepping seasons so each season projects sales with zero 2.0/sales paging.
-const SALES_DRIVE_MS = 150 * 1000;
+const SALES_DRIVE_MS = 75 * 1000;
 // Gate the store-wide sales cache. Default on; set ENABLE_SALES_STORE=0 to fall
 // back to per-season sales paging (step.js also auto-falls-back per run).
 const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
 // Store-wide consignment cache (POs + returns) drive budget + gate.
-const CONSIGN_DRIVE_MS = 150 * 1000;
+const CONSIGN_DRIVE_MS = 75 * 1000;
 const ENABLE_CONSIGN_STORE = process.env.ENABLE_CONSIGN_STORE !== "0";
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -84,9 +86,11 @@ export default async function handler(req, res) {
 
   const force = req.query.force === "1";
   const restartAll = req.query.restart === "1";
-  // Loop internally only when called by the Vercel cron scheduler (not the UI).
-  // UI calls use ?force=1 and need quick per-call responses for progress display.
-  const loopInternally = cronAuth && !force;
+  const driverMode = req.query.driver === "1";
+  // Loop internally only when called by the Vercel cron scheduler (not GitHub/UI).
+  // GitHub uses ?driver=1 for quick progress JSON without bypassing cache gates.
+  const usesCronGates = cronAuth && !force;
+  const loopInternally = usesCronGates && !driverMode;
 
   const base = process.env.VERCEL_PROJECT_PRODUCTION_URL
     ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
@@ -119,8 +123,10 @@ export default async function handler(req, res) {
   const overallDeadline = handlerStart + CRON_LOOP_DEADLINE_MS;
 
   function hasBudgetFor(deadline, requestTimeoutMs) {
-    if (!loopInternally) return true;
-    return Date.now() + requestTimeoutMs + RESPONSE_OVERHEAD_MS < Math.min(deadline, overallDeadline);
+    if (!usesCronGates) return true;
+    return (
+      Date.now() + requestTimeoutMs + RESPONSE_OVERHEAD_MS < Math.min(deadline, overallDeadline)
+    );
   }
 
   // Drive the shared catalog cache before stepping seasons so each season can
@@ -251,7 +257,7 @@ export default async function handler(req, res) {
   // A missing/failed catalog response counts as "not complete" so a timeout or
   // transient error doesn't leak seasons onto the fallback path. The driver loop
   // calls us again to continue the build; this returns promptly under maxDuration.
-  if (loopInternally && !catalogIsComplete(catalogResult)) {
+  if (usesCronGates && !catalogIsComplete(catalogResult)) {
     return res.json({
       ok: true,
       allDone: false,
@@ -280,7 +286,7 @@ export default async function handler(req, res) {
     } catch (e) {
       console.error("[cron/scan] sales drive error:", e.message);
     }
-    if (loopInternally && !catalogIsComplete(salesResult)) {
+    if (usesCronGates && !catalogIsComplete(salesResult)) {
       return res.json({
         ok: true,
         allDone: false,
@@ -310,7 +316,7 @@ export default async function handler(req, res) {
     } catch (e) {
       console.error("[cron/scan] consign drive error:", e.message);
     }
-    if (loopInternally && !catalogIsComplete(consignResult)) {
+    if (usesCronGates && !catalogIsComplete(consignResult)) {
       return res.json({
         ok: true,
         allDone: false,
@@ -327,7 +333,7 @@ export default async function handler(req, res) {
       seasons.map((season) =>
         Promise.all([
           kv.get(`scan:job:${season}`),
-          force ? Promise.resolve(null) : loadScanData(kv, season),
+          force ? Promise.resolve(null) : loadScanDataSummary(kv, season),
           kv.get(`scan:lastFull:${season}`),
         ])
       )
@@ -365,7 +371,14 @@ export default async function handler(req, res) {
     });
 
     if (plan.skip) {
-      return { season, phase, restart: plan.restart, mode: plan.mode, done: true, action: "skipped" };
+      return {
+        season,
+        phase,
+        restart: plan.restart,
+        mode: plan.mode,
+        done: true,
+        action: "skipped",
+      };
     }
     return { season, phase, restart: plan.restart, mode: plan.mode, done: false, action: null };
   });
@@ -470,9 +483,10 @@ export default async function handler(req, res) {
       })),
     });
   } else {
-    // UI path: one pass, return quickly so the browser loop can show progress
+    // UI/GitHub path: one pass, return quickly so callers can show progress.
     const results = [];
     for (let i = 0; i < seasonState.length; i += CONCURRENCY) {
+      if (usesCronGates && !hasBudgetFor(overallDeadline, STEP_REQUEST_TIMEOUT_MS)) break;
       const batch = seasonState.slice(i, i + CONCURRENCY).filter((s) => !s.done);
       const batchResults = await Promise.all(batch.map(stepSeason));
       results.push(...batchResults);

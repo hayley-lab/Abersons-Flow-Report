@@ -40,14 +40,14 @@ jobs:
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             i=$(( i + 1 ))
             echo "--- Call $i ($(date -u +%H:%M:%S) UTC) ---"
-            # Only the first call requests a fresh rebuild; the API persists that
-            # intent so subsequent (query-less) calls still rebuild every season
-            # once the shared catalog finishes building.
+            # Every call uses driver=1: cron-authenticated and cache-gated like the
+            # scheduled route, but intentionally short so Actions receives JSON
+            # progress instead of waiting near Vercel's function timeout.
             if [ "$i" = "1" ]; then
               if [ "${{ inputs.resume_existing }}" = "true" ]; then
-                QUERY=""
+                QUERY="?driver=1"
               else
-                QUERY="?restart=1"
+                QUERY="?driver=1&restart=1"
                 # A manual dispatch with consign_reset=true cold-rebuilds the
                 # store-wide consignment cache; the scheduled cron leaves this
                 # false so consignment paging stays incremental.
@@ -63,9 +63,9 @@ jobs:
                 fi
               fi
             else
-              QUERY=""
+              QUERY="?driver=1"
             fi
-            RESPONSE=$(curl -sS --max-time 270 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
+            RESPONSE=$(curl -sS --max-time 180 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Content-Type: application/json")
             CURL_RC=$?
