@@ -183,7 +183,9 @@ Each level's numbers are the sum of the level below it. If a number looks wrong 
 
 ### Override / Datatail Vendors — Special Notes
 - Override products (datatail import) may have `pidToPrice[pid] = 0` if the LS API didn't return a retail price for those products. This causes `retVal = 0` in the returns phase.
-- **Fix (Jun 2026, data.js):** `computeReturnedFromSkus` falls back to `override_product.price × retQty` when `retVal = 0` but `retQty > 0`. This ensures the Returned (retail) header is correct for consignment/datatail vendors.
+- **Root-cause fix (Jun 2026, step.js):** `registerProduct` now upgrades `pidToPrice`/`pidToCost` from $0 to a real catalog price (`preferPositive` in `lib/flow-math.js`) instead of locking in the first value — a $0 first-seen price no longer poisons every dollar column for that pid.
+- **Request-time fallback (Jun 2026, flow-rollup.js):** `buildAllRows` maps each LS-matched pid to the datatail import's `op.price`/`op.cost` (via `skuToPid`) and uses it when the catalog price is $0 (no live LS fetch in the request path). This keeps Returned/Received retail and cost non-$0 for consignment/datatail vendors. The color key (`pages/index.js`) and the Returned (retail) header both use `returnedRetailValue`, so they always agree. (The old `computeReturnedFromSkus`/`override-merge.js` helpers were removed.)
+- **Season gate (Jun 2026, flow-rollup.js):** override products are filtered by `skuMatchesSeason` (folding rs/ps→spring, pf→fall for 2025/26) in both `buildAllRows` and the vendor-level ordered fold, so a datatail import done while on the wrong season cannot pollute another season's totals.
 - Consignment vendors (e.g. Judi Powers) have `receivedCost = 0` because no upfront cost is charged. LS may still record a cost on their return consignments. **Do not show negative Received (cost) — cap at $0.**
 
 ### Cron / Scan Loop
@@ -237,7 +239,10 @@ Note: the vendor LIST table and store SUMMARY still use scan:data aggregated val
 ## Known Remaining Issues
 1. **Staud spring26 return** — Carrie may have entered a return in the wrong season. Needs investigation.
 2. **Ordered (cost) = $0 for datatail-only vendors** — no LS cost data on old RMH POs. Data gap, not a code bug. Spring 2026 ordered cost is low for this reason.
-3. **scan retVal still 0 for some LS-native variant products** — the vendor header now bypasses this via live product computation, but scan:data still stores 0 for returned retail on these products. Vendor list and store summary RETURNED column may undercount for those vendors until the scan price computation is fixed.
+3. **scan retVal still 0 for some LS-native variant products** — scan:data may still store 0 for returned retail on these products. This is now mitigated end-to-end at request time: `registerProduct` upgrades a $0 `pidToPrice`/`pidToCost` to the real catalog price, and `buildAllRows` falls back to the datatail `op.price`/`op.cost` for matched rows, so the vendor list, store summary, and drilldown header (all derived from the same rollup) use `returnedRetailValue`/`returnedCostValue` rather than a stored 0.
+
+### Undated consignments (Jun 2026)
+`seasonConsignmentBuckets` (`lib/consignment-store.js`) no longer projects an undated SUPPLIER/RETURN entry into every season whose pid set contains the pid. Undated entries can't be date-filtered, so each pid is attributed only to the unique season whose SKU set owns it; pids shared by more than one season are ambiguous and excluded (with a logged count) instead of inflating Ordered/Received/Returned across seasons.
 
 ## Stable Checkpoint — Revert Instructions
 If the scan breaks again, the last known-good commit is the one that merged `Fix Returned (retail) header for datatail-only vendors` to main (Jun 7, 2026). To find it:
@@ -246,7 +251,7 @@ git log --oneline main | head -5
 ```
 The key files and their roles:
 - `pages/api/scan/step.js` — full scan pipeline. `products_seed` phase is the critical product-discovery logic.
-- `pages/api/scan/data.js` — merges override (datatail) data with LS scan data at request time. `computeReturnedFromSkus` handles returned retail for datatail vendors.
+- `pages/api/scan/data.js` — runs the request-time rollup (`lib/flow-rollup.js`) that merges override (datatail) data with LS scan data. `buildAllRows` applies the datatail price/cost fallback and season gate for datatail vendors (the old `computeReturnedFromSkus` was removed).
 - `pages/api/cron/scan.js` — orchestrates season scanning, skip logic, concurrency.
 - `pages/api/cron/delta.js` — sales-only delta sync, runs every ~10 min.
 - `pages/index.js` — UI, scan loop (retries on 500/503).
