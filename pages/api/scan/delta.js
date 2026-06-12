@@ -111,6 +111,7 @@ export default async function handler(req, res) {
 
     let pages = 0;
     const touchedPids = new Set();
+    let salesMaxVersion = null;
 
     // Store-wide projection: cron/delta advances the shared sales cache once
     // before firing per-season deltas, so here we just filter that aggregate to
@@ -123,10 +124,11 @@ export default async function handler(req, res) {
         const agg = await loadSalesAgg(kv);
         const perPid = projectSeasonSales(agg, existing.seasonPids);
         applySalesTotals(productStats, perPid);
+        salesMaxVersion = meta.version || null;
         await saveSalesState(
           kv,
           season,
-          { maxVersion: meta.version || null, perPid, pidSet: existing.seasonPids },
+          { maxVersion: salesMaxVersion, perPid, pidSet: existing.seasonPids },
           seasonPidSet
         );
         usedStore = true;
@@ -155,6 +157,7 @@ export default async function handler(req, res) {
       });
       await saveSalesState(kv, season, salesState, seasonPidSet);
       applySalesTotals(productStats, salesState.perPid);
+      salesMaxVersion = salesState.maxVersion;
     }
 
     if (ENABLE_BULK_INVENTORY) {
@@ -287,7 +290,7 @@ export default async function handler(req, res) {
       productStats,
       isDelta: true, // flag so UI can show "quick refresh" label if desired
       salesPages: pages,
-      salesState: { maxVersion: salesState.maxVersion, ts: Date.now() },
+      salesState: { maxVersion: salesMaxVersion, ts: Date.now() },
     };
 
     await kv.set(dataKey, result, { ex: 48 * 3600 });
