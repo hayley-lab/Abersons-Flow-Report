@@ -27,6 +27,7 @@ import {
   netOrderedValue,
   netReceivedCost,
   netReceivedRetail,
+  preferPositive,
   productCost,
   productName,
   productPrice,
@@ -167,8 +168,10 @@ function registerProduct(state, p) {
     i: resolvedSuppId,
     n: resolvedSuppName,
   };
-  state.pidToPrice[p.id] = state.pidToPrice[p.id] || resolvedPrice;
-  state.pidToCost[p.id] = state.pidToCost[p.id] || resolvedCost;
+  // Upgrade-only: promote a stored $0 to a real catalog price, but never let a
+  // real price be clobbered back to $0 (preferPositive encodes both rules).
+  state.pidToPrice[p.id] = preferPositive(state.pidToPrice[p.id], resolvedPrice);
+  state.pidToCost[p.id] = preferPositive(state.pidToCost[p.id], resolvedCost);
   state.pidToName[p.id] = state.pidToName[p.id] || productName(p);
   state.pidToSku[p.id] = state.pidToSku[p.id] || p.sku || "";
   state.pidToVariant[p.id] = state.pidToVariant[p.id] || productVariant(p);
