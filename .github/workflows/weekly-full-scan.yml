@@ -65,7 +65,7 @@ jobs:
             else
               QUERY=""
             fi
-            RESPONSE=$(curl -sS --max-time 295 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
+            RESPONSE=$(curl -sS --max-time 270 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Content-Type: application/json")
             CURL_RC=$?

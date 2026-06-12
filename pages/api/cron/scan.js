@@ -26,10 +26,14 @@ const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 // still know a rebuild is owed. 12h covers the weekly workflow's 340-min budget.
 const REBUILD_TS_KEY = "scan:rebuild:ts";
 const REBUILD_TS_TTL_SECONDS = 12 * 3600;
-// Overall internal time budget per invocation, SHARED by the catalog drive and
-// the season loop. maxDuration is 300s (capped at 60s on Hobby); this stays
-// under it with margin for one final ~60s sub-request.
-const CRON_LOOP_DEADLINE_MS = 230 * 1000;
+// Overall response budget per invocation, SHARED by the cache drives and the
+// season loop. Vercel kills this route at 300s, so stop starting child requests
+// early enough that a slow child response can finish and we can still serialize
+// JSON for the workflow driver.
+const CRON_LOOP_DEADLINE_MS = 240 * 1000;
+const CACHE_REQUEST_TIMEOUT_MS = 55 * 1000;
+const STEP_REQUEST_TIMEOUT_MS = 70 * 1000;
+const RESPONSE_OVERHEAD_MS = 5 * 1000;
 // Cap on how long the cold catalog build may run before yielding (to seasons if
 // it finished, or to the next firing if not). Incremental syncs finish in ~1
 // call; only the first-ever cold build approaches this cap, and it resumes
@@ -44,6 +48,19 @@ const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
 // Store-wide consignment cache (POs + returns) drive budget + gate.
 const CONSIGN_DRIVE_MS = 150 * 1000;
 const ENABLE_CONSIGN_STORE = process.env.ENABLE_CONSIGN_STORE !== "0";
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error(`Timed out after ${timeoutMs}ms`);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function currentSeasons() {
   const year = new Date().getFullYear();
@@ -101,6 +118,11 @@ export default async function handler(req, res) {
   const handlerStart = Date.now();
   const overallDeadline = handlerStart + CRON_LOOP_DEADLINE_MS;
 
+  function hasBudgetFor(deadline, requestTimeoutMs) {
+    if (!loopInternally) return true;
+    return Date.now() + requestTimeoutMs + RESPONSE_OVERHEAD_MS < Math.min(deadline, overallDeadline);
+  }
+
   // Drive the shared catalog cache before stepping seasons so each season can
   // seed from scan:catalog:season:{season} with zero catalog API calls. Failures
   // are non-fatal — step.js falls back to scan:pids + lazy registration.
@@ -116,10 +138,15 @@ export default async function handler(req, res) {
     let resetFirst = req.query.catalog === "1";
     let last = null;
     do {
+      if (!hasBudgetFor(catalogDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
       const q = resetFirst ? "?reset=1" : "";
       resetFirst = false;
       try {
-        const r = await fetch(`${base}/api/scan/catalog${q}`, { method: "POST", headers });
+        const r = await fetchWithTimeout(
+          `${base}/api/scan/catalog${q}`,
+          { method: "POST", headers },
+          CACHE_REQUEST_TIMEOUT_MS
+        );
         const body = await r.json().catch(() => null);
         if (body) last = body;
         if (!r.ok) {
@@ -133,7 +160,7 @@ export default async function handler(req, res) {
         console.error("[cron/scan] catalog drive failed:", e.message);
         break;
       }
-    } while (Date.now() < catalogDeadline);
+    } while (loopInternally && hasBudgetFor(catalogDeadline, CACHE_REQUEST_TIMEOUT_MS));
     return last;
   }
 
@@ -148,10 +175,15 @@ export default async function handler(req, res) {
     let last = null;
     let first = true;
     do {
+      if (!hasBudgetFor(salesDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
       const q = first && resetFirst ? "?reset=1" : "";
       first = false;
       try {
-        const r = await fetch(`${base}/api/scan/sales-cache${q}`, { method: "POST", headers });
+        const r = await fetchWithTimeout(
+          `${base}/api/scan/sales-cache${q}`,
+          { method: "POST", headers },
+          CACHE_REQUEST_TIMEOUT_MS
+        );
         const body = await r.json().catch(() => null);
         if (body) last = body;
         if (!r.ok) {
@@ -163,7 +195,7 @@ export default async function handler(req, res) {
         console.error("[cron/scan] sales drive failed:", e.message);
         break;
       }
-    } while (Date.now() < salesDeadline);
+    } while (loopInternally && hasBudgetFor(salesDeadline, CACHE_REQUEST_TIMEOUT_MS));
     return last;
   }
 
@@ -177,10 +209,15 @@ export default async function handler(req, res) {
     let last = null;
     let first = true;
     do {
+      if (!hasBudgetFor(consignDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
       const q = first && resetFirst ? "?reset=1" : "";
       first = false;
       try {
-        const r = await fetch(`${base}/api/scan/consign-cache${q}`, { method: "POST", headers });
+        const r = await fetchWithTimeout(
+          `${base}/api/scan/consign-cache${q}`,
+          { method: "POST", headers },
+          CACHE_REQUEST_TIMEOUT_MS
+        );
         const body = await r.json().catch(() => null);
         if (body) last = body;
         if (!r.ok) {
@@ -192,7 +229,7 @@ export default async function handler(req, res) {
         console.error("[cron/scan] consign drive failed:", e.message);
         break;
       }
-    } while (Date.now() < consignDeadline);
+    } while (loopInternally && hasBudgetFor(consignDeadline, CACHE_REQUEST_TIMEOUT_MS));
     return last;
   }
 
@@ -335,9 +372,10 @@ export default async function handler(req, res) {
 
   async function stepSeason(ss) {
     try {
-      const r = await fetch(
+      const r = await fetchWithTimeout(
         `${base}/api/scan/step?season=${encodeURIComponent(ss.season)}&restart=${ss.restart}&mode=${ss.mode}`,
-        { method: "POST", headers }
+        { method: "POST", headers },
+        STEP_REQUEST_TIMEOUT_MS
       );
       const text = await r.text();
       let json = {};
@@ -386,7 +424,7 @@ export default async function handler(req, res) {
   if (loopInternally) {
     // Cron path: loop for the remaining shared budget, advancing all seasons.
     const loopStart = Date.now();
-    while (Date.now() < overallDeadline) {
+    while (hasBudgetFor(overallDeadline, STEP_REQUEST_TIMEOUT_MS)) {
       const pending = seasonState.filter((s) => !s.done);
       if (pending.length === 0) break;
 
