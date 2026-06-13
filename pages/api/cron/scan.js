@@ -14,11 +14,15 @@ import { SEASONS } from "../../../lib/seasons";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import {
-  catalogIsComplete,
+  cacheDriveDeadline,
   planSeasonWork,
   resolveLastFullTs,
+  shouldYieldForCache,
 } from "../../../lib/scan-orchestrator";
 import { loadScanDataSummary } from "../../../lib/scan-data-store";
+import { loadCatalogMeta } from "../../../lib/catalog-store";
+import { loadSalesStoreMeta } from "../../../lib/sales-store";
+import { loadConsignMeta } from "../../../lib/consignment-store";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -129,13 +133,28 @@ export default async function handler(req, res) {
     );
   }
 
+  // Treat a shared cache as complete when its persisted KV meta says so. This is
+  // the safety net the gates consult alongside the in-call drive result: a cache
+  // already finished in KV (drive skipped for budget, or a transient drive error
+  // returned null) must not re-trigger the idle "building" loop.
+  async function cacheCompleteInKv(loadMeta) {
+    try {
+      const meta = await loadMeta(kv);
+      return !!(meta && meta.complete);
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Drive the shared catalog cache before stepping seasons so each season can
   // seed from scan:catalog:season:{season} with zero catalog API calls. Failures
   // are non-fatal — step.js falls back to scan:pids + lazy registration.
   async function driveCatalog() {
-    const catalogDeadline = loopInternally
-      ? Math.min(Date.now() + CATALOG_DRIVE_MS, overallDeadline)
-      : Date.now();
+    // Real per-call budget for BOTH the cron loop and the GitHub driver path
+    // (see cacheDriveDeadline). The do/while below still runs exactly one chunk
+    // on the driver path (loopInternally === false) so it returns progress JSON
+    // promptly, but that one chunk now actually executes.
+    const catalogDeadline = cacheDriveDeadline({ driveMs: CATALOG_DRIVE_MS, overallDeadline });
     // Reset = a full cold rebuild of the shared catalog. Do this ONLY on an
     // explicit ?catalog=1, never on a weekly season rebuild (?restart=1): the
     // incremental top-up keeps the catalog current in ~1 call, so re-paging the
@@ -174,9 +193,7 @@ export default async function handler(req, res) {
   // season projects sales from the shared aggregate instead of paging 2.0/sales.
   // Mirrors driveCatalog; resumable across invocations via its version cursor.
   async function driveSales() {
-    const salesDeadline = loopInternally
-      ? Math.min(Date.now() + SALES_DRIVE_MS, overallDeadline)
-      : Date.now();
+    const salesDeadline = cacheDriveDeadline({ driveMs: SALES_DRIVE_MS, overallDeadline });
     const resetFirst = req.query.sales === "1";
     let last = null;
     let first = true;
@@ -208,9 +225,7 @@ export default async function handler(req, res) {
   // Drive the store-wide consignment cache (POs + vendor returns). Mirrors
   // driveCatalog/driveSales; resumable across invocations via its version cursor.
   async function driveConsign() {
-    const consignDeadline = loopInternally
-      ? Math.min(Date.now() + CONSIGN_DRIVE_MS, overallDeadline)
-      : Date.now();
+    const consignDeadline = cacheDriveDeadline({ driveMs: CONSIGN_DRIVE_MS, overallDeadline });
     const resetFirst = req.query.consign === "1";
     let last = null;
     let first = true;
@@ -257,7 +272,13 @@ export default async function handler(req, res) {
   // A missing/failed catalog response counts as "not complete" so a timeout or
   // transient error doesn't leak seasons onto the fallback path. The driver loop
   // calls us again to continue the build; this returns promptly under maxDuration.
-  if (usesCronGates && !catalogIsComplete(catalogResult)) {
+  if (
+    usesCronGates &&
+    shouldYieldForCache({
+      driveResult: catalogResult,
+      kvComplete: await cacheCompleteInKv(loadCatalogMeta),
+    })
+  ) {
     return res.json({
       ok: true,
       allDone: false,
@@ -286,7 +307,13 @@ export default async function handler(req, res) {
     } catch (e) {
       console.error("[cron/scan] sales drive error:", e.message);
     }
-    if (usesCronGates && !catalogIsComplete(salesResult)) {
+    if (
+      usesCronGates &&
+      shouldYieldForCache({
+        driveResult: salesResult,
+        kvComplete: await cacheCompleteInKv(loadSalesStoreMeta),
+      })
+    ) {
       return res.json({
         ok: true,
         allDone: false,
@@ -316,7 +343,13 @@ export default async function handler(req, res) {
     } catch (e) {
       console.error("[cron/scan] consign drive error:", e.message);
     }
-    if (usesCronGates && !catalogIsComplete(consignResult)) {
+    if (
+      usesCronGates &&
+      shouldYieldForCache({
+        driveResult: consignResult,
+        kvComplete: await cacheCompleteInKv(loadConsignMeta),
+      })
+    ) {
       return res.json({
         ok: true,
         allDone: false,
