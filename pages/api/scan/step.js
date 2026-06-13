@@ -80,6 +80,7 @@ import {
   supplierId,
   supplierName,
   vendorBucketKey,
+  vendorIdentityFromLs,
 } from "../../../lib/vendor-match";
 
 const CHUNK_MS = 6000;
@@ -108,24 +109,24 @@ const COST_BACKFILL_PER_SCAN = 200;
 function registerProduct(state, p) {
   if (!state.parentStore) state.parentStore = {};
   const typeId = p.product_type_id || "__none__";
-  const suppId = (p.supplier && p.supplier.id) || p.supplier_id || "__none__";
-  const suppName = (p.supplier && p.supplier.name) || "Unknown";
+  const vendor = vendorIdentityFromLs(p);
   const price = productPrice(p);
   const cost = productCost(p);
   const skuKey = (p.sku || "").toLowerCase().trim();
   const overrideVendor = state.skuToVendorOverride?.[skuKey];
 
   let resolvedType = typeId,
-    resolvedSuppId = overrideVendor?.id || suppId,
-    resolvedSuppName = overrideVendor?.name || suppName;
+    resolvedSuppId = overrideVendor?.id || vendor.id,
+    resolvedSuppName = overrideVendor?.name || vendor.name;
   let resolvedPrice = price;
   let resolvedCost = cost;
 
   if (p._parent && !state.parentStore[p._parent.id]) {
+    const parentVendor = vendorIdentityFromLs(p._parent);
     state.parentStore[p._parent.id] = {
       t: p._parent.product_type_id || "__none__",
-      si: (p._parent.supplier && p._parent.supplier.id) || p._parent.supplier_id || "__none__",
-      sn: (p._parent.supplier && p._parent.supplier.name) || "Unknown",
+      si: parentVendor.id,
+      sn: parentVendor.name,
       p: productPrice(p._parent),
       c: productCost(p._parent),
     };
@@ -152,7 +153,7 @@ function registerProduct(state, p) {
     }
     state.variantsSeenInScan = true;
   } else {
-    state.parentStore[p.id] = { t: typeId, si: suppId, sn: suppName, p: price };
+    state.parentStore[p.id] = { t: typeId, si: vendor.id, sn: vendor.name, p: price };
     if (!state.seasonParentIds.includes(p.id)) state.seasonParentIds.push(p.id);
   }
 

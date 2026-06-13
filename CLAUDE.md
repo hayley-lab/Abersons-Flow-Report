@@ -163,6 +163,7 @@ Products are discovered from three targeted sources (in order, deduplicating by 
 - Deduplication is automatic: `registerProduct` is a no-op if the PID is already in `seasonPids`
 - `state.negPids` caches non-season product IDs to avoid re-fetching on each step call
 - `pidToPrice` is critical for retVal/retCost in the returns phase — always save it to `scan:pids`
+- Product-to-vendor attribution is brand-primary for LS products: use `vendorIdentityFromLs` (`brand`/`brand_id` first, then supplier fallback, then Unknown). Datatail SKU overrides still win over LS identity because imported vendor rows can intentionally correct attribution.
 - Store-wide consignment projection uses the union of `scan:catalog:season:{season}.seasonPids` and prior `scan:data:{season}.seasonPids`; this keeps same-season consignment-only/archived products while the SKU gate prevents wrong-season drift.
 
 ### Data Flow — Bottom Up (CRITICAL)
