@@ -10,6 +10,10 @@ on:
         description: "Resume persisted scan state instead of starting a fresh rebuild"
         type: boolean
         default: false
+      catalog_reset:
+        description: "Force a cold rebuild of the store-wide catalog cache (re-derives every product's vendor/brand)"
+        type: boolean
+        default: false
       consign_reset:
         description: "Force a cold rebuild of the store-wide consignment cache"
         type: boolean
@@ -48,6 +52,14 @@ jobs:
                 QUERY="?driver=1"
               else
                 QUERY="?driver=1&restart=1"
+                # A manual dispatch with catalog_reset=true cold-rebuilds the
+                # store-wide catalog cache (?catalog=1 → driveCatalog resets, then
+                # re-buckets every season), re-deriving every product's
+                # vendor/brand attribution. The scheduled cron leaves this false
+                # so catalog paging stays incremental (changed products only).
+                if [ "${{ inputs.catalog_reset }}" = "true" ]; then
+                  QUERY="$QUERY&catalog=1"
+                fi
                 # A manual dispatch with consign_reset=true cold-rebuilds the
                 # store-wide consignment cache; the scheduled cron leaves this
                 # false so consignment paging stays incremental.
