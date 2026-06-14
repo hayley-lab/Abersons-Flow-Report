@@ -14,9 +14,12 @@ import { SEASONS } from "../../../lib/seasons";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import {
+  buildDriverResults,
   cacheDriveDeadline,
+  computeAllDone,
   planSeasonWork,
   resolveLastFullTs,
+  shouldSkipCompletedDrive,
   shouldYieldForCache,
 } from "../../../lib/scan-orchestrator";
 import { loadScanDataSummary } from "../../../lib/scan-data-store";
@@ -36,7 +39,12 @@ const REBUILD_TS_TTL_SECONDS = 12 * 3600;
 // season loop. Vercel kills this route at 300s, so stop starting child requests
 // early enough that a slow child response can finish and we can still serialize
 // JSON for the workflow driver.
-const CRON_LOOP_DEADLINE_MS = 120 * 1000;
+// Raised from 120s to 150s so that after the (skippable) cache drives there is
+// still enough of the shared budget left to clear the 75s season-step headroom
+// gate and actually step seasons on the GitHub driver path. Stays well under the
+// workflow's `curl --max-time 180` and Vercel's 300s maxDuration; the
+// hasBudgetFor guard still prevents a step from starting without enough room.
+const CRON_LOOP_DEADLINE_MS = 150 * 1000;
 const CACHE_REQUEST_TIMEOUT_MS = 55 * 1000;
 const STEP_REQUEST_TIMEOUT_MS = 70 * 1000;
 const RESPONSE_OVERHEAD_MS = 5 * 1000;
@@ -150,6 +158,18 @@ export default async function handler(req, res) {
   // seed from scan:catalog:season:{season} with zero catalog API calls. Failures
   // are non-fatal — step.js falls back to scan:pids + lazy registration.
   async function driveCatalog() {
+    // On the driver/UI path, skip the HTTP drive entirely when the catalog is
+    // already complete in KV — re-paging it every call starves season stepping.
+    // The internally-looping cron still tops it up incrementally.
+    if (
+      shouldSkipCompletedDrive({
+        kvComplete: await cacheCompleteInKv(loadCatalogMeta),
+        resetRequested: req.query.catalog === "1",
+        loopInternally,
+      })
+    ) {
+      return { cacheComplete: true, complete: true, version: null, added: 0, skipped: true };
+    }
     // Real per-call budget for BOTH the cron loop and the GitHub driver path
     // (see cacheDriveDeadline). The do/while below still runs exactly one chunk
     // on the driver path (loopInternally === false) so it returns progress JSON
@@ -193,6 +213,15 @@ export default async function handler(req, res) {
   // season projects sales from the shared aggregate instead of paging 2.0/sales.
   // Mirrors driveCatalog; resumable across invocations via its version cursor.
   async function driveSales() {
+    if (
+      shouldSkipCompletedDrive({
+        kvComplete: await cacheCompleteInKv(loadSalesStoreMeta),
+        resetRequested: req.query.sales === "1",
+        loopInternally,
+      })
+    ) {
+      return { cacheComplete: true, complete: true, version: null, skipped: true };
+    }
     const salesDeadline = cacheDriveDeadline({ driveMs: SALES_DRIVE_MS, overallDeadline });
     const resetFirst = req.query.sales === "1";
     let last = null;
@@ -225,6 +254,15 @@ export default async function handler(req, res) {
   // Drive the store-wide consignment cache (POs + vendor returns). Mirrors
   // driveCatalog/driveSales; resumable across invocations via its version cursor.
   async function driveConsign() {
+    if (
+      shouldSkipCompletedDrive({
+        kvComplete: await cacheCompleteInKv(loadConsignMeta),
+        resetRequested: req.query.consign === "1",
+        loopInternally,
+      })
+    ) {
+      return { cacheComplete: true, complete: true, added: 0, skipped: true };
+    }
     const consignDeadline = cacheDriveDeadline({ driveMs: CONSIGN_DRIVE_MS, overallDeadline });
     const resetFirst = req.query.consign === "1";
     let last = null;
@@ -492,7 +530,7 @@ export default async function handler(req, res) {
       );
     }
 
-    const allDone = seasonState.every((s) => s.done);
+    const allDone = computeAllDone(seasonState);
     // The rebuild cycle is complete once every season has finished, so clear the
     // intent flag; otherwise a later nightly call would force a needless rebuild.
     if (allDone && rebuildTs) {
@@ -516,18 +554,46 @@ export default async function handler(req, res) {
       })),
     });
   } else {
-    // UI/GitHub path: one pass, return quickly so callers can show progress.
-    const results = [];
-    for (let i = 0; i < seasonState.length; i += CONCURRENCY) {
-      if (usesCronGates && !hasBudgetFor(overallDeadline, STEP_REQUEST_TIMEOUT_MS)) break;
-      const batch = seasonState.slice(i, i + CONCURRENCY).filter((s) => !s.done);
+    // UI/GitHub driver path: step as many season batches as the shared budget
+    // allows (with round-robin so every season gets turns across calls), then
+    // return progress JSON INCLUDING allDone so the workflow can detect
+    // completion. Returns promptly once the budget is spent. For the UI path
+    // (force=1) hasBudgetFor is always true, so it steps one batch and returns.
+    const stepResults = [];
+    while (hasBudgetFor(overallDeadline, STEP_REQUEST_TIMEOUT_MS)) {
+      const pending = seasonState.filter((s) => !s.done);
+      if (pending.length === 0) break;
+
+      const batch = pending.slice(0, CONCURRENCY);
       const batchResults = await Promise.all(batch.map(stepSeason));
-      results.push(...batchResults);
+      stepResults.push(...batchResults);
+
+      // Round-robin: move just-processed-but-unfinished seasons to the back so
+      // others get a turn before we revisit them.
+      batch.forEach((ss) => {
+        if (!ss.done) {
+          const idx = seasonState.indexOf(ss);
+          seasonState.splice(idx, 1);
+          seasonState.push(ss);
+        }
+      });
+
+      // The UI path (force=1) bypasses the budget gate; cap it at one batch per
+      // call so the browser loop keeps showing live progress between requests.
+      if (!usesCronGates) break;
     }
-    // Include skipped seasons in results
-    seasonState
-      .filter((s) => s.done && s.action === "skipped")
-      .forEach((s) => results.push({ season: s.season, action: "skipped" }));
-    return res.json({ ok: true, results });
+
+    const results = buildDriverResults(seasonState, stepResults);
+    const allDone = computeAllDone(seasonState);
+    // Mirror the cron path: clear the rebuild intent once the cycle is complete
+    // so a later nightly call doesn't force a needless rebuild.
+    if (allDone && rebuildTs) {
+      try {
+        await kv.del(REBUILD_TS_KEY);
+      } catch (e) {
+        console.error("[cron/scan] rebuild flag clear failed:", e.message);
+      }
+    }
+    return res.json({ ok: true, allDone, results });
   }
 }

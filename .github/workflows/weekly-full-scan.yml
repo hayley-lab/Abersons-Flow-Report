@@ -41,6 +41,11 @@ jobs:
           # that stays within timeout-minutes: 360 (340 min budget).
           DEADLINE=$(( $(date +%s) + 340 * 60 ))
           i=0
+          # Stall guard: abort early if many consecutive calls make no progress
+          # (no cache still building AND no season advanced) instead of silently
+          # looping to the 340-min wall clock. ~15 calls ≈ 13+ minutes of nothing.
+          STALL=0
+          STALL_LIMIT=15
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             i=$(( i + 1 ))
             echo "--- Call $i ($(date -u +%H:%M:%S) UTC) ---"
@@ -89,14 +94,20 @@ jobs:
             # Parse only when the body is valid JSON; otherwise log a snippet and
             # treat as "not done" so a single bad response never crashes the job.
             if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, catalogBuilding, catalog, results}' 2>/dev/null \
+              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, catalogBuilding, salesBuilding, consignBuilding, results}' 2>/dev/null \
                 || printf '%s\n' "$RESPONSE"
               ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null)
               HAS_ERROR=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; (.action == "error") or (.phase == "error"))' 2>/dev/null)
+              # Progress = a shared cache is still building OR at least one season
+              # advanced this call (any non-skipped result). Used by the stall guard.
+              BUILDING=$(printf '%s' "$RESPONSE" | jq -r '((.catalogBuilding // false) or (.salesBuilding // false) or (.consignBuilding // false))' 2>/dev/null)
+              ADVANCED=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; .action != "skipped")' 2>/dev/null)
             else
               echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
               ALL_DONE=false
               HAS_ERROR=false
+              BUILDING=false
+              ADVANCED=false
             fi
             if [ "$ALL_DONE" = "true" ]; then
               if [ "$HAS_ERROR" = "true" ]; then
@@ -106,7 +117,18 @@ jobs:
               echo "All seasons complete. Done."
               exit 0
             fi
-            echo "Still in progress (catalog building or seasons stepping), continuing..."
+            if [ "$BUILDING" = "true" ] || [ "$ADVANCED" = "true" ]; then
+              STALL=0
+            else
+              STALL=$(( STALL + 1 ))
+              if [ "$STALL" -ge "$STALL_LIMIT" ]; then
+                echo "No progress for $STALL consecutive calls (no cache building, no season advanced)."
+                echo "Last response: ${RESPONSE:0:500}"
+                echo "Aborting instead of looping to the wall clock."
+                exit 1
+              fi
+            fi
+            echo "Still in progress (catalog building or seasons stepping), continuing... (stall=$STALL)"
             sleep 3
           done
           echo "Reached time budget — scan may still be in progress."
