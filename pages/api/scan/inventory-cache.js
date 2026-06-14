@@ -17,7 +17,13 @@ import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { syncInventoryCache } from "../../../lib/inventory-ledger";
 
-const CHUNK_MS = 45000;
+// Paging budget per chunk. The cron/scan driver aborts each drive at
+// CACHE_REQUEST_TIMEOUT_MS (55s) and the next driver call would start a SECOND
+// concurrent build if this one hadn't returned — so the chunk must RETURN well
+// before 55s. Checkpoints are now incremental (touched shards only), so after
+// the paging loop ends only a cheap final flush remains. 40s of paging plus the
+// last in-flight page and the final checkpoint comfortably returns < ~48s.
+const CHUNK_MS = 40000;
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();

@@ -22,7 +22,7 @@
       "maxDuration": 60
     },
     "pages/api/scan/inventory-cache.js": {
-      "maxDuration": 60
+      "maxDuration": 120
     },
     "pages/api/scan/sales-cache.js": {
       "maxDuration": 60
