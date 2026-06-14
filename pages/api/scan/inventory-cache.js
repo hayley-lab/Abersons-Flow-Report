@@ -18,12 +18,19 @@ import { sessionOptions } from "../../../lib/session";
 import { syncInventoryCache } from "../../../lib/inventory-ledger";
 
 // Paging budget per chunk. The cron/scan driver aborts each drive at
-// CACHE_REQUEST_TIMEOUT_MS (55s) and the next driver call would start a SECOND
-// concurrent build if this one hadn't returned — so the chunk must RETURN well
-// before 55s. Checkpoints are now incremental (touched shards only), so after
-// the paging loop ends only a cheap final flush remains. 40s of paging plus the
-// last in-flight page and the final checkpoint comfortably returns < ~48s.
-const CHUNK_MS = 40000;
+// CACHE_REQUEST_TIMEOUT_MS (55s); if this child hadn't RETURNED by then the
+// parent's abort only stops it WAITING — the child keeps running to its
+// maxDuration, so the next driver call spawns a SECOND concurrent build (the
+// thundering herd that doubles LS request consumption and stalls the cold
+// build). So the chunk must finish well under 55s.
+//
+// Budget breakdown: paging is LS-rate-limited (~950 req / 5 min), and each
+// periodic checkpoint rewrites the touched store shards (which grow as the cold
+// build accumulates ~110k products). 25s of paging plus the last in-flight page
+// and the final incremental checkpoint returns comfortably < ~45s, leaving a
+// safe margin below the 55s parent abort. The cold build simply spans a few
+// more (non-overlapping) driver calls instead of fewer overlapping ones.
+const CHUNK_MS = 25000;
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
