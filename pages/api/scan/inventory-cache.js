@@ -24,13 +24,16 @@ import { syncInventoryCache } from "../../../lib/inventory-ledger";
 // thundering herd that doubles LS request consumption and stalls the cold
 // build). So the chunk must finish well under 55s.
 //
-// Budget breakdown: paging is LS-rate-limited (~950 req / 5 min), and each
-// periodic checkpoint rewrites the touched store shards (which grow as the cold
-// build accumulates ~110k products). 25s of paging plus the last in-flight page
-// and the final incremental checkpoint returns comfortably < ~45s, leaving a
-// safe margin below the 55s parent abort. The cold build simply spans a few
-// more (non-overlapping) driver calls instead of fewer overlapping ones.
-const CHUNK_MS = 25000;
+// Budget breakdown: paging is LS-rate-limited (~950 req / 5 min), and the
+// end-of-chunk checkpoint rewrites the touched store shards (which grow toward
+// multi-MB as the cold build accumulates ~110k products — one such write costs
+// several seconds on a large cache). The checkpoint interval is sized so a
+// normal chunk writes only once, at the end. 18s of paging plus the last
+// in-flight page and that single final checkpoint returns comfortably < ~40s,
+// leaving a safe margin below the 55s parent abort so the next driver call
+// never overlaps a still-running build. The cold build simply spans a few more
+// (non-overlapping) driver calls.
+const CHUNK_MS = 18000;
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
