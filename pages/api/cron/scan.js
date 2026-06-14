@@ -19,6 +19,7 @@ import {
   computeAllDone,
   planSeasonWork,
   resolveLastFullTs,
+  shouldRetrySeasonStep,
   shouldSkipCompletedDrive,
   shouldYieldForCache,
 } from "../../../lib/scan-orchestrator";
@@ -26,6 +27,7 @@ import { loadScanDataSummary } from "../../../lib/scan-data-store";
 import { loadCatalogMeta } from "../../../lib/catalog-store";
 import { loadSalesStoreMeta } from "../../../lib/sales-store";
 import { loadConsignMeta } from "../../../lib/consignment-store";
+import { loadInventoryMeta } from "../../../lib/inventory-ledger";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000; // 1 hour between full rescans
 const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -48,6 +50,11 @@ const CRON_LOOP_DEADLINE_MS = 150 * 1000;
 const CACHE_REQUEST_TIMEOUT_MS = 55 * 1000;
 const STEP_REQUEST_TIMEOUT_MS = 70 * 1000;
 const RESPONSE_OVERHEAD_MS = 5 * 1000;
+// How many times the driver path retries a season whose step failed
+// transiently (network/timeout/5xx) before abandoning it, so one transient LS
+// hiccup can't fail an otherwise-green weekly sync. The workflow stall guard is
+// the final backstop against a persistently failing season.
+const STEP_MAX_ATTEMPTS = 3;
 // Cap on how long the cold catalog build may run before yielding (to seasons if
 // it finished, or to the next firing if not). Incremental syncs finish in ~1
 // call; only the first-ever cold build approaches this cap, and it resumes
@@ -62,6 +69,12 @@ const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
 // Store-wide consignment cache (POs + returns) drive budget + gate.
 const CONSIGN_DRIVE_MS = 75 * 1000;
 const ENABLE_CONSIGN_STORE = process.env.ENABLE_CONSIGN_STORE !== "0";
+// Store-wide live-inventory cache drive budget + gate. Driving it to completion
+// here (sequentially) before stepping seasons stops every season from re-paging
+// the full 2.0/inventory stream in parallel — the thundering herd that
+// rate-limited LS and timed the 70s step out. Mirrors cron/delta's inventory drive.
+const INVENTORY_DRIVE_MS = 75 * 1000;
+const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY !== "0";
 
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -292,6 +305,49 @@ export default async function handler(req, res) {
     return last;
   }
 
+  // Drive the store-wide live-inventory cache (one shared 2.0/inventory pull).
+  // Mirrors driveConsign; resumable across invocations via its version cursor.
+  // Pre-building it here means each season's inventory phase just READS on-hand
+  // from the cache instead of every season re-paging the full stream in parallel.
+  async function driveInventory() {
+    if (
+      shouldSkipCompletedDrive({
+        kvComplete: await cacheCompleteInKv(loadInventoryMeta),
+        resetRequested: req.query.inventory === "1",
+        loopInternally,
+      })
+    ) {
+      return { cacheComplete: true, complete: true, version: null, skipped: true };
+    }
+    const inventoryDeadline = cacheDriveDeadline({ driveMs: INVENTORY_DRIVE_MS, overallDeadline });
+    const resetFirst = req.query.inventory === "1";
+    let last = null;
+    let first = true;
+    do {
+      if (!hasBudgetFor(inventoryDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
+      const q = first && resetFirst ? "?reset=1" : "";
+      first = false;
+      try {
+        const r = await fetchWithTimeout(
+          `${base}/api/scan/inventory-cache${q}`,
+          { method: "POST", headers },
+          CACHE_REQUEST_TIMEOUT_MS
+        );
+        const body = await r.json().catch(() => null);
+        if (body) last = body;
+        if (!r.ok) {
+          console.error(`[cron/scan] inventory-cache HTTP ${r.status}: ${body?.error || ""}`);
+          break;
+        }
+        if (body?.cacheComplete) break;
+      } catch (e) {
+        console.error("[cron/scan] inventory drive failed:", e.message);
+        break;
+      }
+    } while (loopInternally && hasBudgetFor(inventoryDeadline, CACHE_REQUEST_TIMEOUT_MS));
+    return last;
+  }
+
   let catalogResult = null;
   try {
     catalogResult = await driveCatalog();
@@ -398,6 +454,42 @@ export default async function handler(req, res) {
     }
   }
 
+  // Drive the store-wide live-inventory cache before stepping seasons so each
+  // season reads on-hand from the shared cache. Yield if not complete so no
+  // season re-pages the full 2.0/inventory stream itself (the timeout cause).
+  let inventoryResult = null;
+  if (ENABLE_BULK_INVENTORY) {
+    try {
+      inventoryResult = await driveInventory();
+      if (inventoryResult) {
+        console.warn(
+          `[cron/scan] inventory: complete=${inventoryResult.complete} version=${inventoryResult.version}`
+        );
+      }
+    } catch (e) {
+      console.error("[cron/scan] inventory drive error:", e.message);
+    }
+    if (
+      usesCronGates &&
+      shouldYieldForCache({
+        driveResult: inventoryResult,
+        kvComplete: await cacheCompleteInKv(loadInventoryMeta),
+      })
+    ) {
+      return res.json({
+        ok: true,
+        allDone: false,
+        inventoryBuilding: true,
+        inventory: {
+          complete: false,
+          cacheComplete: false,
+          version: (inventoryResult && inventoryResult.version) ?? null,
+        },
+        results: [],
+      });
+    }
+  }
+
   let kvResults;
   try {
     kvResults = await Promise.all(
@@ -470,7 +562,14 @@ export default async function handler(req, res) {
       }
       ss.restart = "0";
       if (!r.ok) {
-        ss.done = !loopInternally;
+        // 5xx = transient (retry on the driver path); 4xx = terminal.
+        ss.attempts = (ss.attempts || 0) + 1;
+        ss.done = !shouldRetrySeasonStep({
+          loopInternally,
+          transient: r.status >= 500,
+          attempts: ss.attempts,
+          maxAttempts: STEP_MAX_ATTEMPTS,
+        });
         ss.action = "error";
         ss.phase = json.phase || ss.phase || null;
         return {
@@ -499,7 +598,14 @@ export default async function handler(req, res) {
         progress: json.progress,
       };
     } catch (e) {
-      ss.done = !loopInternally;
+      // Network error / fetch timeout = transient → retry on the driver path.
+      ss.attempts = (ss.attempts || 0) + 1;
+      ss.done = !shouldRetrySeasonStep({
+        loopInternally,
+        transient: true,
+        attempts: ss.attempts,
+        maxAttempts: STEP_MAX_ATTEMPTS,
+      });
       ss.action = "error";
       return { season: ss.season, action: "error", error: e.message };
     }

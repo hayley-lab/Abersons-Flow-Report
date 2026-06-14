@@ -52,7 +52,12 @@ import {
   reconcileConsignment,
   saveConsignmentState,
 } from "../../../lib/consignment-ledger";
-import { liveOnHandFromCache, syncInventoryCache } from "../../../lib/inventory-ledger";
+import {
+  liveOnHandFromCache,
+  loadInventoryCache,
+  loadInventoryMeta,
+  syncInventoryCache,
+} from "../../../lib/inventory-ledger";
 import {
   handleForSku,
   pidsMissingSku,
@@ -919,7 +924,28 @@ export default async function handler(req, res) {
           state.inventoryIdx = state.inventoryIdx || 0;
         }
 
-        if (ENABLE_BULK_INVENTORY && !state.inventoryBulkFailed) {
+        // Fast path: cron/scan pre-drove the store-wide inventory cache to
+        // completion, so just READ on-hand for this season's pids. This avoids
+        // every season re-paging the full 2.0/inventory stream in parallel — the
+        // thundering herd that rate-limited LS and timed the 70s step out.
+        if (ENABLE_BULK_INVENTORY && !state.inventoryBulkFailed && !state.inventorySynced) {
+          try {
+            const invMeta = await loadInventoryMeta(kv);
+            if (invMeta && invMeta.complete) {
+              const invCache = await loadInventoryCache(kv, season);
+              for (const pid of state.seasonPids) {
+                const live = liveOnHandFromCache(invCache, pid);
+                if (live != null) getProductStats(pid).liveOnHand = live;
+              }
+              state.inventorySynced = true;
+              state.progress = `Applied live inventory for ${state.seasonPids.length} products…`;
+            }
+          } catch (e) {
+            console.warn(`[step] ${season} inventory cache read failed, paging:`, e.message);
+          }
+        }
+
+        if (ENABLE_BULK_INVENTORY && !state.inventoryBulkFailed && !state.inventorySynced) {
           try {
             // No reset: the store-wide cache is kept current by the version
             // cursor, so a full rebuild reuses it (and concurrent seasons share
@@ -1364,10 +1390,7 @@ export default async function handler(req, res) {
     }
     // 72h (not 24h) so a delayed/skipped nightly resumes in-progress state
     // instead of letting it expire and silently reinitializing.
-    await Promise.all([
-      kv.set(jobKey, small, { ex: 72 * 3600 }),
-      saveScanBig(kv, season, big),
-    ]);
+    await Promise.all([kv.set(jobKey, small, { ex: 72 * 3600 }), saveScanBig(kv, season, big)]);
     return res.json({
       phase: state.phase,
       mode: state.scanMode,
