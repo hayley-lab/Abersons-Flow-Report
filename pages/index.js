@@ -560,14 +560,13 @@ export default function FlowReport() {
       const { data, job, hasOverride: ov, lsHealth: health } = await r.json();
       setHasOverride(!!ov);
       setLsHealth(health || null);
+      // Current scan phases only (step.js): the old catalog-scan phases
+      // (products, products_slow*, products_fix, products_variants) were removed,
+      // so listing them here could let scanInterrupted misfire on a phase that no
+      // longer exists.
       const activePhases = new Set([
         "init",
         "products_seed",
-        "products",
-        "products_slow",
-        "products_slow_done",
-        "products_fix",
-        "products_variants",
         "consignments",
         "returns",
         "inventory",
