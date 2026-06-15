@@ -11,7 +11,7 @@
 //   LS_REFRESH_TOKEN, REPORT_PASSWORD, SESSION_SECRET, KV_REST_API_URL,
 //   KV_REST_API_TOKEN
 import { kv } from "@vercel/kv";
-import { getLsToken, lsBase } from "../../../lib/ls-auth";
+import { getLsToken, lsBase, markLsAuthError } from "../../../lib/ls-auth";
 import { makeLsFetch } from "../../../lib/ls-fetch";
 import { fetchSalesPages, getCursor } from "../../../lib/ls-sales-pagination";
 import { getIronSession } from "iron-session";
@@ -274,7 +274,11 @@ export default async function handler(req, res) {
   const base = lsBase();
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
   const deadline = Date.now() + CHUNK_MS;
-  const lsFetch = makeLsFetch({ base, headers });
+  const lsFetch = makeLsFetch({
+    base,
+    headers,
+    onAuthError: (e) => markLsAuthError(`LS ${e.status} during scan`),
+  });
 
   // Fold this step's request tally into the season's cumulative counter so a
   // full scan reports total LS calls per endpoint family (rate-limit budget).

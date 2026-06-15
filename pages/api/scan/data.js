@@ -10,6 +10,7 @@ import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { buildAllRows, rollup } from "../../../lib/flow-rollup";
 import { loadScanData } from "../../../lib/scan-data-store";
+import { getLsHealth } from "../../../lib/ls-auth";
 
 function parseKv(val) {
   if (!val) return null;
@@ -53,10 +54,11 @@ export default async function handler(req, res) {
   const { season } = req.query;
   if (!season) return res.status(400).json({ error: "season required" });
 
-  const [rawData, job, override] = await Promise.all([
+  const [rawData, job, override, lsHealth] = await Promise.all([
     loadScanData(kv, season),
     kv.get(`scan:job:${season}`),
     loadOverride(season),
+    getLsHealth(),
   ]);
 
   let data = rawData || null;
@@ -67,6 +69,7 @@ export default async function handler(req, res) {
       data: null,
       job: job ? { phase: job.phase, progress: job.progress, error: job.error } : null,
       hasOverride: !!override,
+      lsHealth: lsHealth || null,
       notModified: true,
     });
   }
@@ -122,6 +125,7 @@ export default async function handler(req, res) {
     data: data || null,
     job: job ? { phase: job.phase, progress: job.progress, error: job.error } : null,
     hasOverride: !!override,
+    lsHealth: lsHealth || null,
     mergeError,
     rollupDegraded: !!data?.rollupDegraded,
     totalsDegraded: !!data?.totalsDegraded,

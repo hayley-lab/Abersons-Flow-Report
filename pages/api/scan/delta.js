@@ -10,7 +10,7 @@
 // ("An error occurred with this application."), which cron/delta then surfaced
 // as `Unexpected token 'A' ... is not valid JSON`.
 import { kv } from "@vercel/kv";
-import { getLsToken, lsBase } from "../../../lib/ls-auth";
+import { getLsToken, lsBase, markLsAuthError, markLsHealthy } from "../../../lib/ls-auth";
 import { makeLsFetch } from "../../../lib/ls-fetch";
 import { fetchSalesPages } from "../../../lib/ls-sales-pagination";
 import { getIronSession } from "iron-session";
@@ -64,7 +64,11 @@ export default async function handler(req, res) {
     const base = lsBase();
     const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     const deadline = Date.now() + MAX_DURATION_MS;
-    const lsFetch = makeLsFetch({ base, headers });
+    const lsFetch = makeLsFetch({
+      base,
+      headers,
+      onAuthError: (e) => markLsAuthError(`LS ${e.status} during delta sync`),
+    });
 
     async function fetchLiveOnHand(pid) {
       const inv = await lsFetch(`2.0/products/${pid}/inventory`);
@@ -303,6 +307,8 @@ export default async function handler(req, res) {
     };
 
     await saveScanData(kv, season, result);
+    // Successful delta = LS reachable + token valid → clear any stale error state.
+    markLsHealthy();
     return res.json({ ok: true, ts: result.ts, pages });
   } catch (e) {
     return res.status(500).json({ error: e.message });

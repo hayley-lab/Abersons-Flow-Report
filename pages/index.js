@@ -131,6 +131,93 @@ const ErrBox = ({ msg }) => (
   </div>
 );
 
+// Operator-facing phase labels (kept in sync with the step.js pipeline).
+const PHASE_LABELS = {
+  init: "Starting…",
+  products_seed: "Finding products",
+  consignments: "Reading purchase orders",
+  returns: "Reading vendor returns",
+  inventory: "Reading on-hand",
+  sales: "Reading sales",
+  finalizing: "Finishing up",
+  done: "Up to date",
+  error: "Failed",
+};
+
+const SyncStatusRow = ({ label, children }) => (
+  <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "4px 0" }}>
+    <div style={{ width: 130, fontSize: 12, color: "#9e9892", flexShrink: 0 }}>{label}</div>
+    <div style={{ fontSize: 13, color: "#1a1816" }}>{children}</div>
+  </div>
+);
+
+// Sync Status card on Data Health: shows Lightspeed connection health + the last
+// scan's phase/progress + data freshness, so a stuck or failed sync is visible
+// without developer URLs. See docs/OPERATIONS.md.
+const SyncStatusCard = ({ lsHealth, job, dataTs }) => {
+  const conn =
+    lsHealth?.status === "error"
+      ? { color: "#c0392b", dot: "#e74c3c", label: "Connection problem" }
+      : lsHealth?.status === "ok"
+        ? { color: "#1e7d4f", dot: "#27ae60", label: "Connected to Lightspeed" }
+        : { color: "#9e9892", dot: "#c9c2b8", label: "Connection status unknown" };
+  const phase = job?.phase || null;
+  const inProgress = phase && phase !== "done" && phase !== "error";
+  const phaseLabel = phase ? PHASE_LABELS[phase] || phase : "No sync recorded yet";
+  // job.progress is a human-readable status string (e.g. "Syncing POs (3/120)…").
+  const progressText = inProgress && typeof job?.progress === "string" ? job.progress : null;
+
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid #e2ddd5",
+        borderRadius: 10,
+        boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+        padding: "1rem 1.1rem",
+        marginBottom: "1.5rem",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: "0.07em",
+          textTransform: "uppercase",
+          color: "#9e9892",
+          marginBottom: 8,
+        }}
+      >
+        Sync Status
+      </div>
+      <SyncStatusRow label="Lightspeed">
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 7, color: conn.color }}>
+          <span
+            style={{
+              width: 9,
+              height: 9,
+              borderRadius: "50%",
+              background: conn.dot,
+              display: "inline-block",
+            }}
+          />
+          {conn.label}
+        </span>
+        {lsHealth?.detail ? <span style={{ color: "#9e9892" }}> — {lsHealth.detail}</span> : null}
+        {lsHealth?.ts ? <span style={{ color: "#9e9892" }}> ({fmtAge(lsHealth.ts)})</span> : null}
+      </SyncStatusRow>
+      <SyncStatusRow label="Last sync">
+        {phaseLabel}
+        {progressText ? <span style={{ color: "#9e9892" }}> — {progressText}</span> : null}
+        {phase === "error" && job?.error ? (
+          <span style={{ color: "#c0392b" }}> — {job.error}</span>
+        ) : null}
+      </SyncStatusRow>
+      <SyncStatusRow label="Data updated">{dataTs ? fmtAge(dataTs) : "never"}</SyncStatusRow>
+    </div>
+  );
+};
+
 const KpiRow = ({ items }) => (
   <div
     style={{
@@ -335,6 +422,8 @@ export default function FlowReport() {
   const [dataError, setDataError] = useState(null);
   const [dataTs, setDataTs] = useState(null); // timestamp of last successful scan
   const [hasOverride, setHasOverride] = useState(false); // season uses imported override data
+  const [lsHealth, setLsHealth] = useState(null); // { status: "ok"|"error", ts, detail }
+  const [syncJob, setSyncJob] = useState(null); // { phase, progress, error } of last/active scan
 
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState("");
@@ -467,8 +556,9 @@ export default function FlowReport() {
         }
         throw new Error(d.error || "HTTP " + r.status);
       }
-      const { data, job, hasOverride: ov } = await r.json();
+      const { data, job, hasOverride: ov, lsHealth: health } = await r.json();
       setHasOverride(!!ov);
+      setLsHealth(health || null);
       const activePhases = new Set([
         "init",
         "products_seed",
@@ -484,6 +574,7 @@ export default function FlowReport() {
         "finalizing",
       ]);
       setScanInterrupted(!!(job && activePhases.has(job.phase)));
+      setSyncJob(job || null);
       if (data) {
         setScanData(data);
         setSummaryRows(data.summaryRows || []);
@@ -1275,6 +1366,31 @@ export default function FlowReport() {
     </div>
   ) : null;
 
+  // LS connection-health banner: the cron-driven scan/delta paths flag a bad or
+  // expired Lightspeed token in KV (ls:health). Surface it loudly so an operator
+  // knows sync is broken (and to rotate the token) instead of silently seeing
+  // stale numbers. See docs/OPERATIONS.md.
+  const LsHealthWarning =
+    lsHealth && lsHealth.status === "error" ? (
+      <div
+        style={{
+          background: "#fdecea",
+          border: "1px solid #f5b1a8",
+          borderRadius: 8,
+          padding: "10px 16px",
+          marginBottom: "1rem",
+          fontSize: 13,
+          color: "#9b1c10",
+          lineHeight: 1.5,
+        }}
+      >
+        <strong>Lightspeed connection problem.</strong> The last sync could not authenticate with
+        Lightspeed{lsHealth.detail ? ` (${lsHealth.detail})` : ""}
+        {lsHealth.ts ? ` — ${fmtAge(lsHealth.ts)}` : ""}. New sales and updates are not coming in.
+        The Lightspeed access token likely needs to be renewed — see the operations runbook.
+      </div>
+    ) : null;
+
   // ── render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -1434,6 +1550,7 @@ export default function FlowReport() {
       </header>
 
       <div style={s.main}>
+        {LsHealthWarning}
         {RollupWarning}
         {/* ── SUMMARY ── */}
         {screen === "summary" && (
@@ -2557,6 +2674,7 @@ export default function FlowReport() {
             {dataError && <ErrBox msg={dataError} />}
             {!dataLoading && (
               <>
+                {mounted && <SyncStatusCard lsHealth={lsHealth} job={syncJob} dataTs={dataTs} />}
                 <KpiRow
                   items={[
                     {

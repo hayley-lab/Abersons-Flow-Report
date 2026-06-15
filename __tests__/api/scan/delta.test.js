@@ -33,6 +33,8 @@ jest.mock("@vercel/kv", () => {
 jest.mock("../../../lib/ls-auth", () => ({
   getLsToken: jest.fn(async () => "test-token"),
   lsBase: jest.fn(() => "https://test.retail.lightspeed.app/api"),
+  markLsAuthError: jest.fn(),
+  markLsHealthy: jest.fn(),
 }));
 
 jest.mock("../../../lib/ls-fetch", () => ({
