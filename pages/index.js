@@ -1,4 +1,20 @@
 // pages/index.js
+//
+// Main flow-report UI. Navigation is state-driven (`screen`, `dept`, `vendor`)
+// rather than route-driven so season changes can preserve the current drilldown
+// when the target department/vendor exists in the next season.
+//
+// Data path:
+//   GET /api/scan/data -> lib/flow-rollup canonical rows -> this page.
+//   The page should display server-provided rollups wherever possible; when it
+//   calculates drilldown details client-side, use helpers from lib/flow-rollup
+//   and lib/flow-math so summary, vendor list, and product rows stay aligned.
+//
+// Major sections:
+//   - auth + scan controls
+//   - summary / department / vendor drilldowns
+//   - import workflow entry points
+//   - Data Health (validation, uncategorized rows, manual-count differences)
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
@@ -349,6 +365,11 @@ export default function FlowReport() {
   // Persisted drift trend for the current season (GET /api/scan/validate?history=1).
   const [validationHistory, setValidationHistory] = useState([]);
   const [validationLatest, setValidationLatest] = useState(null);
+  // Old-report reconciliation reads the imported datatailor override snapshot
+  // and diffs it against the current request-time rollup (no LS calls).
+  const [reconciliation, setReconciliation] = useState(null);
+  const [reconciliationLoading, setReconciliationLoading] = useState(false);
+  const [reconciliationError, setReconciliationError] = useState(null);
 
   const routeForSeason = useCallback(
     function (seasonId) {
@@ -509,6 +530,8 @@ export default function FlowReport() {
     setValidationError(null);
     setValidationHistory([]);
     setValidationLatest(null);
+    setReconciliation(null);
+    setReconciliationError(null);
   }, [season]);
 
   // Read the persisted drift trend for the current season (no LS paging — just
@@ -552,6 +575,26 @@ export default function FlowReport() {
     }
     setValidationLoading(false);
   }, [season, loadValidationHistory]);
+
+  const runReconciliation = useCallback(async () => {
+    setReconciliationLoading(true);
+    setReconciliationError(null);
+    try {
+      const r = await fetch(`/api/scan/reconcile?season=${encodeURIComponent(season)}`);
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 401) {
+          setAuthed(false);
+          return;
+        }
+        throw new Error(d.error || "HTTP " + r.status);
+      }
+      setReconciliation(await r.json());
+    } catch (e) {
+      setReconciliationError(e.message);
+    }
+    setReconciliationLoading(false);
+  }, [season]);
 
   // ── auto-poll: silently refresh data when a newer scan is available ─────────
   useEffect(() => {
@@ -1561,8 +1604,8 @@ export default function FlowReport() {
                         </>
                       ) : (
                         <>
-                          No scan data yet for {seasonLabel}. Click <strong>↺ {fullScanLabel}</strong>{" "}
-                          to run the first scan.
+                          No scan data yet for {seasonLabel}. Click{" "}
+                          <strong>↺ {fullScanLabel}</strong> to run the first scan.
                         </>
                       )}
                     </div>
@@ -2617,6 +2660,181 @@ export default function FlowReport() {
                     ) : (
                       <div style={{ fontSize: 13, color: "#2d6a4f" }}>
                         No uncategorized products — every product has a Lightspeed product type.
+                      </div>
+                    )}
+                  </div>
+                </TableWrap>
+                <div style={{ marginTop: "1.5rem" }} />
+                <TableWrap
+                  title={"Old Report Reconciliation — " + seasonLabel}
+                  right={
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {reconciliation && reconciliation.checkedAt && mounted && (
+                        <span style={{ fontSize: 11, color: "#9e9892" }}>
+                          checked{" "}
+                          {new Date(reconciliation.checkedAt).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (!reconciliationLoading) runReconciliation();
+                        }}
+                        disabled={reconciliationLoading}
+                        style={{
+                          background: "none",
+                          border: "1px solid #b8cce4",
+                          borderRadius: 6,
+                          padding: "5px 11px",
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: reconciliationLoading ? "#b0aba5" : "#3a5a8c",
+                          cursor: reconciliationLoading ? "default" : "pointer",
+                        }}
+                      >
+                        {reconciliationLoading ? "Reconciling…" : "Compare to old report"}
+                      </button>
+                    </div>
+                  }
+                >
+                  <div style={{ padding: "1.1rem" }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "#6b6560",
+                        lineHeight: 1.6,
+                        marginBottom:
+                          reconciliation || reconciliationLoading || reconciliationError
+                            ? "1rem"
+                            : 0,
+                      }}
+                    >
+                      Compares the current Lightspeed rollup against the imported datatailor
+                      hard-pull records in <code>scan:override</code>. This does not call
+                      Lightspeed; it requires a recently imported old-report snapshot because
+                      override records currently expire after 30 days.
+                    </div>
+
+                    {reconciliationLoading && <Spinner label="Comparing to old report…" />}
+                    {reconciliationError && <ErrBox msg={reconciliationError} />}
+
+                    {!reconciliationLoading && reconciliation && (
+                      <>
+                        <div
+                          style={{
+                            background: reconciliation.ok ? "#eef3ee" : "#fef3e2",
+                            border: "1px solid " + (reconciliation.ok ? "#cfe0cf" : "#f5d9a0"),
+                            borderRadius: 8,
+                            padding: "10px 14px",
+                            marginBottom: "1rem",
+                            color: reconciliation.ok ? "#2d6a4f" : "#92600a",
+                            fontSize: 13,
+                          }}
+                        >
+                          <strong>
+                            {reconciliation.ok
+                              ? "Old report agrees with the current rollup"
+                              : "Old report differences need review"}
+                          </strong>
+                        </div>
+
+                        <KpiRow
+                          items={[
+                            {
+                              label: "Matched products",
+                              value: reconciliation.counts?.matchedProducts ?? 0,
+                              sub: "of " + (reconciliation.counts?.oldProducts ?? 0) + " old rows",
+                            },
+                            {
+                              label: "Old-only SKUs",
+                              value: reconciliation.counts?.oldOnlyProducts ?? 0,
+                            },
+                            {
+                              label: "New-only SKUs",
+                              value: reconciliation.counts?.newOnlyProducts ?? 0,
+                            },
+                            {
+                              label: "Qty mismatches",
+                              value: reconciliation.counts?.qtyMismatches ?? 0,
+                            },
+                            {
+                              label: "Dollar mismatches",
+                              value: reconciliation.counts?.dollarMismatches ?? 0,
+                            },
+                            {
+                              label: "Wrong-season skipped",
+                              value: reconciliation.counts?.wrongSeasonOldProducts ?? 0,
+                            },
+                          ]}
+                        />
+
+                        {Array.isArray(reconciliation.oldOnly) &&
+                          reconciliation.oldOnly.length > 0 && (
+                            <div
+                              style={{ fontSize: 12, color: "#92600a", marginBottom: "0.75rem" }}
+                            >
+                              Old-only SKUs:{" "}
+                              {reconciliation.oldOnly
+                                .slice(0, 8)
+                                .map((p) => p.sku)
+                                .join(", ")}
+                              {reconciliation.oldOnly.length > 8
+                                ? " (showing first 8 of " + reconciliation.oldOnly.length + ")"
+                                : ""}
+                            </div>
+                          )}
+
+                        {Array.isArray(reconciliation.mismatches) &&
+                        reconciliation.mismatches.length > 0 ? (
+                          <div style={{ overflowX: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr>
+                                  <TH>SKU / Vendor</TH>
+                                  <TH>Field</TH>
+                                  <TH>Source</TH>
+                                  <TH right>Old report</TH>
+                                  <TH right>Current report</TH>
+                                  <TH right>Δ</TH>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {reconciliation.mismatches.slice(0, 100).map((m, i) => (
+                                  <tr key={i} style={{ borderBottom: "1px solid #e2ddd5" }}>
+                                    <TD mono>{m.sku || m.vendorName || m.oldVendorKey}</TD>
+                                    <TD>{m.field}</TD>
+                                    <TD>{m.source}</TD>
+                                    <TD right>{m.expected}</TD>
+                                    <TD right>{m.actual}</TD>
+                                    <TD right style={{ color: "#8b2020", fontWeight: 600 }}>
+                                      {m.delta > 0 ? "+" + m.delta : m.delta}
+                                    </TD>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {reconciliation.mismatches.length > 100 && (
+                              <div style={{ fontSize: 12, color: "#9e9892", padding: "8px 12px" }}>
+                                Showing first 100 of {reconciliation.mismatches.length} mismatches.
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 13, color: "#2d6a4f" }}>
+                            No old-report mismatches on matched SKUs/vendors.
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {!reconciliationLoading && !reconciliation && !reconciliationError && (
+                      <div style={{ fontSize: 13, color: "#9e9892" }}>
+                        Click <strong>Compare to old report</strong> to check {seasonLabel} against
+                        the imported datatailor baseline.
                       </div>
                     )}
                   </div>

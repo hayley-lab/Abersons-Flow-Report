@@ -1,5 +1,11 @@
 # Abersons Flow Report — Project Context
 
+## Handoff / Onboarding
+
+- Start with `README.md` for local setup, env vars, scripts, deployment/sync entry points, and the documentation map.
+- Use `docs/flows.md` for visual maps of old-to-new lineage, scan phases, sync paths, rollup merging, and sale classification.
+- This file remains the source of truth for domain rules, AI maintenance constraints, testing policy, and known risks.
+
 ## Git Workflow
 
 ### Conventional Commits (AI MUST follow)
@@ -60,7 +66,7 @@ f8a5ef5 Fix flow report accuracy with shared math...
 Abersons switched POS systems from RMH (old) to Lightspeed Retail / LS (new). The old flow report was connected to RMH. This new app connects to LS and replaces it. Sales history was transferred into LS, but not all POs were — some older POs were hard-pulled from the old flow report.
 
 ## Tech Stack
-- Next.js 14 pages router
+- Next.js pages router (package currently Next 16)
 - Vercel KV (Redis/Upstash) for scan state and cached results
 - Iron-session for auth
 - Lightspeed Retail API v2 (`https://{LS_DOMAIN_PREFIX}.retail.lightspeed.app/api/2.0/`)
@@ -302,11 +308,11 @@ The key files and their roles:
 - Do not show negative Received (cost) — cap at $0 for consignment vendors
 
 ## Code Quality & Style Guidelines (AI MUST follow)
-These rules apply to ALL code the AI writes or edits in this repo. They are enforced (with warnings today, tightening over time) by ESLint + Prettier — see `.eslintrc.json` and `.prettierrc.json`.
+These rules apply to ALL code the AI writes or edits in this repo. They are enforced (with warnings today, tightening over time) by ESLint + Prettier — see `eslint.config.mjs` and `.prettierrc.json`.
 
 ### Tooling
-- **Formatting:** Prettier owns formatting. Run `npm run format` before committing; never hand-format. Config: 2-space indent, double quotes, semicolons, 100-char width, trailing commas (es5).
-- **Linting:** `npm run lint` (`next lint`). It MUST pass with zero ESLint **errors** before pushing. Warnings should trend toward zero — never add new warnings in code you touch.
+- **Formatting:** Prettier owns formatting. Run `npm run format` before committing; never hand-format code. Config: 2-space indent, double quotes, semicolons, 100-char width, trailing commas (es5). `.prettierignore` excludes `*.md`, so `CLAUDE.md`, `README.md`, and docs are hand-formatted.
+- **Linting:** `npm run lint` (`eslint .`, using `eslint.config.mjs`). It MUST pass with zero ESLint **errors** before pushing. Warnings should trend toward zero — never add new warnings in code you touch.
 - **Codacy:** Codacy is not used for this project. Do not install the Codacy CLI, run Codacy analysis, or treat Codacy as a required quality gate.
 - Do NOT add a root `babel.config.js` — it disables Next's SWC compiler. Jest transforms come from `next/jest` in `jest.config.js`.
 

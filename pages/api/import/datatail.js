@@ -1,4 +1,8 @@
-// pages/api/import/datatail.js
+// Scrapes the legacy datatailor report and stores the old RMH-era flow numbers
+// as season overrides in KV (`scan:override:{season}:*`). Those records are both
+// merged into the live report and used by /api/scan/reconcile as the old-report
+// ground truth. This route intentionally reads datatailor HTML, not the old SQL
+// database directly.
 import { getIronSession } from "iron-session";
 import fetch from "node-fetch";
 import { kv } from "@vercel/kv";

@@ -1,6 +1,10 @@
-// Returns pre-computed scan data from KV for the requested season.
-// For seasons with override data (Spring/Fall 2025), merges imported
-// ordered/received values into the scan result.
+// Returns report data for the requested season.
+//
+// This is the normal UI read path: load raw scan:data + optional datatail
+// override records from KV, then run the request-time rollup so summary rows,
+// department/vendor lists, and product rows all share the same bottom-up math.
+// Keep this path aligned with validate/reconcile endpoints when adding new
+// canonical row fields.
 import { kv } from "@vercel/kv";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
