@@ -23,6 +23,9 @@ coverage/
 *.log
 npm-debug.log*
 
+# Local one-off backfill rollback logs (LS/RMH internal ids, not committed)
+scripts/.ls-cost-rollback-*.json
+
 # Ignore cursor AI rules
 .cursor/rules/codacy.mdc
 .vercel
