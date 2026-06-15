@@ -44,7 +44,7 @@ Every commit message MUST use [Conventional Commits](https://www.conventionalcom
 
 **Examples (good):**
 ```
-fix(scan): record vendor returns using SUPPLIER_RETURN type
+fix(scan): record vendor returns using RETURN consignment type
 feat(ui): auto-refresh when delta sync completes
 docs: add conventional commit guidelines to CLAUDE.md
 test(lib): add regression tests for sale-vs-on-sale classification
@@ -93,7 +93,9 @@ Pull ordered and received quantities and dollars from LS purchase orders. These 
 **On-hand reconciliation indicator (IMPLEMENTED Jun 2026):** When the LS on-hand qty doesn't reconcile with the derived flow stock (`received − vendor returns − sold − on sale`), a small `≠` icon + tooltip shows next to the on-hand number in the product table. The materially-different count is surfaced on Data Health ("Manual-count differences"), gated to `MATERIAL_UNIT_DELTA`/`MATERIAL_DOLLAR_DELTA`. Consignment/migrated no-PO products (`qtyReceived === 0`) are excluded. See the "Manual-count differences" subsection below.
 
 
-### 3. Vendor Returns (consignments in LS API, type=SUPPLIER_RETURN)
+### 3. Vendor Returns (consignments in LS API, type=`RETURN`)
+> NOTE (Jun 15, 2026): the LS X-Series consignment type for a vendor return is **`RETURN`** (the other types are `SUPPLIER`, `OUTLET`, `STOCKTAKE`). Earlier docs/tooling said `SUPPLIER_RETURN`, which does not exist in this API and silently returns nothing — `pages/api/scan/step.js` correctly uses `RETURN`.
+
 Vendor returns reduce received inventory and go into the Returned column.
 - Qty goes into Returned column
 - Retail $ summed into color key
@@ -110,7 +112,7 @@ Vendor returns reduce received inventory and go into the Returned column.
 
 ### ⚠️ RETURNED Column — Vendor Returns ONLY
 **The RETURNED column has absolutely nothing to do with customer returns.**
-- RETURNED column = items physically sent back to the vendor (vendor returns, type=SUPPLIER_RETURN consignments in LS)
+- RETURNED column = items physically sent back to the vendor (vendor returns, type=`RETURN` consignments in LS)
 - Tracked in `ps.retQty` (quantity) and `ps.retVal` / `ps.retCost` (dollars)
 - Customer returns ONLY affect the Sold or On Sale column (subtracting from whichever the item sold from) and On Hand (LS updates automatically). They do NOT touch the Returned column at all.
 - `ps.returned` in productStats is kept only for potential future use (on-hand reconciliation indicator). It must NEVER be displayed in the Returned column or used in any Returned column calculation.
@@ -269,16 +271,18 @@ The vendor list and the department summary list in `pages/index.js` hide rows wh
 ### "Other" department → Data Health (Jun 2026, Q4)
 "Other" = uncategorized LS products (`deptId === "__none__"`, i.e. no `product_type_id`). Its summary row is clickable and opens the Data Health screen, which lists those products (SKU, vendor, season, ordered/received/sold qty via the pure `uncategorizedRows(rows, season)` helper) so staff can assign product types in Lightspeed.
 
-### RMH vendor returns not in LS — backfilled into the override (Jun 2026)
-Vendor returns processed in the old RMH POS never reached Lightspeed, so the LS-based report showed those items as still in stock ("not showing out of the new report" — Steve, Jun 2026). Two parts fix this:
-- **Rollup injection (`lib/flow-rollup.js` `overrideReturnsByPid`):** for an LS-matched pid where LS records no return (`retQty === 0`), the override's `qtyReturned` is surfaced onto that product (Returned column + Received netting). We take the **MAX per pid** across override records (the datatailor hard pull and the RMH backfill share the same RMH source — summing would double-count), and the LS value always wins when `retQty > 0`, so returns entered in LS going forward are never double-counted.
-- **Backfill script (`scripts/backfill-rmh-returns.mjs`):** a LOCAL/LAN one-off (Vercel can't reach the RMH LAN host) that pulls `PurchaseOrder.POType = 3` returns per active season from RMH and writes them into the durable override baseline. Dry-run by default; `--write` persists. Active-season scope confirmed: spring25 ~1,175u/$710k, fall25 ~167u/$42k, spring26 ~535u/$92k cost.
-- **Workflow going forward:** vendor returns should be entered in **Lightspeed** (`SUPPLIER_RETURN` consignment) so the report picks them up automatically; the RMH backfill only covers the historical tail.
+### RMH + LS vendor returns — report shows the deduped union (Jun 2026; corrected Jun 15)
+Vendor returns are entered in **both** systems during the RMH→LS transition: historical/transition returns in RMH (`POType=3`, dated 2024-10 → 2026-05-28) and new returns in LS (`type=RETURN` consignments, dated 2025-12-19 →). Steve's "returns not showing out of the new report" was the **RMH-only** tail (returns LS never had). The report surfaces the **union** of both, deduped:
+- **LS returns** are captured by the scan into `productStats.retQty` (step.js `fetchConsignmentHeaders("RETURN")`). This part always worked.
+- **RMH-only returns** are backfilled into the durable override (`scripts/backfill-rmh-returns.mjs`, LOCAL/LAN one-off; `--write` persists) and injected by `lib/flow-rollup.js` `overrideReturnsByPid`: for an LS-matched pid where LS records no return (`retQty === 0`), the override's `qtyReturned` is surfaced (Returned column + Received netting). **LS wins per pid** when `retQty > 0`; we take the **MAX per pid** across override records (the datatailor hard pull and the RMH backfill share the same RMH source — summing would double-count).
+- **Verified (Jun 15) via the rollup-replay harness `tools/recon-accuracy.js`:** spring25/fall25 have no LS returns → report == RMH exactly (1,175u / 167u). spring26 = 652u = 142u overlap (same SKUs in both, LS 142u ≈ RMH 140u → deduped, NOT summed) + 115u LS-only + 395u RMH-only. So the report is the correct deduped union; comparing it to RMH-`POType=3`-alone (535u) is comparing against an incomplete source. fall26 = 9u, all LS (RMH has none).
+- **Earlier false premise (now corrected):** a reconciliation script and these docs queried the non-existent LS type `SUPPLIER_RETURN` and concluded "LS has 0 returns." That was wrong — the type is `RETURN`. The 4e backfill is still correct and necessary (it adds the RMH-only tail), and the per-pid LS-wins/max guard prevents double-counting the transition overlap.
+- **Workflow going forward:** vendor returns should be entered in **Lightspeed** (`RETURN` consignment) so the report picks them up automatically; the RMH backfill only covers the historical/transition RMH-only tail.
 
 ## Known Remaining Issues
 1. **Ordered (cost) data gaps — measured + largely closed (Jun 15, 2026)** — a full LS catalog scan (261k product records) intersected with RMH `POType=0` cost data proved **Lightspeed already carries `supply_price` for ~99% of active-season products** (23,683 of 23,929). The KPI `orderedCostGap` is therefore driven by RMH/datatail-only ordered rows (POs that never migrated to LS — no LS product to read a cost from), plus transient scan cost-capture lag (`COST_BACKFILL_PER_SCAN = 200` in `step.js` fills `pidToCost` over successive scans). Closed via two fixes: (a) the durable KV cost-override baseline (`scripts/backfill-rmh-ordered-cost.mjs`, cost-only fallback for RMH `POType=0` SKUs) for the datatail-only rows; (b) only **5** active-season products were $0 in LS *and* fillable from RMH — 4 were injected into LS `supply_price` (`scripts/inject-ls-cost.mjs`, fill-only) and 1 (`n12088/pf260104`) lacks an LS supplier and is flagged for manual entry. Residual `orderedCostGap` is now genuine no-cost-anywhere rows (consignment / non-purchased) and stays disclosed via the KPI.
 2. **scan retVal still 0 for some LS-native variant products** — scan:data may still store 0 for returned retail on these products. This is now mitigated end-to-end at request time: `registerProduct` upgrades a $0 `pidToPrice`/`pidToCost` to the real catalog price, and `buildAllRows` falls back to the datatail `op.price`/`op.cost` for matched rows, so the vendor list, store summary, and drilldown header (all derived from the same rollup) use `returnedRetailValue`/`returnedCostValue` rather than a stored 0.
-3. **Customer return bucket inference is heuristic** — the classifier uses return-line discount fields, pricebook markers, zero-dollar lines, and unit-vs-retail comparison. LS *does* expose `sale.return.original_sale_id` on return sales (X-Series API), so a future improvement is to bucket returns by looking up the original sale instead of heuristics — see plan item 4d. Until then the heuristic stands.
+3. **Customer return bucket inference is heuristic** — the classifier uses return-line discount fields, pricebook markers, zero-dollar lines, and unit-vs-retail comparison. LS *does* expose the original-sale link on return sales as `sale.return_for` (+ `sale.return_ids`) — verified against the live API; ~12% of sales are returns and carry it. A future improvement is to bucket returns by looking up the original sale instead of heuristics — see plan item 4d. Until then the heuristic stands.
 
 ### Undated consignments (Jun 2026)
 `seasonConsignmentBuckets` (`lib/consignment-store.js`) no longer projects an undated SUPPLIER/RETURN entry into every season whose pid set contains the pid. Undated entries can't be date-filtered, so each pid is attributed only to the unique season whose SKU set owns it; pids shared by more than one season are ambiguous and excluded (with a logged count) instead of inflating Ordered/Received/Returned across seasons. When `pidToSku` is available, both dated and undated projection are SKU-anchored: the pid must be in the season's projection set and `skuMatchesSeason(pidToSku[pid], season)` must pass. Unknown-SKU pids keep the historical pid-set fallback. The consignment cache endpoint projects from catalog pids plus prior `scan:data` pids, and the validation endpoint derives `pidToSku` from canonical rows so re-validation uses the same gate.

@@ -10,11 +10,13 @@
  *
  * Sources (all read-only):
  *   - RMH:    PurchaseOrder.POType = 3 grouped by SKU (qty, cost, retail) via tsql.
- *   - LS:     2.0/consignments?type=SUPPLIER_RETURN count via the API.
+ *   - LS:     2.0/consignments?type=RETURN count via the API. (The type is
+ *             RETURN, not SUPPLIER_RETURN — the latter does not exist and
+ *             silently returns nothing.)
  *   - Report: scan:override:{season}:v:rmhret__* records in KV (what the
- *             request-time rollup reads). LS has no vendor returns, so the
- *             report's Returned column for these seasons is sourced entirely
- *             from this override.
+ *             request-time rollup reads). LS DOES carry returns (type=RETURN)
+ *             for crossover seasons, so the report's Returned column is the
+ *             deduped UNION of LS returns + the RMH-only override tail.
  *
  * RUNS LOCALLY ON THE LAN ONLY (RMH 172.16.2.4 is not reachable from Vercel).
  *
@@ -143,7 +145,7 @@ async function lsReturnCount() {
   let total = 0;
   let guard = 0;
   while (guard++ < 200) {
-    const res = await fetch(`${base}?type=SUPPLIER_RETURN&page_size=300&after=${after}`, {
+    const res = await fetch(`${base}?type=RETURN&page_size=300&after=${after}`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     if (!res.ok) throw new Error(`LS consignments HTTP ${res.status}`);
@@ -204,7 +206,7 @@ async function main() {
   const lsReturns = await lsReturnCount();
 
   console.warn("\n=== Vendor-returns reconciliation: RMH vs LS vs report (KV) ===\n");
-  console.warn(`LS SUPPLIER_RETURN consignments: ${lsReturns}` + (lsReturns === 0 ? "  (returns are RMH-only — no LS collision)" : "  (LS now has returns — check the LS-wins guard)"));
+  console.warn(`LS RETURN consignments: ${lsReturns}` + (lsReturns === 0 ? "  (returns are RMH-only — no LS collision)" : "  (LS also has returns — overlap deduped per-pid by the LS-wins/max guard; report = union)"));
   console.warn("");
 
   let okAll = true;
