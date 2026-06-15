@@ -26,3 +26,4 @@ npm-debug.log*
 # Ignore cursor AI rules
 .cursor/rules/codacy.mdc
 .vercel
+.env.rmh
