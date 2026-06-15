@@ -71,6 +71,13 @@ export default async function handler(req, res) {
 
   // ── Raw LS fetch helper ─────────────────────────────────────────────────────
   if (action === "ls") {
+    // Arbitrary LS API passthrough with the server token. This is broader than
+    // the rest of this route, so it requires the CRON_SECRET bearer (not just a
+    // logged-in session) — a logged-in user shouldn't be able to proxy any LS
+    // endpoint with the store's credentials.
+    const cronAuth =
+      process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
+    if (!cronAuth) return res.status(403).json({ error: "Forbidden" });
     // Fetch any LS API path and return raw JSON
     // e.g. /api/scan/debug?action=ls&path=2.0/consignments/xxx/products
     const { path } = req.query;
