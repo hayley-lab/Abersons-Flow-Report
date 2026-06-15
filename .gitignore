@@ -25,6 +25,7 @@ npm-debug.log*
 
 # Local one-off backfill rollback logs (LS/RMH internal ids, not committed)
 scripts/.ls-cost-rollback-*.json
+scripts/out/
 
 # Ignore cursor AI rules
 .cursor/rules/codacy.mdc

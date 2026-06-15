@@ -13,7 +13,7 @@
  * REQUIREMENTS: FreeTDS `tsql`; .env.rmh (HOST/USER/PASS/DATABASE/PORT);
  *   .env.local (KV_REST_API_URL + KV_REST_API_TOKEN).
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { kv } from "@vercel/kv";
@@ -47,6 +47,26 @@ loadEnv(".env");
 loadEnv(".env.rmh");
 
 const SEASONS = ["spring25", "fall25", "spring26", "fall26"];
+
+// Load RMH sold/on-sale truth from the newest frozen snapshot (scripts/out/
+// rmh-snapshot-*/summary.json), produced by scripts/rmh-snapshot.mjs. Sales were
+// migrated into LS, so the report's sold/on-sale should track RMH — a shortfall
+// flags an LS migration-window gap (early-season RMH sales not migrated). Read
+// from the snapshot (not a live re-query) to keep the harness fast + decoupled.
+function loadSnapshotSales() {
+  try {
+    const base = path.join(ROOT, "scripts", "out");
+    const dirs = readdirSync(base)
+      .filter((d) => d.startsWith("rmh-snapshot-"))
+      .sort();
+    if (!dirs.length) return null;
+    const summaryPath = path.join(base, dirs[dirs.length - 1], "summary.json");
+    const j = JSON.parse(readFileSync(summaryPath, "utf8"));
+    return { dir: dirs[dirs.length - 1], seasons: j.seasons || {} };
+  } catch {
+    return null;
+  }
+}
 
 function seasonForSku(sku) {
   if (!sku || !sku.includes("/")) return null;
@@ -189,6 +209,7 @@ const money = (n) => `$${Math.round(n).toLocaleString()}`;
 
 test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
   const { bySeason: rmh, perSku: rmhPerSku } = queryRmh();
+  const snapSales = loadSnapshotSales();
   const lines = [];
   let returnsOk = true;
   let ordersOk = true;
@@ -440,6 +461,21 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
     lines.push(
       `  SOLD ${String(rep.soldU).padStart(6)}u   ON-SALE ${String(rep.onSaleU).padStart(6)}u   ON-HAND ${String(rep.onHandU).padStart(7)}u`
     );
+    const snap = snapSales && snapSales.seasons[season];
+    if (snap) {
+      const rmhSold = Math.round((snap.sold && snap.sold.u) || 0);
+      const rmhOnSale = Math.round((snap.onSale && snap.onSale.u) || 0);
+      const repTotal = rep.soldU + rep.onSaleU;
+      const rmhTotal = rmhSold + rmhOnSale;
+      const pct = rmhTotal > 0 ? ((repTotal - rmhTotal) / rmhTotal) * 100 : 0;
+      let soldNote = "OK";
+      if (pct <= -5) soldNote = "← LS migration-window gap (early RMH sales not all migrated)";
+      else if (pct >= 5)
+        soldNote = "(report > RMH — current LS-era season, LS is the live source: expected)";
+      lines.push(
+        `    vs RMH snapshot  sold ${rmhSold}u  on-sale ${rmhOnSale}u  | report sold+onsale ${repTotal}u vs RMH ${rmhTotal}u (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)  ${soldNote}`
+      );
+    }
   }
 
   // eslint-disable-next-line no-console
@@ -454,7 +490,13 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
       "\ntrack RMH POType=0 for the same SKUs (override integrity), RMH-only SKUs in" +
       "\nno report row are missed orders, and LS-matched SKUs RMH also ordered are the" +
       "\ntransition overlap (report uses LS by design). RECEIVED post-crossover is" +
-      "\nsourced from LS POs (source of truth); RMH POType0 received shown for context.\n"
+      "\nsourced from LS POs (source of truth); RMH POType0 received shown for context." +
+      (snapSales
+        ? `\n\nSOLD/ON-SALE compared to the frozen RMH snapshot (${snapSales.dir}). Sales were` +
+          "\nmigrated into LS; a shortfall = LS migration-window gap (early-season RMH" +
+          "\nsales before the LS cutover were not all migrated). Closed seasons only."
+        : "\n\n(no RMH snapshot found — run scripts/rmh-snapshot.mjs for sold reconciliation)") +
+      "\n"
   );
 
   expect(returnsOk).toBe(true);
