@@ -269,9 +269,9 @@ export default async function handler(req, res) {
       const html = await dtFetch(`/vendor/${vendorId}/department/${deptId}`, cookies);
       const data = parseVendorDetail(html);
 
-      // If season provided, save directly to KV to avoid large batch POST bodies
+      // If season provided, save directly to KV to avoid large batch POST bodies.
+      // No TTL: the hard pull is a permanent historical baseline (see import/save.js).
       if (season) {
-        const TTL = 60 * 60 * 24 * 30;
         const key = `${deptId}__${vendorId}`;
         const vendorRecord = {
           vendorId,
@@ -283,7 +283,7 @@ export default async function handler(req, res) {
           sold: data.sold || storeSold || 0,
           products: data.products,
         };
-        await kv.set(`scan:override:${season}:v:${key}`, JSON.stringify(vendorRecord), { ex: TTL });
+        await kv.set(`scan:override:${season}:v:${key}`, JSON.stringify(vendorRecord));
       }
 
       return res.json({
@@ -298,11 +298,10 @@ export default async function handler(req, res) {
     if (action === "finalizeImport") {
       const { season, stores, vendorKeys } = req.body;
       if (!season) return res.status(400).json({ error: "season required" });
-      const TTL = 60 * 60 * 24 * 30;
-      const TTL_OPTS = { ex: TTL };
 
+      // No TTL: the hard pull is a permanent historical baseline (see import/save.js).
       if (stores && Object.keys(stores).length > 0) {
-        await kv.set(`scan:override:${season}:stores`, JSON.stringify(stores), TTL_OPTS);
+        await kv.set(`scan:override:${season}:stores`, JSON.stringify(stores));
       }
 
       if (vendorKeys && vendorKeys.length > 0) {
@@ -313,7 +312,7 @@ export default async function handler(req, res) {
             : existingRaw
           : [];
         const merged = Array.from(new Set([...existing, ...vendorKeys]));
-        await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(merged), TTL_OPTS);
+        await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(merged));
       }
 
       return res.json({ ok: true, season, vendorCount: vendorKeys ? vendorKeys.length : 0 });

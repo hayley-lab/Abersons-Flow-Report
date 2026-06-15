@@ -9,8 +9,6 @@ const SESSION_OPTIONS = {
   cookieOptions: { secure: process.env.NODE_ENV === "production" },
 };
 
-const TTL = 60 * 60 * 24 * 30; // 30 days
-
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
@@ -20,11 +18,13 @@ export default async function handler(req, res) {
   const { season, data } = req.body || {};
   if (!season || !data) return res.status(400).json({ error: "season and data required" });
 
-  const TTL_OPTS = { ex: TTL };
+  // The datatail hard pull is a permanent historical baseline (RMH-era data that
+  // never made it into LS). It is written WITHOUT a TTL so it does not silently
+  // expire and regress the report; re-importing overwrites/merges in place.
 
   // Store store-level summary only when provided (non-empty)
   if (data.stores && Object.keys(data.stores).length > 0) {
-    await kv.set(`scan:override:${season}:stores`, JSON.stringify(data.stores), TTL_OPTS);
+    await kv.set(`scan:override:${season}:stores`, JSON.stringify(data.stores));
   }
 
   // Append to vendor index rather than overwrite
@@ -36,14 +36,14 @@ export default async function handler(req, res) {
     : [];
   const newKeys = Object.keys(data.vendors || {});
   const mergedIndex = Array.from(new Set([...existingIndex, ...newKeys]));
-  await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(mergedIndex), TTL_OPTS);
+  await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(mergedIndex));
 
   // Save each vendor individually
   const keys = Object.keys(data.vendors || {});
   const pipeline = kv.pipeline();
   for (const key of keys) {
     const vendorJson = JSON.stringify(data.vendors[key]);
-    pipeline.set(`scan:override:${season}:v:${key}`, vendorJson, TTL_OPTS);
+    pipeline.set(`scan:override:${season}:v:${key}`, vendorJson);
   }
   await pipeline.exec();
 
