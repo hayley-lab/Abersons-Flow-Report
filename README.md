@@ -65,20 +65,21 @@ accept `Authorization: Bearer $CRON_SECRET` for GitHub Actions / Vercel cron.
 
 ## Sync Model
 
-There are three freshness paths:
+Scheduled GitHub Actions keep the data current, and the browser polls for
+updates on top of them:
 
-- **Nightly full scan**: `.github/workflows/nightly-scan.yml` calls
-  `/api/cron/scan` to rescan products, POs, vendor returns, sales, and inventory.
-- **Weekly full rebuild**: `.github/workflows/weekly-full-scan.yml` forces a
-  larger reset/rebuild scan.
+- **Nightly incremental scan**: `.github/workflows/nightly-scan.yml` calls
+  `/api/cron/scan` to advance products, POs, vendor returns, sales, and inventory.
+- **Weekly full rebuild**: `.github/workflows/weekly-full-scan.yml` calls
+  `/api/cron/scan` with `restart=1` (and optional cache resets) for a cold rebuild.
 - **Delta sync**: `.github/workflows/delta-scan.yml` calls `/api/cron/delta` for
-  sales-only updates between full scans.
+  sales-only updates during store hours.
 - **Validation**: `.github/workflows/nightly-validate.yml` calls
   `/api/scan/validate` to check cache/report consistency and persist drift
   history for Data Health.
 
 The browser also polls for updated scan data and refreshes the current view when
-new delta results are available.
+newer scan or delta results are available.
 
 ## Documentation Map
 
