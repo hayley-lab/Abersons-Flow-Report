@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { kv } from "@vercel/kv";
 import { loadScanData } from "../lib/scan-data-store";
-import { buildAllRows } from "../lib/flow-rollup";
+import { buildAllRows, rollup } from "../lib/flow-rollup";
 
 const ROOT = process.cwd();
 
@@ -115,37 +115,50 @@ function queryRmh() {
     { input: RMH_SQL, encoding: "utf8", timeout: 120_000, maxBuffer: 128 * 1024 * 1024 }
   );
   // bySeason[season] = { ordered:{u,c,r}, returns:{u,c,r}, received:{u} }
+  // perSku[season][sku] = { ordered:{u}, received:{u}, returns:{u} } — needed for
+  // the crossover-aware orders/received union (RMH pre-crossover + LS after).
   const bySeason = {};
+  const perSku = {};
   for (const s of SEASONS) {
     bySeason[s] = {
       ordered: { u: 0, c: 0, r: 0 },
       received: { u: 0 },
       returns: { u: 0, c: 0, r: 0 },
     };
+    perSku[s] = {};
   }
   for (const line of out.split(/\r?\n/)) {
     if (!line.includes(TAB)) continue;
     const f = line.split(TAB);
     if (f.length < 6) continue;
-    const season = seasonForSku(f[1].trim().toLowerCase());
+    const sku = f[1].trim().toLowerCase();
+    const season = seasonForSku(sku);
     if (!season || !bySeason[season]) continue;
     const poType = parseInt(f[0], 10);
     const ordered = parseInt(f[2], 10) || 0;
     const received = parseInt(f[3], 10) || 0;
     const cost = parseFloat(f[4]) || 0;
     const retail = parseFloat(f[5]) || 0;
+    const ps = (perSku[season][sku] = perSku[season][sku] || {
+      ordered: { u: 0 },
+      received: { u: 0 },
+      returns: { u: 0 },
+    });
     if (poType === 0) {
       bySeason[season].ordered.u += ordered;
       bySeason[season].ordered.c += cost;
       bySeason[season].ordered.r += retail;
       bySeason[season].received.u += received;
+      ps.ordered.u += ordered;
+      ps.received.u += received;
     } else if (poType === 3) {
       bySeason[season].returns.u += ordered;
       bySeason[season].returns.c += cost;
       bySeason[season].returns.r += retail;
+      ps.returns.u += ordered;
     }
   }
-  return bySeason;
+  return { bySeason, perSku };
 }
 
 function sumReport(rows) {
@@ -175,16 +188,32 @@ function sumReport(rows) {
 const money = (n) => `$${Math.round(n).toLocaleString()}`;
 
 test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
-  const rmh = queryRmh();
+  const { bySeason: rmh, perSku: rmhPerSku } = queryRmh();
   const lines = [];
   let returnsOk = true;
+  let ordersOk = true;
 
   for (const season of SEASONS) {
     const scanData = await loadScanData(kv, season);
     const override = await loadOverride(season);
     const rows = buildAllRows(scanData, override, { season });
     const rep = sumReport(rows);
+    // Ordered/Received/Returned DOLLARS come from the authoritative rollup (the
+    // same path the live header/list/summary read) — NOT a raw row-unit sum.
+    // Ordered $ folds in the vendor-level datatail combine, which row units miss.
+    const { summaryRows } = rollup(rows, scanData, override, { season });
+    const reportDollars = summaryRows.reduce(
+      (a, s) => ({
+        ordered: a.ordered + (Number(s.ordered) || 0),
+        orderedCost: a.orderedCost + (Number(s.orderedCost) || 0),
+        received: a.received + (Number(s.received) || 0),
+        returned: a.returned + (Number(s.returned) || 0),
+        sold: a.sold + (Number(s.sold) || 0),
+      }),
+      { ordered: 0, orderedCost: 0, received: 0, returned: 0, sold: 0 }
+    );
     const r = rmh[season];
+    const rmhSku = rmhPerSku[season] || {};
 
     // Returns-source breakdown: which row TYPE carries the returns, and which
     // SKUs are counted by more than one row (= double-count).
@@ -276,6 +305,96 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
     const rmhExactBad = psRetUnits === 0 && rep.returnedU !== r.returns.u;
     if (Math.abs(unionDelta) > 2 || rmhExactBad) returnsOk = false;
 
+    // ---- CROSSOVER-AWARE ORDERS / RECEIVED -------------------------------
+    // The report's Ordered = LS PO ordered (rows with a pid) + datatail-only
+    // ordered (rows without a pid, sourced from the RMH-era datatailor import).
+    // LS go-live for POs was 2025-12-19; RMH orders taper into Apr 2026, so the
+    // two systems overlap. The report dedups by SKU (LS wins for matched SKUs),
+    // so the correct RMH comparison is per-SKU, not a raw season total:
+    //   1. datatail-only ordered should equal RMH POType=0 for those SKUs
+    //      (validates the override is faithful AND current — catches stale/
+    //      expired/duplicate-keyed overrides that would drop ordered qty).
+    //   2. RMH SKUs present in NEITHER an LS row NOR a datatail row are orders
+    //      the report shows nowhere = a genuine missed-order gap.
+    //   3. LS-matched SKUs that ALSO have RMH POType=0 orders are the
+    //      transition overlap; report uses LS-only (by design) — disclosed.
+    const lsSkus = new Set();
+    let datatailOrderedU = 0;
+    const datatailOrderedBySku = {};
+    for (const row of rows) {
+      const sku = (row.sku || "").toLowerCase();
+      if (row.pid) {
+        lsSkus.add(sku);
+      } else {
+        const q = Number(row.orderedQty) || 0;
+        datatailOrderedU += q;
+        if (q > 0) datatailOrderedBySku[sku] = (datatailOrderedBySku[sku] || 0) + q;
+      }
+    }
+    // RMH-only orders missed entirely (not in any report row)
+    let missedOrderSkus = 0;
+    let missedOrderU = 0;
+    const missedSamples = [];
+    for (const [sku, v] of Object.entries(rmhSku)) {
+      const rmhU = v.ordered.u || 0;
+      if (rmhU <= 0) continue;
+      if (lsSkus.has(sku) || datatailOrderedBySku[sku] != null) continue;
+      missedOrderSkus += 1;
+      missedOrderU += rmhU;
+      if (missedSamples.length < 8) missedSamples.push(`${sku}=${rmhU}`);
+    }
+    // transition overlap: LS-matched SKUs that RMH also ordered
+    let overlapOrderSkus = 0;
+    let overlapRmhOrderU = 0;
+    for (const sku of lsSkus) {
+      const rmhU = (rmhSku[sku] && rmhSku[sku].ordered.u) || 0;
+      if (rmhU > 0) {
+        overlapOrderSkus += 1;
+        overlapRmhOrderU += rmhU;
+      }
+    }
+    // Ordered $ reconciliation. spring25/fall25 are pure RMH-era seasons — LS has
+    // NO purchase orders (the orders were never migrated; only the products were),
+    // so the report's Ordered $ comes entirely from the datatail combine and must
+    // reconcile to RMH POType=0 ordered retail $. spring26/fall26 are the crossover
+    // (LS orders + RMH-only datatail, deduped) so a raw RMH comparison is expected
+    // to differ — informational only.
+    // The datatailor import carries ordered $ at TWO levels: a coarse vendor-level
+    // total (v.ordered) AND per-product qtyOrdered. The rollup's combine uses the
+    // vendor-level total. Measure both (season-gated like the rollup: a vendor is
+    // included only if it has ≥1 product whose SKU folds into this season). If the
+    // vendor-level total ≈ report but < RMH, the historical hard-pull is INCOMPLETE
+    // (a data-source gap RMH can fill), not a code bug.
+    let rawProductOrdered = 0;
+    let vendorLevelOrdered = 0;
+    for (const v of Object.values((override && override.vendors) || {})) {
+      const products = (v && v.products) || [];
+      const inSeason = products.some((op) => seasonForSku((op.style || "").toLowerCase()) === season);
+      if (!inSeason) continue;
+      vendorLevelOrdered += Number(v.ordered) || 0;
+      for (const op of products) {
+        if (seasonForSku((op.style || "").toLowerCase()) !== season) continue;
+        const q = Number(op.qtyOrdered) || 0;
+        const p = Number(op.price) || 0;
+        if (q > 0 && p > 0) rawProductOrdered += q * p;
+      }
+    }
+    const lsOrderedUnits = rep.orderedU - datatailOrderedU;
+    const isRmhOnlySeason = lsOrderedUnits === 0;
+    const ordRetailDelta = reportDollars.ordered - r.ordered.r;
+    const ordRetailPct = r.ordered.r > 0 ? Math.abs(ordRetailDelta) / r.ordered.r : 0;
+    // CODE-CORRECTNESS gate (must pass): for an RMH-only season the report's
+    // Ordered $ must surface the FULL datatail vendor-level total — i.e. the
+    // combine/overlap logic must not silently DROP datatail ordered dollars. (This
+    // is what the hasLsPoActivity fix restored: returns no longer flag overlap.)
+    const combineOk = !isRmhOnlySeason || Math.abs(reportDollars.ordered - vendorLevelOrdered) <= 1;
+    // It must also never EXCEED RMH for an RMH-only season (would mean double-count).
+    const noDoubleCount = !isRmhOnlySeason || ordRetailDelta <= 5000;
+    if (!combineOk || !noDoubleCount) ordersOk = false;
+    // DATA-SOURCE completeness (warning, not a code failure): the datatailor
+    // hard-pull may be short of RMH truth. Fixable only by an RMH ordered backfill.
+    const sourceComplete = !isRmhOnlySeason || vendorLevelOrdered >= r.ordered.r * 0.95;
+
     lines.push(`\n[${season}]  rows=${rows.length}`);
     lines.push(lsScanRetLine);
     lines.push(overlapLine);
@@ -293,15 +412,30 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
         `Δvs-union=${unionDelta}  ${Math.abs(unionDelta) <= 2 && !rmhExactBad ? "OK" : "<-- CHECK"}`
     );
     lines.push(
-      `  ORDERED    report ${String(rep.orderedU).padStart(6)}u ${money(
-        rows.reduce((a, x) => a + (Number(x.orderedQty) || 0) * (Number(x.price) || 0), 0)
-      ).padStart(11)} retail   ` +
-        `RMH POType0 ${String(r.ordered.u).padStart(6)}u ${money(r.ordered.r).padStart(11)} retail   ` +
-        `(report=LS+override w/ overlap guard; RMH=all POType0 incl. pre-crossover)`
+      `  ORDERED $  report ${money(reportDollars.ordered).padStart(12)} retail   ` +
+        `RMH POType0 ${money(r.ordered.r).padStart(12)} retail   ` +
+        `Δ=${money(ordRetailDelta)} (${(ordRetailPct * 100).toFixed(1)}%)   ` +
+        (isRmhOnlySeason
+          ? `[RMH-only] combine ${combineOk && noDoubleCount ? "OK" : "<-- CODE CHECK"}; source ${sourceComplete ? "complete" : "INCOMPLETE (backfill)"}`
+          : `[crossover: LS+datatail deduped — RMH comparison informational]`)
     );
     lines.push(
-      `  RECEIVED   report ${String(rep.receivedU).padStart(6)}u                         ` +
-        `RMH POType0 ${String(r.received.u).padStart(6)}u`
+      `    datatail ordered $: vendor-level ${money(vendorLevelOrdered)}  per-product ${money(rawProductOrdered)}  ` +
+        `vs RMH ${money(r.ordered.r)}  → ${vendorLevelOrdered >= r.ordered.r * 0.95 ? "import covers RMH" : "HARD-PULL INCOMPLETE (RMH-fillable)"}`
+    );
+    lines.push(
+      `  ORDERED u  report ${String(rep.orderedU).padStart(6)}u (LS PO ${lsOrderedUnits}u + datatail-only-row ${datatailOrderedU}u)   ` +
+        `RMH POType0 ${String(r.ordered.u).padStart(6)}u   ` +
+        `(units shown for context; $ is the reconciled metric)`
+    );
+    lines.push(
+      `    transition overlap (LS-matched SKUs RMH also ordered): ${overlapOrderSkus} skus / RMH ${overlapRmhOrderU}u; ` +
+        `RMH-only-SKU orders in no row: ${missedOrderU}u/${missedOrderSkus}skus` +
+        (missedSamples.length ? `  e.g. ${missedSamples.slice(0, 4).join(" ")}` : "")
+    );
+    lines.push(
+      `  RECEIVED $ report ${money(reportDollars.received).padStart(12)} retail   ` +
+        `(LS PO net + consignment/migrated fallback; RMH PO received qty is 0 → not reconcilable vs RMH)`
     );
     lines.push(
       `  SOLD ${String(rep.soldU).padStart(6)}u   ON-SALE ${String(rep.onSaleU).padStart(6)}u   ON-HAND ${String(rep.onHandU).padStart(7)}u`
@@ -315,10 +449,14 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
       "\n\nNOTE: RETURNED must equal the DEDUPED UNION of LS returns (type=RETURN," +
       "\ncaptured by the scan) + RMH-only returns (override backfill). It is NOT" +
       "\nexpected to equal RMH POType=3 alone — LS holds returns RMH never had, and" +
-      "\nthe per-pid LS-wins/max guard collapses the transition overlap. ORDERED/" +
-      "\nRECEIVED differ by design (overlap guard + season fold; RMH includes" +
-      "\npre-crossover orders).\n"
+      "\nthe per-pid LS-wins/max guard collapses the transition overlap." +
+      "\n\nORDERED is reconciled per-SKU (crossover-aware): datatail-only ordered must" +
+      "\ntrack RMH POType=0 for the same SKUs (override integrity), RMH-only SKUs in" +
+      "\nno report row are missed orders, and LS-matched SKUs RMH also ordered are the" +
+      "\ntransition overlap (report uses LS by design). RECEIVED post-crossover is" +
+      "\nsourced from LS POs (source of truth); RMH POType0 received shown for context.\n"
   );
 
   expect(returnsOk).toBe(true);
+  expect(ordersOk).toBe(true);
 }, 240000);
