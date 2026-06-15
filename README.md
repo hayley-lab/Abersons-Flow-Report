@@ -87,6 +87,9 @@ newer scan or delta results are available.
   scan math, rollups, seasons, sales classification, or validation.
 - `docs/flows.md`: diagrams for old-to-new lineage, scan phases, sync paths,
   rollup merging, and sale classification.
+- `docs/OPERATIONS.md`: operator runbook — everyday use (the two refresh
+  buttons, health badge, Data Health), plus maintainer steps for token/password
+  rotation, nightly-validate emails, and the local LAN backfill setup.
 - `lib/__tests__/`: executable specs for pure business logic.
 - `pages/api/scan/step.js`: chunked full-scan pipeline.
 - `pages/api/cron/scan.js`: full-scan orchestration.
