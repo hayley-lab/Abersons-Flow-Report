@@ -1,0 +1,45 @@
+name: CI
+
+# Developer guardrail (pre-handoff plan §3a): runs the same gate the AI is
+# required to pass before pushing — lint + tests + build — on every PR and on
+# pushes to main. The existing workflows only curl production; this is the only
+# job that actually compiles and tests the code, so a future maintainer (or
+# agent) can't merge a regression without it going red.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch/PR cancels the older in-progress run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test:ci
+
+      # The app has no build-time data fetching (no getStaticProps/
+      # getServerSideProps), so `next build` compiles without LS/KV secrets.
+      - name: Build
+        run: npm run build
