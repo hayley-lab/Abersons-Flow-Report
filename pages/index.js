@@ -424,6 +424,7 @@ export default function FlowReport() {
   const [hasOverride, setHasOverride] = useState(false); // season uses imported override data
   const [lsHealth, setLsHealth] = useState(null); // { status: "ok"|"error", ts, detail }
   const [syncJob, setSyncJob] = useState(null); // { phase, progress, error } of last/active scan
+  const [livePollStalled, setLivePollStalled] = useState(false); // background auto-refresh failing
 
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState("");
@@ -688,23 +689,33 @@ export default function FlowReport() {
   }, [season]);
 
   // ── auto-poll: silently refresh data when a newer scan is available ─────────
+  // Tracks consecutive failures so a sustained outage flips livePollStalled (a
+  // subtle "live updates paused" hint) instead of failing completely silently.
+  const pollFailures = useRef(0);
   useEffect(() => {
     if (!authed) return;
     const POLL_MS = 90_000;
+    const MAX_POLL_FAILURES = 3;
     const id = setInterval(async () => {
       if (scanning) return; // don't poll while user-driven scan is in progress
       try {
         const sinceParam = dataTs ? `&since=${encodeURIComponent(dataTs)}` : "";
         const r = await fetch(`/api/scan/data?season=${encodeURIComponent(season)}${sinceParam}`);
-        if (!r.ok) return;
-        const { data, notModified } = await r.json();
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const { data, notModified, lsHealth: health } = await r.json();
+        pollFailures.current = 0;
+        setLivePollStalled(false);
+        if (health !== undefined) setLsHealth(health || null);
         if (notModified) return;
         if (data && data.ts && data.ts !== dataTs) {
           setScanData(data);
           setSummaryRows(data.summaryRows || []);
           setDataTs(data.ts);
         }
-      } catch (_) {}
+      } catch (_) {
+        pollFailures.current += 1;
+        if (pollFailures.current >= MAX_POLL_FAILURES) setLivePollStalled(true);
+      }
     }, POLL_MS);
     return () => clearInterval(id);
   }, [authed, season, scanning, dataTs]);
@@ -724,7 +735,13 @@ export default function FlowReport() {
       // season by one chunk; we keep going until all report done/error.
       let allDone = false;
       let iterations = 0;
-      while (!allDone && !scanAbort.current && iterations < 300) {
+      const MAX_ITERATIONS = 300;
+      // A run of consecutive transient (500/503) responses means the server is
+      // genuinely down, not just briefly busy — stop retrying forever and tell
+      // the operator, instead of spinning silently until the iteration cap.
+      let consecutiveTransient = 0;
+      const MAX_CONSECUTIVE_TRANSIENT = 6;
+      while (!allDone && !scanAbort.current && iterations < MAX_ITERATIONS) {
         // First iteration: restart=1 forces a clean start for all seasons (including
         // any that were left in a partial/expired state from a previous scan).
         // Subsequent iterations just advance without restarting.
@@ -737,22 +754,34 @@ export default function FlowReport() {
             setAuthed(false);
             break;
           }
-          // 500/503 = transient error — wait and retry rather than failing
+          // 500/503 = transient error — wait and retry, but give up after a run
+          // of them so a hard server/LS outage surfaces instead of looping.
           if (r.status === 503 || r.status === 500) {
+            consecutiveTransient++;
+            if (consecutiveTransient >= MAX_CONSECUTIVE_TRANSIENT) {
+              throw new Error(
+                `Sync server kept failing (${d.error || "HTTP " + r.status}). Stopped after ${consecutiveTransient} retries — check the Lightspeed connection on Data Health, then try again.`
+              );
+            }
+            setScanProgress(
+              `Server busy (retry ${consecutiveTransient}/${MAX_CONSECUTIVE_TRANSIENT})…`
+            );
             await new Promise((res) => setTimeout(res, 8000));
             continue;
           }
           throw new Error(d.error || "HTTP " + r.status);
         }
+        consecutiveTransient = 0;
         const { results } = await r.json();
         iterations++;
 
         // Build a progress summary from all seasons
         const active = (results || []).filter((r) => r.action !== "skipped");
         const done = (results || []).filter((r) => r.phase === "done" || r.action === "skipped");
-        const errors = (results || []).filter((r) => r.phase === "error");
+        const errors = (results || []).filter((r) => r.phase === "error" || r.action === "error");
         if (errors.length) {
-          setScanError(errors.map((e) => `${e.season}: ${e.phase}`).join(", "));
+          // Surface the actual error message (job.error), not just the phase.
+          setScanError(errors.map((e) => `${e.season}: ${e.error || e.phase || "error"}`).join(", "));
         }
         if (active.length > 0) {
           const progressParts = active.map((r) => `${r.season}: ${r.progress || r.phase || "…"}`);
@@ -764,6 +793,15 @@ export default function FlowReport() {
           break;
         }
         await new Promise((res) => setTimeout(res, 5000)); // 5s between chunks
+      }
+      // Hit the safety cap without finishing — don't leave the user thinking it
+      // silently succeeded.
+      if (!allDone && !scanAbort.current && iterations >= MAX_ITERATIONS) {
+        setScanError(
+          "Sync did not finish — it ran the maximum number of steps without completing. " +
+            "Some data may be partially updated. Check Data Health, then run the sync again."
+        );
+        await reloadAfterScan();
       }
     } catch (e) {
       setScanError(e.message);
@@ -1551,6 +1589,22 @@ export default function FlowReport() {
 
       <div style={s.main}>
         {LsHealthWarning}
+        {livePollStalled && !LsHealthWarning && (
+          <div
+            style={{
+              background: "#fef3e2",
+              border: "1px solid #f5d9a0",
+              borderRadius: 8,
+              padding: "8px 14px",
+              marginBottom: "1rem",
+              fontSize: 12.5,
+              color: "#92600a",
+            }}
+          >
+            Live updates are paused — the app couldn&apos;t reach the server to check for new data.
+            It will keep retrying; refresh the page if this persists.
+          </div>
+        )}
         {RollupWarning}
         {/* ── SUMMARY ── */}
         {screen === "summary" && (

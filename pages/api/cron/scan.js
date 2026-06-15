@@ -596,6 +596,9 @@ export default async function handler(req, res) {
         phase: json.phase,
         mode: ss.mode,
         progress: json.progress,
+        // Carry the message when a step reports phase:"error" on a 200 so the UI
+        // can show WHY a season failed, not just that it did.
+        error: json.phase === "error" ? json.error || null : undefined,
       };
     } catch (e) {
       // Network error / fetch timeout = transient → retry on the driver path.
