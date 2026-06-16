@@ -418,13 +418,15 @@ export default function FlowReport() {
 
   const [summaryRows, setSummaryRows] = useState([]);
   const [scanData, setScanData] = useState(null); // full KV data for current season
-  const [dataLoading, setDataLoading] = useState(false);
+  const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState(null);
   const [dataTs, setDataTs] = useState(null); // timestamp of last successful scan
   const [hasOverride, setHasOverride] = useState(false); // season uses imported override data
   const [lsHealth, setLsHealth] = useState(null); // { status: "ok"|"error", ts, detail }
   const [syncJob, setSyncJob] = useState(null); // { phase, progress, error } of last/active scan
   const [livePollStalled, setLivePollStalled] = useState(false); // background auto-refresh failing
+  const loadSeqRef = useRef(0);
+  const loadInFlightRef = useRef(null);
 
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState("");
@@ -545,12 +547,16 @@ export default function FlowReport() {
   // ── load data from KV ──────────────────────────────────────────────────────
 
   const loadData = useCallback(async (seasonId) => {
+    const seq = ++loadSeqRef.current;
+    loadInFlightRef.current = seq;
     setDataLoading(true);
     setDataError(null);
     try {
       const r = await fetch(`/api/scan/data?season=${encodeURIComponent(seasonId)}`);
+      if (seq !== loadSeqRef.current) return;
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
+        if (seq !== loadSeqRef.current) return;
         if (r.status === 401) {
           setAuthed(false);
           return;
@@ -558,6 +564,7 @@ export default function FlowReport() {
         throw new Error(d.error || "HTTP " + r.status);
       }
       const { data, job, hasOverride: ov, lsHealth: health } = await r.json();
+      if (seq !== loadSeqRef.current) return;
       setHasOverride(!!ov);
       setLsHealth(health || null);
       // Current scan phases only (step.js): the old catalog-scan phases
@@ -585,14 +592,18 @@ export default function FlowReport() {
         setDataTs(null);
       }
     } catch (e) {
-      setDataError(e.message);
+      if (seq === loadSeqRef.current) setDataError(e.message);
+    } finally {
+      if (seq === loadSeqRef.current) {
+        loadInFlightRef.current = null;
+        setDataLoading(false);
+      }
     }
-    setDataLoading(false);
   }, []);
 
   useEffect(() => {
-    if (authed === true) loadData(season);
-  }, [authed, loadData, season]);
+    if (authed === true && mounted) loadData(season);
+  }, [authed, mounted, loadData, season]);
 
   // When season data reloads, fall back if the drilled-in department/vendor no
   // longer exists. Uses the pure resolver so the screen ids stay consistent —
@@ -696,12 +707,15 @@ export default function FlowReport() {
     const POLL_MS = 90_000;
     const MAX_POLL_FAILURES = 3;
     const id = setInterval(async () => {
-      if (scanning) return; // don't poll while user-driven scan is in progress
+      if (scanning || dataLoading || loadInFlightRef.current) return;
+      const seq = ++loadSeqRef.current;
       try {
         const sinceParam = dataTs ? `&since=${encodeURIComponent(dataTs)}` : "";
         const r = await fetch(`/api/scan/data?season=${encodeURIComponent(season)}${sinceParam}`);
+        if (seq !== loadSeqRef.current) return;
         if (!r.ok) throw new Error("HTTP " + r.status);
         const { data, notModified, lsHealth: health } = await r.json();
+        if (seq !== loadSeqRef.current) return;
         pollFailures.current = 0;
         setLivePollStalled(false);
         if (health !== undefined) setLsHealth(health || null);
@@ -712,12 +726,13 @@ export default function FlowReport() {
           setDataTs(data.ts);
         }
       } catch (_) {
+        if (seq !== loadSeqRef.current) return;
         pollFailures.current += 1;
         if (pollFailures.current >= MAX_POLL_FAILURES) setLivePollStalled(true);
       }
     }, POLL_MS);
     return () => clearInterval(id);
-  }, [authed, season, scanning, dataTs]);
+  }, [authed, season, scanning, dataLoading, dataTs]);
 
   // ── server-side refresh scan ───────────────────────────────────────────────
 
@@ -780,7 +795,9 @@ export default function FlowReport() {
         const errors = (results || []).filter((r) => r.phase === "error" || r.action === "error");
         if (errors.length) {
           // Surface the actual error message (job.error), not just the phase.
-          setScanError(errors.map((e) => `${e.season}: ${e.error || e.phase || "error"}`).join(", "));
+          setScanError(
+            errors.map((e) => `${e.season}: ${e.error || e.phase || "error"}`).join(", ")
+          );
         }
         if (active.length > 0) {
           const progressParts = active.map((r) => `${r.season}: ${r.progress || r.phase || "…"}`);

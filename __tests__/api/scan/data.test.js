@@ -41,6 +41,7 @@ jest.mock("../../../lib/ls-auth", () => ({
 import { kv as mockKv } from "@vercel/kv";
 import { loadScanData } from "../../../lib/scan-data-store";
 import { buildAllRows, rollup } from "../../../lib/flow-rollup";
+import { reportRollupCache } from "../../../lib/rollup-cache";
 import handler from "../../../pages/api/scan/data";
 
 function makeRes() {
@@ -67,6 +68,7 @@ describe("scan/data handler", () => {
     mockKv.get.mockClear();
     loadScanData.mockReset();
     loadScanData.mockResolvedValue(null);
+    reportRollupCache.clear();
     buildAllRows.mockClear();
     rollup.mockClear();
     buildAllRows.mockImplementation(() => [{ pid: "p1", ordered: 1 }]);

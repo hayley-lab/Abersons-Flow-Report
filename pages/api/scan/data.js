@@ -11,6 +11,7 @@ import { sessionOptions } from "../../../lib/session";
 import { buildAllRows, rollup } from "../../../lib/flow-rollup";
 import { loadScanData } from "../../../lib/scan-data-store";
 import { getLsHealth } from "../../../lib/ls-auth";
+import { reportRollupCache } from "../../../lib/rollup-cache";
 
 function parseKv(val) {
   if (!val) return null;
@@ -44,7 +45,25 @@ async function loadOverride(season) {
     vendors[key] = parseKv(vendorRaws[i]);
   });
 
-  return { stores, vendors };
+  return { stores, vendors, vendorIndex };
+}
+
+function overrideSignature(override) {
+  if (!override) return "none";
+  const vendorIndex = Array.isArray(override.vendorIndex)
+    ? override.vendorIndex
+    : Object.keys(override.vendors || {}).sort();
+  return `${vendorIndex.length}:${vendorIndex.join("|").length}`;
+}
+
+function rollupCacheKey(season, rawData, override) {
+  return `${season}:${rawData?.ts ?? "none"}:${overrideSignature(override)}`;
+}
+
+function buildRolledReport(rawData, override, season) {
+  const rows = buildAllRows(rawData, override, { season });
+  const { summaryRows, deptVendors } = rollup(rows, rawData, override, { season });
+  return { summaryRows, deptVendors, rows };
 }
 
 export default async function handler(req, res) {
@@ -81,9 +100,12 @@ export default async function handler(req, res) {
   // mismatch, since grouping now happens here at request time).
   if (rawData || override) {
     try {
-      const rows = buildAllRows(rawData, override, { season });
-      const { summaryRows, deptVendors } = rollup(rows, rawData, override, { season });
-      data = { ...(rawData || {}), season, summaryRows, deptVendors, rows };
+      const cacheKey = rollupCacheKey(season, rawData, override);
+      const cachedRollup = reportRollupCache.get(cacheKey);
+      const rolled =
+        cachedRollup ||
+        reportRollupCache.set(cacheKey, buildRolledReport(rawData, override, season));
+      data = { ...(rawData || {}), season, ...rolled };
     } catch (e) {
       console.error("rollup error", e);
       mergeError = e.message;
