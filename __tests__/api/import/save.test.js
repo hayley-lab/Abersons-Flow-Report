@@ -26,6 +26,11 @@ jest.mock("@vercel/kv", () => {
       set: jest.fn(async (key, value) => {
         store.set(key, value);
       }),
+      incr: jest.fn(async (key) => {
+        const next = (Number(store.get(key)) || 0) + 1;
+        store.set(key, next);
+        return next;
+      }),
       pipeline: jest.fn(() => pipeline),
     },
   };

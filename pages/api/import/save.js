@@ -2,6 +2,7 @@
 // Chunks data to stay under KV 256KB per-value limit
 import { getIronSession } from "iron-session";
 import { kv } from "@vercel/kv";
+import { bumpReportEpoch } from "../../../lib/scan-data-store";
 
 const SESSION_OPTIONS = {
   cookieName: "flow_session",
@@ -46,6 +47,10 @@ export default async function handler(req, res) {
     pipeline.set(`scan:override:${season}:v:${key}`, vendorJson);
   }
   await pipeline.exec();
+
+  // The override just changed but scan:data.ts did not, so bump the report-cache
+  // epoch to invalidate the precomputed summary/dept-row cache for this season.
+  await bumpReportEpoch(kv, season);
 
   return res.json({ ok: true, season, vendorCount: keys.length });
 }

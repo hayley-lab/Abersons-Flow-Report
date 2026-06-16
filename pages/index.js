@@ -25,9 +25,7 @@ import {
   summarizeRowsHealth,
   deriveHealthBadge,
   inventoryMismatchBreakdown,
-  adjustedCount,
   adjustedBadgeTooltip,
-  uncategorizedRows,
 } from "../lib/health-status";
 
 const fmt = (n) =>
@@ -427,6 +425,11 @@ export default function FlowReport() {
   const [livePollStalled, setLivePollStalled] = useState(false); // background auto-refresh failing
   const loadSeqRef = useRef(0);
   const loadInFlightRef = useRef(null);
+  // Per-department product rows are fetched on demand (view=drows) and cached for
+  // the session, keyed by the current scan ts so a refresh transparently drops
+  // stale groups. The summary load no longer ships the full rows array.
+  const deptRowsCacheRef = useRef({ ts: null, byDept: new Map() });
+  const productSeqRef = useRef(0);
 
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState("");
@@ -552,7 +555,7 @@ export default function FlowReport() {
     setDataLoading(true);
     setDataError(null);
     try {
-      const r = await fetch(`/api/scan/data?season=${encodeURIComponent(seasonId)}`);
+      const r = await fetch(`/api/scan/data?season=${encodeURIComponent(seasonId)}&view=summary`);
       if (seq !== loadSeqRef.current) return;
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -711,7 +714,9 @@ export default function FlowReport() {
       const seq = ++loadSeqRef.current;
       try {
         const sinceParam = dataTs ? `&since=${encodeURIComponent(dataTs)}` : "";
-        const r = await fetch(`/api/scan/data?season=${encodeURIComponent(season)}${sinceParam}`);
+        const r = await fetch(
+          `/api/scan/data?season=${encodeURIComponent(season)}&view=summary${sinceParam}`
+        );
         if (seq !== loadSeqRef.current) return;
         if (!r.ok) throw new Error("HTTP " + r.status);
         const { data, notModified, lsHealth: health } = await r.json();
@@ -841,6 +846,31 @@ export default function FlowReport() {
     setScanning(false);
   }, [scanning, reloadAfterScan]);
 
+  // Fetch one department's product rows on demand and cache them for the current
+  // scan ts. Keeps the product drilldown fast: a drilldown reads one ~900 KB
+  // department group instead of the whole multi-MB season.
+  const loadDeptRows = useCallback(
+    async function (deptId) {
+      const ts = (scanData && scanData.ts) || null;
+      const cache = deptRowsCacheRef.current;
+      if (cache.ts !== ts) {
+        cache.ts = ts;
+        cache.byDept = new Map();
+      }
+      const key = String(deptId);
+      if (cache.byDept.has(key)) return cache.byDept.get(key);
+      const r = await fetch(
+        `/api/scan/data?season=${encodeURIComponent(season)}&view=drows&dept=${encodeURIComponent(key)}`
+      );
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const { data } = await r.json();
+      const rows = (data && data.rows) || [];
+      cache.byDept.set(key, rows);
+      return rows;
+    },
+    [scanData, season]
+  );
+
   // ── department drilldown ───────────────────────────────────────────────────
 
   const openDept = useCallback(
@@ -889,14 +919,17 @@ export default function FlowReport() {
       setScreen("products");
       if (!options.skipRoute) pushRoute(vendorRoute(season, dept, vendor));
 
+      const seq = ++productSeqRef.current;
       try {
-        setProductRows(rowsForVendor((scanData && scanData.rows) || [], vendor, dept));
+        const deptRows = await loadDeptRows(dept.id);
+        if (seq !== productSeqRef.current) return;
+        setProductRows(rowsForVendor(deptRows, vendor, dept));
       } catch (e) {
-        setProductError(e.message);
+        if (seq === productSeqRef.current) setProductError(e.message);
       }
-      setProductLoading(false);
+      if (seq === productSeqRef.current) setProductLoading(false);
     },
-    [currentDept, pushRoute, scanData, season]
+    [currentDept, pushRoute, scanData, season, loadDeptRows]
   );
 
   // ── vendor all-departments drilldown (from summary vendor list) ──────────────
@@ -911,14 +944,20 @@ export default function FlowReport() {
       setScreen("products");
       if (!options.skipRoute) pushRoute(allVendorRoute(season, vendorInfo));
 
+      const seq = ++productSeqRef.current;
       try {
-        setProductRows(rowsForVendor((scanData && scanData.rows) || [], vendorInfo));
+        // A vendor can span departments, so the all-departments view loads every
+        // department group (each small) in parallel and concatenates them.
+        const deptIds = Object.keys((scanData && scanData.deptVendors) || {});
+        const groups = await Promise.all(deptIds.map((id) => loadDeptRows(id).catch(() => [])));
+        if (seq !== productSeqRef.current) return;
+        setProductRows(rowsForVendor(groups.flat(), vendorInfo));
       } catch (e) {
-        setProductError(e.message);
+        if (seq === productSeqRef.current) setProductError(e.message);
       }
-      setProductLoading(false);
+      if (seq === productSeqRef.current) setProductLoading(false);
     },
-    [pushRoute, scanData, season]
+    [pushRoute, scanData, season, loadDeptRows]
   );
 
   useEffect(() => {
@@ -1094,7 +1133,7 @@ export default function FlowReport() {
   // Fall back to the persisted latest record so the badge reflects the last
   // nightly run before any on-demand validation happens this session.
   const rowsHealth = useMemo(
-    () => summarizeRowsHealth((scanData && scanData.rows) || []),
+    () => (scanData && scanData.health && scanData.health.summary) || summarizeRowsHealth([]),
     [scanData]
   );
   const effectiveValidation = validation || validationLatest;
@@ -1110,12 +1149,12 @@ export default function FlowReport() {
   // Season-wide manual-count differences (material live-vs-derived on-hand
   // deltas), surfaced on the Data Health screen instead of the vendor header.
   const seasonAdjustedCount = useMemo(
-    () => adjustedCount((scanData && scanData.rows) || []),
+    () => (scanData && scanData.health && scanData.health.adjustedCount) || 0,
     [scanData]
   );
   const uncategorized = useMemo(
-    () => uncategorizedRows((scanData && scanData.rows) || [], season),
-    [scanData, season]
+    () => (scanData && scanData.health && scanData.health.uncategorized) || [],
+    [scanData]
   );
 
   const goToSummary = useCallback(() => {

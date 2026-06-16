@@ -6,6 +6,7 @@
 import { getIronSession } from "iron-session";
 import fetch from "node-fetch";
 import { kv } from "@vercel/kv";
+import { bumpReportEpoch } from "../../../lib/scan-data-store";
 
 const SESSION_OPTIONS = {
   cookieName: "flow_session",
@@ -314,6 +315,9 @@ export default async function handler(req, res) {
         const merged = Array.from(new Set([...existing, ...vendorKeys]));
         await kv.set(`scan:override:${season}:vendorIndex`, JSON.stringify(merged));
       }
+
+      // Override changed without a new scan:data.ts — invalidate the report cache.
+      await bumpReportEpoch(kv, season);
 
       return res.json({ ok: true, season, vendorCount: vendorKeys ? vendorKeys.length : 0 });
     }

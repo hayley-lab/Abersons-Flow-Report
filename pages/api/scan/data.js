@@ -1,17 +1,33 @@
 // Returns report data for the requested season.
 //
-// This is the normal UI read path: load raw scan:data + optional datatail
-// override records from KV, then run the request-time rollup so summary rows,
-// department/vendor lists, and product rows all share the same bottom-up math.
-// Keep this path aligned with validate/reconcile endpoints when adding new
-// canonical row fields.
+// This is the normal UI read path. To keep it fast it serves a write-through KV
+// cache (scan:report:*) instead of re-reading the full sharded scan:data blob +
+// every override vendor record on every request:
+//
+//   - view=summary (default): a small blob with summaryRows, deptVendors, and
+//     precomputed Data Health aggregates. Powers the summary + vendor screens.
+//   - view=drows&dept=ID: one department's product rows. Powers the product
+//     drilldown without shipping the whole season.
+//
+// The cache is validated by a tag ("{scan ts}:{import epoch}"); a new scan/delta
+// (new ts) or a datatail import (bumped epoch) makes the next read a miss, which
+// recomputes via the single authoritative path (lib/report-compute.js) and
+// writes the cache back. Only the first viewer after a change pays the full cost.
 import { kv } from "@vercel/kv";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
-import { buildAllRows, rollup } from "../../../lib/flow-rollup";
-import { loadScanData } from "../../../lib/scan-data-store";
+import { computeReport, groupRowsByDept } from "../../../lib/report-compute";
+import {
+  loadScanData,
+  loadScanDataSummary,
+  loadReportSummary,
+  saveReportSummary,
+  loadReportDeptRows,
+  saveReportDeptRows,
+  loadReportEpoch,
+  reportCacheTag,
+} from "../../../lib/scan-data-store";
 import { getLsHealth } from "../../../lib/ls-auth";
-import { reportRollupCache } from "../../../lib/rollup-cache";
 
 function parseKv(val) {
   if (!val) return null;
@@ -45,25 +61,48 @@ async function loadOverride(season) {
     vendors[key] = parseKv(vendorRaws[i]);
   });
 
-  return { stores, vendors, vendorIndex };
+  return { stores, vendors };
 }
 
-function overrideSignature(override) {
-  if (!override) return "none";
-  const vendorIndex = Array.isArray(override.vendorIndex)
-    ? override.vendorIndex
-    : Object.keys(override.vendors || {}).sort();
-  return `${vendorIndex.length}:${vendorIndex.join("|").length}`;
+function jobView(job) {
+  return job ? { phase: job.phase, progress: job.progress, error: job.error } : null;
 }
 
-function rollupCacheKey(season, rawData, override) {
-  return `${season}:${rawData?.ts ?? "none"}:${overrideSignature(override)}`;
-}
+// Heavy path: read the full sharded scan:data + every override vendor, run the
+// authoritative rollup, then write the result back into the read-cache (a small
+// summary blob plus one row group per department). Returns the freshly computed
+// pieces so the caller can serve the requested view without a second read.
+async function rebuildReportCache(season, tag) {
+  const [rawData, override] = await Promise.all([loadScanData(kv, season), loadOverride(season)]);
+  if (!rawData && !override) return { empty: true, hasOverride: false };
 
-function buildRolledReport(rawData, override, season) {
-  const rows = buildAllRows(rawData, override, { season });
-  const { summaryRows, deptVendors } = rollup(rows, rawData, override, { season });
-  return { summaryRows, deptVendors, rows };
+  const { rows, summaryRows, deptVendors, health } = computeReport(rawData, override, season);
+  const summaryData = {
+    ts: rawData?.ts ?? null,
+    season,
+    summaryRows,
+    deptVendors,
+    health,
+    isDelta: rawData?.isDelta || false,
+    salesState: rawData?.salesState || null,
+  };
+  const groups = groupRowsByDept(rows);
+  const deptIds = Object.keys(groups);
+  const summaryValue = { tag, hasOverride: !!override, deptIds, data: summaryData };
+
+  await Promise.all([
+    saveReportSummary(kv, season, summaryValue),
+    ...deptIds.map((deptId) =>
+      saveReportDeptRows(kv, season, deptId, {
+        tag,
+        ts: summaryData.ts,
+        deptId,
+        rows: groups[deptId],
+      })
+    ),
+  ]);
+
+  return { empty: false, hasOverride: !!override, summaryValue, groups, rows };
 }
 
 export default async function handler(req, res) {
@@ -73,83 +112,124 @@ export default async function handler(req, res) {
   const { season } = req.query;
   if (!season) return res.status(400).json({ error: "season required" });
 
-  const [rawData, job, override, lsHealth] = await Promise.all([
-    loadScanData(kv, season),
+  const view = req.query.view || "summary";
+  const deptId = req.query.dept != null ? String(req.query.dept) : null;
+
+  // Cheap reads only: scan ts (marker), job, import epoch, LS health. None of
+  // these touch the heavy shard/override reads.
+  const [summaryMeta, job, epoch, lsHealth] = await Promise.all([
+    loadScanDataSummary(kv, season),
     kv.get(`scan:job:${season}`),
-    loadOverride(season),
+    loadReportEpoch(kv, season),
     getLsHealth(),
   ]);
+  const ts = summaryMeta?.ts ?? null;
 
-  let data = rawData || null;
-  let mergeError = null;
+  // Poll short-circuit: nothing newer than the client already has.
   const since = req.query.since ? Number(req.query.since) : null;
-  if (since && data?.ts && data.ts <= since && (!job || job.phase === "done")) {
+  if (since && ts && ts <= since && (!job || job.phase === "done")) {
     return res.json({
       data: null,
-      job: job ? { phase: job.phase, progress: job.progress, error: job.error } : null,
-      hasOverride: !!override,
+      job: jobView(job),
+      hasOverride: undefined,
       lsHealth: lsHealth || null,
       notModified: true,
     });
   }
 
-  // Authoritative rollup: derive summary/department/vendor totals bottom-up from
-  // one canonical set of per-product rows (lib/flow-rollup.js). Runs for every
-  // season — with or without a datatail override — so all three pages share the
-  // same math and grouping (also fixes the full-scan-vs-delta vendor grouping
-  // mismatch, since grouping now happens here at request time).
-  if (rawData || override) {
-    try {
-      const cacheKey = rollupCacheKey(season, rawData, override);
-      const cachedRollup = reportRollupCache.get(cacheKey);
-      const rolled =
-        cachedRollup ||
-        reportRollupCache.set(cacheKey, buildRolledReport(rawData, override, season));
-      data = { ...(rawData || {}), season, ...rolled };
-    } catch (e) {
-      console.error("rollup error", e);
-      mergeError = e.message;
-      data = rawData
-        ? {
-            ...rawData,
-            mergeError,
-            rollupDegraded: true,
-            totalsDegraded: true,
+  const tag = reportCacheTag(ts, epoch);
+
+  try {
+    // ── Cache hit ────────────────────────────────────────────────────────────
+    if (view !== "full") {
+      const summary = await loadReportSummary(kv, season);
+      if (summary && summary.tag === tag) {
+        if (view === "drows" && deptId) {
+          const deptBlob = await loadReportDeptRows(kv, season, deptId);
+          if (deptBlob && deptBlob.tag === tag) {
+            return res.json({
+              data: { ts, season, deptId, rows: deptBlob.rows || [] },
+              job: jobView(job),
+              hasOverride: !!summary.hasOverride,
+              lsHealth: lsHealth || null,
+              rollupDegraded: false,
+              totalsDegraded: false,
+            });
           }
-        : {
-            season,
-            ts: null,
-            summaryRows: [],
-            deptVendors: {},
-            rows: [],
-            mergeError,
-            rollupDegraded: true,
-            totalsDegraded: true,
-          };
+          // dept group missing/stale — fall through to rebuild.
+        } else {
+          return res.json({
+            data: summary.data,
+            job: jobView(job),
+            hasOverride: !!summary.hasOverride,
+            lsHealth: lsHealth || null,
+            rollupDegraded: false,
+            totalsDegraded: false,
+          });
+        }
+      }
     }
-  }
 
-  if (data && req.query.view === "summary") {
-    data = {
-      ts: data.ts,
-      season: data.season,
-      summaryRows: data.summaryRows || [],
-      deptVendors: data.deptVendors || {},
-      isDelta: data.isDelta || false,
-      salesState: data.salesState || null,
-      mergeError: data.mergeError || null,
-      rollupDegraded: !!data.rollupDegraded,
-      totalsDegraded: !!data.totalsDegraded,
-    };
-  }
+    // ── Cache miss (or view=full): recompute + write-through ───────────────────
+    const built = await rebuildReportCache(season, tag);
+    if (built.empty) {
+      return res.json({
+        data: null,
+        job: jobView(job),
+        hasOverride: false,
+        lsHealth: lsHealth || null,
+      });
+    }
 
-  return res.json({
-    data: data || null,
-    job: job ? { phase: job.phase, progress: job.progress, error: job.error } : null,
-    hasOverride: !!override,
-    lsHealth: lsHealth || null,
-    mergeError,
-    rollupDegraded: !!data?.rollupDegraded,
-    totalsDegraded: !!data?.totalsDegraded,
-  });
+    if (view === "drows" && deptId) {
+      return res.json({
+        data: { ts, season, deptId, rows: built.groups[deptId] || [] },
+        job: jobView(job),
+        hasOverride: built.hasOverride,
+        lsHealth: lsHealth || null,
+        rollupDegraded: false,
+        totalsDegraded: false,
+      });
+    }
+
+    if (view === "full") {
+      return res.json({
+        data: { ...built.summaryValue.data, rows: built.rows },
+        job: jobView(job),
+        hasOverride: built.hasOverride,
+        lsHealth: lsHealth || null,
+        rollupDegraded: false,
+        totalsDegraded: false,
+      });
+    }
+
+    return res.json({
+      data: built.summaryValue.data,
+      job: jobView(job),
+      hasOverride: built.hasOverride,
+      lsHealth: lsHealth || null,
+      rollupDegraded: false,
+      totalsDegraded: false,
+    });
+  } catch (e) {
+    console.error("rollup error", e);
+    return res.json({
+      data: {
+        season,
+        ts,
+        summaryRows: [],
+        deptVendors: {},
+        rows: [],
+        mergeError: e.message,
+        rollupDegraded: true,
+        totalsDegraded: true,
+      },
+      job: jobView(job),
+      hasOverride: undefined,
+      lsHealth: lsHealth || null,
+      mergeError: e.message,
+      rollupDegraded: true,
+      totalsDegraded: true,
+    });
+  }
 }
