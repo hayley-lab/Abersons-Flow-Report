@@ -15,8 +15,8 @@
  * Captured:
  *   pos.tsv    — POType 0 (orders) + 3 (vendor returns) per SKU, with PO status,
  *                placed flag, ordered/received qty, item cost/price, supplier, dept.
- *   sales.tsv  — per SKU: full-price sold qty/$, discounted (on-sale) qty/$,
- *                customer-return qty, cost, first/last sale date.
+ *   sales.tsv  — per SKU: gross and net full-price sold qty/$, discounted
+ *                (on-sale) qty/$, customer-return qty, first/last sale date.
  *   summary.json — season-level totals (spring25/fall25/spring26/fall26 + other)
  *                  for ordered (u/cost/retail, placed only), received, returns,
  *                  sold, on-sale.
@@ -111,6 +111,10 @@ SELECT CONCAT_WS(CHAR(9),
   CAST(SUM(CASE WHEN TE.Quantity > 0 THEN TE.Quantity * TE.Price ELSE 0 END) AS varchar(30)),
   CAST(SUM(CASE WHEN TE.Quantity > 0 AND TE.Price >= TE.FullPrice THEN TE.Quantity * TE.Price ELSE 0 END) AS varchar(30)),
   CAST(SUM(CASE WHEN TE.Quantity > 0 AND TE.Price < TE.FullPrice THEN TE.Quantity * TE.Price ELSE 0 END) AS varchar(30)),
+  CAST(SUM(CASE WHEN TE.Price >= TE.FullPrice THEN TE.Quantity ELSE 0 END) AS varchar(20)),
+  CAST(SUM(CASE WHEN TE.Price < TE.FullPrice THEN TE.Quantity ELSE 0 END) AS varchar(20)),
+  CAST(SUM(CASE WHEN TE.Price >= TE.FullPrice THEN TE.Quantity * TE.Price ELSE 0 END) AS varchar(30)),
+  CAST(SUM(CASE WHEN TE.Price < TE.FullPrice THEN TE.Quantity * TE.Price ELSE 0 END) AS varchar(30)),
   CONVERT(varchar(10), MIN(TE.TransactionTime), 120),
   CONVERT(varchar(10), MAX(TE.TransactionTime), 120))
 FROM TransactionEntry TE
@@ -129,6 +133,8 @@ function emptySeason() {
     returns: { u: 0, cost: 0, retail: 0 },
     sold: { u: 0, amt: 0 },
     onSale: { u: 0, amt: 0 },
+    soldNet: { u: 0, amt: 0 },
+    onSaleNet: { u: 0, amt: 0 },
     custReturns: { u: 0 },
     skus: 0,
   };
@@ -144,20 +150,49 @@ function main() {
   const posOut = rmh(POS_SQL);
   const posRows = rows(posOut, 12);
   const posHeader =
-    ["poType", "sku", "supplierId", "supplierName", "dept", "isPlaced", "status", "qtyOrdered", "qtyReceived", "cost", "price", "description"].join(
-      "\t"
-    ) + "\n";
-  writeFileSync(path.join(outDir, "pos.tsv"), posHeader + posRows.map((f) => f.join("\t")).join("\n") + "\n");
+    [
+      "poType",
+      "sku",
+      "supplierId",
+      "supplierName",
+      "dept",
+      "isPlaced",
+      "status",
+      "qtyOrdered",
+      "qtyReceived",
+      "cost",
+      "price",
+      "description",
+    ].join("\t") + "\n";
+  writeFileSync(
+    path.join(outDir, "pos.tsv"),
+    posHeader + posRows.map((f) => f.join("\t")).join("\n") + "\n"
+  );
 
   // eslint-disable-next-line no-console
   console.log("Querying RMH sales (TransactionEntry)…");
   const salesOut = rmh(SALES_SQL);
-  const salesRows = rows(salesOut, 9);
+  const salesRows = rows(salesOut, 13);
   const salesHeader =
-    ["sku", "soldQty", "onSaleQty", "custReturnQty", "grossSalesAmt", "soldAmt", "onSaleAmt", "firstSale", "lastSale"].join(
-      "\t"
-    ) + "\n";
-  writeFileSync(path.join(outDir, "sales.tsv"), salesHeader + salesRows.map((f) => f.join("\t")).join("\n") + "\n");
+    [
+      "sku",
+      "soldQty",
+      "onSaleQty",
+      "custReturnQty",
+      "grossSalesAmt",
+      "soldAmt",
+      "onSaleAmt",
+      "soldNetQty",
+      "onSaleNetQty",
+      "soldNetAmt",
+      "onSaleNetAmt",
+      "firstSale",
+      "lastSale",
+    ].join("\t") + "\n";
+  writeFileSync(
+    path.join(outDir, "sales.tsv"),
+    salesHeader + salesRows.map((f) => f.join("\t")).join("\n") + "\n"
+  );
 
   const summary = {};
   const ensure = (s) => (summary[s] = summary[s] || emptySeason());
@@ -196,6 +231,10 @@ function main() {
     s.custReturns.u += parseFloat(f[3]) || 0;
     s.sold.amt += parseFloat(f[5]) || 0;
     s.onSale.amt += parseFloat(f[6]) || 0;
+    s.soldNet.u += parseFloat(f[7]) || 0;
+    s.onSaleNet.u += parseFloat(f[8]) || 0;
+    s.soldNet.amt += parseFloat(f[9]) || 0;
+    s.onSaleNet.amt += parseFloat(f[10]) || 0;
     s.skus += 1;
   }
 
@@ -218,6 +257,7 @@ function main() {
     notes:
       "orderedPlaced = POType=0 IsPlaced=1 (what the old flow report counted). " +
       "returns = POType=3 (vendor returns). sold/onSale split by Price vs FullPrice. " +
+      "soldNet/onSaleNet include negative customer-return lines in the original bucket. " +
       "Season folds rs/ps→spring, pf→fall for 2025/26.",
     seasons: round(summary),
   };
@@ -237,9 +277,11 @@ function main() {
     console.log(
       `  [${season}] ordered placed ${s.orderedPlaced.u}u ${money(s.orderedPlaced.retail)}ret/${money(
         s.orderedPlaced.cost
-      )}cost  returns ${s.returns.u}u  sold ${Math.round(s.sold.u)}u ${money(s.sold.amt)}  on-sale ${Math.round(
-        s.onSale.u
-      )}u ${money(s.onSale.amt)}`
+      )}cost  returns ${s.returns.u}u  gross sold ${Math.round(s.sold.u)}u ${money(
+        s.sold.amt
+      )}  gross on-sale ${Math.round(s.onSale.u)}u ${money(
+        s.onSale.amt
+      )}  net sold+on-sale ${Math.round(s.soldNet.u + s.onSaleNet.u)}u`
     );
   }
   // eslint-disable-next-line no-console

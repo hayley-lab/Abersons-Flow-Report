@@ -33,10 +33,7 @@ function loadEnv(file) {
     const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
     if (!m) continue;
     let val = m[2];
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     if (process.env[m[1]] === undefined) process.env[m[1]] = val;
@@ -390,7 +387,9 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
     let vendorLevelOrdered = 0;
     for (const v of Object.values((override && override.vendors) || {})) {
       const products = (v && v.products) || [];
-      const inSeason = products.some((op) => seasonForSku((op.style || "").toLowerCase()) === season);
+      const inSeason = products.some(
+        (op) => seasonForSku((op.style || "").toLowerCase()) === season
+      );
       if (!inSeason) continue;
       vendorLevelOrdered += Number(v.ordered) || 0;
       for (const op of products) {
@@ -463,17 +462,27 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
     );
     const snap = snapSales && snapSales.seasons[season];
     if (snap) {
-      const rmhSold = Math.round((snap.sold && snap.sold.u) || 0);
-      const rmhOnSale = Math.round((snap.onSale && snap.onSale.u) || 0);
+      const hasNetBuckets = !!(snap.soldNet || snap.onSaleNet);
+      const rmhSoldGross = Math.round((snap.sold && snap.sold.u) || 0);
+      const rmhOnSaleGross = Math.round((snap.onSale && snap.onSale.u) || 0);
+      const rmhReturns = Math.round((snap.custReturns && snap.custReturns.u) || 0);
+      const rmhSold = Math.round((snap.soldNet && snap.soldNet.u) || 0);
+      const rmhOnSale = Math.round((snap.onSaleNet && snap.onSaleNet.u) || 0);
       const repTotal = rep.soldU + rep.onSaleU;
-      const rmhTotal = rmhSold + rmhOnSale;
+      const rmhTotal = hasNetBuckets
+        ? rmhSold + rmhOnSale
+        : rmhSoldGross + rmhOnSaleGross - rmhReturns;
       const pct = rmhTotal > 0 ? ((repTotal - rmhTotal) / rmhTotal) * 100 : 0;
       let soldNote = "OK";
       if (pct <= -5) soldNote = "← LS migration-window gap (early RMH sales not all migrated)";
       else if (pct >= 5)
         soldNote = "(report > RMH — current LS-era season, LS is the live source: expected)";
       lines.push(
-        `    vs RMH snapshot  sold ${rmhSold}u  on-sale ${rmhOnSale}u  | report sold+onsale ${repTotal}u vs RMH ${rmhTotal}u (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)  ${soldNote}`
+        `    vs RMH snapshot  net sold+on-sale ${rmhTotal}u` +
+          (hasNetBuckets
+            ? ` (sold ${rmhSold}u / on-sale ${rmhOnSale}u)`
+            : ` (gross ${rmhSoldGross + rmhOnSaleGross}u - customer returns ${rmhReturns}u)`) +
+          `  | report sold+onsale ${repTotal}u (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)  ${soldNote}`
       );
     }
   }
@@ -493,8 +502,9 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
       "\nsourced from LS POs (source of truth); RMH POType0 received shown for context." +
       (snapSales
         ? `\n\nSOLD/ON-SALE compared to the frozen RMH snapshot (${snapSales.dir}). Sales were` +
-          "\nmigrated into LS; a shortfall = LS migration-window gap (early-season RMH" +
-          "\nsales before the LS cutover were not all migrated). Closed seasons only."
+          "\nmigrated into LS; RMH comparison is NET of customer returns (new snapshots" +
+          "\ncarry soldNet/onSaleNet; older snapshots fall back to gross minus returns)." +
+          "\nA shortfall = LS migration-window gap. Closed seasons only."
         : "\n\n(no RMH snapshot found — run scripts/rmh-snapshot.mjs for sold reconciliation)") +
       "\n"
   );
