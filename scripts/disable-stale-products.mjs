@@ -14,7 +14,7 @@
  */
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -61,6 +61,9 @@ function parseArgs(argv) {
     outDir: DEFAULT_OUT_DIR,
     seasons: DEFAULT_SEASONS,
     since: daysAgoIso(365),
+    consignmentSince: daysAgoIso(182),
+    splitConsignment: false,
+    consignmentOnly: false,
     smokeTest: false,
     smokeId: null,
     write: false,
@@ -81,8 +84,13 @@ function parseArgs(argv) {
       args.write = true;
       args.dryRun = false;
     } else if (arg === "--measure") args.measure = true;
+    else if (arg === "--consignment-only") args.consignmentOnly = true;
+    else if (arg === "--split-consignment") args.splitConsignment = true;
     else if (arg === "--since") args.since = requiredValue(argv, ++i, "--since");
-    else if (arg === "--seasons") {
+    else if (arg === "--consignment-since") {
+      args.consignmentSince = requiredValue(argv, ++i, "--consignment-since");
+      args.splitConsignment = true;
+    } else if (arg === "--seasons") {
       args.seasons = requiredValue(argv, ++i, "--seasons")
         .split(",")
         .map((s) => s.trim())
@@ -128,10 +136,22 @@ function printUsage() {
   console.warn(`Usage:
   node scripts/disable-stale-products.mjs --smoke-test
   node scripts/disable-stale-products.mjs [--since YYYY-MM-DD] [--seasons a,b,c]
+  node scripts/disable-stale-products.mjs --consignment-only --since YYYY-MM-DD --fresh-sales
+  node scripts/disable-stale-products.mjs --split-consignment [--consignment-since YYYY-MM-DD]
   node scripts/disable-stale-products.mjs --fresh-inventory --fresh-sales
   node scripts/disable-stale-products.mjs --write [--write-delay-ms 250]
   node scripts/disable-stale-products.mjs --measure
-  node scripts/disable-stale-products.mjs --revert scripts/out/<changes>.csv`);
+  node scripts/disable-stale-products.mjs --revert scripts/out/<changes>.csv
+
+Notes:
+  --consignment-only restricts candidates to consignment SKUs (item code starting with
+  "c"/"C"); all other products are left untouched. Pair it with --since (the recency
+  window, e.g. 6 months) and --fresh-sales so the recency guard reflects that window
+  rather than the KV "ever sold" cache.
+
+  --split-consignment applies --consignment-since (default 6 months) to SKUs starting
+  with "C" and --since (default 12 months) to all other products. It always pages live
+  LS sales (the KV sales cache only records "ever sold", not the date).`);
 }
 
 function daysAgoIso(days) {
@@ -186,6 +206,24 @@ function skuMatchesSeason(sku, seasonId) {
 
 function skuMatchesAnySeason(sku, seasons) {
   return seasons.some((season) => skuMatchesSeason(sku, season));
+}
+
+// Consignment goods are tagged by an item code beginning with "C" (e.g. "cfoo/s2601").
+// Used to apply a shorter sales-recency window than owned/regular product.
+function isConsignmentSku(sku) {
+  return String(sku || "")
+    .trim()
+    .toLowerCase()
+    .startsWith("c");
+}
+
+// In split mode, consignment SKUs use the consignment cutoff; everything else the regular cutoff.
+function recencyCutoffMs(sku, { regularCutoffMs, consignmentCutoffMs }) {
+  return isConsignmentSku(sku) ? consignmentCutoffMs : regularCutoffMs;
+}
+
+function isSaleWithinWindow(lastSaleMs, cutoffMs) {
+  return lastSaleMs != null && Number.isFinite(lastSaleMs) && lastSaleMs >= cutoffMs;
 }
 
 function requireLsEnv() {
@@ -405,6 +443,48 @@ async function fetchRecentSaleProductIds(since) {
   }
   process.stderr.write(` ${salesSeen} sales, ${sold.size} products\n`);
   return sold;
+}
+
+function saleTimestampMs(sale) {
+  const raw = sale?.sale_date || sale?.created_at || sale?.updated_at;
+  const ms = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// Returns a Map<productId, latestSaleMs> for split-window mode (cannot come from the
+// "ever sold" KV cache, so this always pages LS). `since` should be the longer lookback.
+async function fetchSaleDatesByPid(since) {
+  const lastSale = new Map();
+  let after = null;
+  let salesSeen = 0;
+  let page = 0;
+
+  process.stderr.write(`Fetching dated sales since ${since}`);
+  for (;;) {
+    const afterParam = after ? `&after=${encodeURIComponent(after)}` : "";
+    const data = await lsRequest(
+      `2.0/sales?page_size=${SALES_PAGE_SIZE}&date_from=${encodeURIComponent(since)}${afterParam}`
+    );
+    const sales = data?.data || [];
+    for (const sale of sales) {
+      salesSeen++;
+      if (isVoidedOrDeletedSale(sale)) continue;
+      const ms = saleTimestampMs(sale);
+      if (ms == null) continue;
+      for (const productId of saleProductIds(sale)) {
+        const prev = lastSale.get(productId);
+        if (prev == null || ms > prev) lastSale.set(productId, ms);
+      }
+    }
+    page++;
+    if (page % 25 === 0) process.stderr.write(".");
+
+    const nextCursor = cursorFrom(data, sales);
+    if (!sales.length || !nextCursor || nextCursor === after) break;
+    after = nextCursor;
+  }
+  process.stderr.write(` ${salesSeen} sales, ${lastSale.size} products\n`);
+  return lastSale;
 }
 
 async function loadCachedSaleProductIds() {
@@ -678,20 +758,37 @@ function skipStats() {
     recentSale: 0,
     openConsignment: 0,
     activeSeasonGuard: 0,
+    nonConsignment: 0,
     candidate: 0,
+    candidateConsignment: 0,
+    candidateRegular: 0,
   };
 }
 
+function isRecentlySoldGuarded(product, context) {
+  if (context.lastSaleByPid) {
+    const last = context.lastSaleByPid.get(String(product.id));
+    return isSaleWithinWindow(last, recencyCutoffMs(product.sku, context));
+  }
+  return context.recentSalePids.has(product.id);
+}
+
 function candidateReason(product, context) {
+  if (context.consignmentOnly && !isConsignmentSku(product.sku)) return "nonConsignment";
   if (!isActiveProduct(product)) return "inactive";
   if (isDeleted(product)) return "deleted";
   if (!isInventoryTracked(product)) return "nonInventory";
   const onHand = context.onHand.get(product.id) || 0;
   if (onHand > 0) return "inStock";
-  if (context.recentSalePids.has(product.id)) return "recentSale";
+  if (isRecentlySoldGuarded(product, context)) return "recentSale";
   if (context.openConsignmentPids.has(product.id)) return "openConsignment";
   if (context.activeSeasonPids.has(product.id)) return "activeSeasonGuard";
   return "candidate";
+}
+
+function tallyCandidateClass(stats, product) {
+  if (isConsignmentSku(product.sku)) stats.candidateConsignment++;
+  else stats.candidateRegular++;
 }
 
 function candidateRow(product, onHand) {
@@ -709,12 +806,28 @@ function candidateRow(product, onHand) {
   };
 }
 
+function earlierIsoDate(a, b) {
+  return Date.parse(a) <= Date.parse(b) ? a : b;
+}
+
 async function gatherContext(args) {
   const onHand = await loadInventoryOnHand(args);
-  const recentSalePids = await loadSaleProductIds(args);
-  const openConsignmentPids = await fetchOpenConsignmentProductIds();
-  const activeSeasonPids = await fetchActiveSeasonProductIds(args.seasons);
-  return { onHand, recentSalePids, openConsignmentPids, activeSeasonPids };
+  const base = { onHand, consignmentOnly: args.consignmentOnly };
+
+  if (args.splitConsignment) {
+    // Split mode needs per-product last-sale dates, so it always pages LS (the KV
+    // sales cache only knows "ever sold", not when). Fetch the longer lookback once.
+    const lookback = earlierIsoDate(args.since, args.consignmentSince);
+    base.lastSaleByPid = await fetchSaleDatesByPid(lookback);
+    base.regularCutoffMs = Date.parse(args.since);
+    base.consignmentCutoffMs = Date.parse(args.consignmentSince);
+  } else {
+    base.recentSalePids = await loadSaleProductIds(args);
+  }
+
+  base.openConsignmentPids = await fetchOpenConsignmentProductIds();
+  base.activeSeasonPids = await fetchActiveSeasonProductIds(args.seasons);
+  return base;
 }
 
 async function scanCandidateProducts(context, { outDir, limit = Infinity } = {}) {
@@ -752,6 +865,7 @@ async function scanCandidateProducts(context, { outDir, limit = Infinity } = {})
         const reason = candidateReason(product, context);
         stats[reason]++;
         if (reason !== "candidate") continue;
+        tallyCandidateClass(stats, product);
 
         const row = candidateRow(product, context.onHand.get(product.id) || 0);
         writer.write(row);
@@ -825,6 +939,7 @@ async function scanAndWriteCandidates(context, args) {
         const reason = candidateReason(product, context);
         stats[reason]++;
         if (reason !== "candidate") continue;
+        tallyCandidateClass(stats, product);
 
         const baseRow = candidateRow(product, context.onHand.get(product.id) || 0);
         candidatesWriter.write(baseRow);
@@ -938,6 +1053,9 @@ function printCandidateSummary(stats, csv) {
   console.warn("\n=== Stale product dry-run ===");
   console.warn(`products scanned: ${stats.totalProducts}`);
   console.warn(`candidates: ${stats.candidate}`);
+  console.warn(
+    `  consignment (SKU "C…"): ${stats.candidateConsignment} | regular: ${stats.candidateRegular}`
+  );
   console.warn("");
   console.warn("Skipped:");
   console.warn(`  inactive: ${stats.inactive}`);
@@ -947,6 +1065,7 @@ function printCandidateSummary(stats, csv) {
   console.warn(`  recent sale: ${stats.recentSale}`);
   console.warn(`  open consignment: ${stats.openConsignment}`);
   console.warn(`  active-season report guard: ${stats.activeSeasonGuard}`);
+  if (stats.nonConsignment) console.warn(`  non-consignment (skipped): ${stats.nonConsignment}`);
   console.warn("");
   console.warn(`candidate CSV: ${csv}`);
 }
@@ -1154,7 +1273,21 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
+
+export {
+  isConsignmentSku,
+  recencyCutoffMs,
+  isSaleWithinWindow,
+  candidateReason,
+  skuMatchesSeason,
+  earlierIsoDate,
+};
