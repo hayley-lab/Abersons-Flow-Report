@@ -17,6 +17,7 @@ import { kv } from "@vercel/kv";
 import { getIronSession } from "iron-session";
 import { sessionOptions } from "../../../lib/session";
 import { computeReport, groupRowsByDept } from "../../../lib/report-compute";
+import { loadOverride } from "../../../lib/override-store";
 import {
   loadScanData,
   loadScanDataSummary,
@@ -28,41 +29,7 @@ import {
   reportCacheTag,
 } from "../../../lib/scan-data-store";
 import { getLsHealth } from "../../../lib/ls-auth";
-
-function parseKv(val) {
-  if (!val) return null;
-  if (typeof val === "string") {
-    try {
-      return JSON.parse(val);
-    } catch {
-      return null;
-    }
-  }
-  return val;
-}
-
-async function loadOverride(season) {
-  const [storesRaw, indexRaw] = await Promise.all([
-    kv.get(`scan:override:${season}:stores`),
-    kv.get(`scan:override:${season}:vendorIndex`),
-  ]);
-  if (!indexRaw) return null;
-
-  const vendorIndex = parseKv(indexRaw);
-  const stores = parseKv(storesRaw) || {};
-  if (!Array.isArray(vendorIndex)) return null;
-
-  // Load all vendor entries in parallel
-  const vendorRaws = await Promise.all(
-    vendorIndex.map((key) => kv.get(`scan:override:${season}:v:${key}`))
-  );
-  const vendors = {};
-  vendorIndex.forEach((key, i) => {
-    vendors[key] = parseKv(vendorRaws[i]);
-  });
-
-  return { stores, vendors };
-}
+import { maybeUpsertSqlReport, readSqlReportView } from "../../../lib/sql-report-store";
 
 function jobView(job) {
   return job ? { phase: job.phase, progress: job.progress, error: job.error } : null;
@@ -73,7 +40,10 @@ function jobView(job) {
 // summary blob plus one row group per department). Returns the freshly computed
 // pieces so the caller can serve the requested view without a second read.
 async function rebuildReportCache(season, tag) {
-  const [rawData, override] = await Promise.all([loadScanData(kv, season), loadOverride(season)]);
+  const [rawData, override] = await Promise.all([
+    loadScanData(kv, season),
+    loadOverride(kv, season),
+  ]);
   if (!rawData && !override) return { empty: true, hasOverride: false };
 
   const { rows, summaryRows, deptVendors, health } = computeReport(rawData, override, season);
@@ -100,6 +70,10 @@ async function rebuildReportCache(season, tag) {
         rows: groups[deptId],
       })
     ),
+    maybeUpsertSqlReport(season, rawData, override).catch((e) => {
+      console.warn("sql report write skipped/failed", e.message);
+      return null;
+    }),
   ]);
 
   return { empty: false, hasOverride: !!override, summaryValue, groups, rows };
@@ -140,6 +114,26 @@ export default async function handler(req, res) {
   const tag = reportCacheTag(ts, epoch);
 
   try {
+    // ── SQL read path (feature flagged) ──────────────────────────────────────
+    // Keep the KV path as the fallback/oracle during the migration. SQL reads use
+    // the same view contract as the KV read-cache: summary, drows, or full.
+    const sqlData = await readSqlReportView({ season, view, deptId }).catch((e) => {
+      console.warn("sql report read failed; falling back to KV", e.message);
+      return null;
+    });
+    if (sqlData) {
+      const { hasOverride: sqlHasOverride, ...sqlDataView } = sqlData;
+      return res.json({
+        data: view === "drows" ? { ...sqlDataView, ts } : sqlDataView,
+        job: jobView(job),
+        hasOverride: !!sqlHasOverride,
+        lsHealth: lsHealth || null,
+        rollupDegraded: false,
+        totalsDegraded: false,
+        source: "sql",
+      });
+    }
+
     // ── Cache hit ────────────────────────────────────────────────────────────
     if (view !== "full") {
       const summary = await loadReportSummary(kv, season);

@@ -1,140 +1,102 @@
-# SQL Migration Plan (Follow-up / Future Project)
+# SQL Migration Plan
 
-Status: PROPOSED, not started. This is a documented follow-up to the KV
-read-path caching work (see `scan:report:*` in `pages/api/scan/data.js`). The
-caching layer is a tactical fix; this document describes the strategic option of
-backing the app with a relational database.
+Status: IN PROGRESS. The app is being wired for a SQL-backed report path while
+keeping the already-verified KV data as the oracle and fallback.
 
-Do not start this without a dedicated validation pass — it is a multi-day
-project that touches the scan pipeline and the reconciliation harnesses.
+## Why SQL
 
-## Why consider SQL
+Vercel KV is a blob/key-value store. It cannot query or aggregate, so the report
+endpoint historically had to load a whole multi-MB season blob plus override
+records to render a tiny summary. The `scan:report:*` read-cache fixed the
+immediate UX problem, but SQL removes the root cause: summary/vendor/product
+views become indexed reads instead of whole-season blob reads.
 
-The current store is Vercel KV (Upstash Redis). KV cannot query or aggregate, so
-the report endpoint must load an entire season's multi-MB blob (sharded across 16
-keys via `lib/kv-sharded.js`) just to render a ~20 KB summary. Everything built
-to work around that — pid sharding, the request-time rollup, and the new
-`scan:report:*` write-through cache — exists only because KV is a key-value blob
-store.
+Measured live before the cache: `spring25` was ~16.7s / 10 MB / 7,383 rows, and
+even the 122-byte `since` short-circuit took ~15s because the cost was upfront KV
+I/O, not transfer.
 
-Measured today (live Vercel app, `/api/scan/data`): ~16.7s / 10 MB / 7,383 rows
-for `spring25`; the `view=summary` (19 KB) and `since` notModified (122 B)
-responses were also ~15s because the cost is the upfront KV load, not the
-response.
+## Cost
 
-A relational database removes the root cause:
+The data footprint is tiny for Postgres: roughly 50-100k product-season rows plus
+a few hundred override-vendor rows, well under 100 MB.
 
-- Summary = `SELECT dept_id, SUM(...) GROUP BY dept_id` (indexed, milliseconds).
-- Vendor list = `GROUP BY vendor_id`.
-- Product drilldown = `WHERE season = ? AND vendor_id = ?` with an index.
-- No sharding, no whole-season loads, no request-time rollup, no write-through cache.
+- Recommended: Neon Launch via the Vercel Marketplace. Unified Vercel billing,
+  pay-as-you-go, no monthly minimum, scale-to-zero, $0.106/CU-hour compute and
+  $0.35/GB-month storage. Expected spend: ~$5-15/month for this internal tool.
+- Alternative: Supabase Pro via Vercel Marketplace, flat $25/month with a Micro
+  instance and 8 GB included storage.
+- Moving report reads off KV should shrink the current Upstash KV overage and may
+  partially or fully offset the SQL bill.
 
-The data is small for SQL (~7k rows/season, a 261k-row catalog), so this is well
-within a single small Postgres instance.
+## Initial Load
 
-## Proposed data model (Postgres)
+The initial SQL load comes from the hardened KV snapshots, not a slow Lightspeed
+full sync:
 
-Normalize per-product, per-season stats into a table, materializing the existing
-overlay logic at write time so the read path is pure aggregation.
-
-```sql
--- One row per product per season (the canonical "productStats" unit).
-CREATE TABLE product_season (
-  season            TEXT NOT NULL,
-  pid               TEXT NOT NULL,
-  sku               TEXT,
-  name              TEXT,
-  dept_id           TEXT NOT NULL DEFAULT '__none__',
-  vendor_id         TEXT,
-  vendor_name       TEXT,
-  price             NUMERIC NOT NULL DEFAULT 0,
-  cost              NUMERIC NOT NULL DEFAULT 0,
-  qty_ordered       INTEGER NOT NULL DEFAULT 0,
-  qty_received      INTEGER NOT NULL DEFAULT 0,
-  ret_qty           INTEGER NOT NULL DEFAULT 0,   -- vendor returns
-  ret_val           NUMERIC NOT NULL DEFAULT 0,
-  ret_cost          NUMERIC NOT NULL DEFAULT 0,
-  sold              INTEGER NOT NULL DEFAULT 0,    -- full-price units
-  on_sale           INTEGER NOT NULL DEFAULT 0,    -- discounted units
-  sold_amt          NUMERIC NOT NULL DEFAULT 0,
-  sale_amt          NUMERIC NOT NULL DEFAULT 0,
-  returned          INTEGER NOT NULL DEFAULT 0,    -- customer returns (not displayed)
-  live_on_hand      INTEGER NOT NULL DEFAULT 0,
-  ordered_source    TEXT,                          -- 'ls' | 'datatail' | 'mixed'
-  source_ts         BIGINT NOT NULL,               -- scan/delta ts that produced this row
-  PRIMARY KEY (season, pid)
-);
-CREATE INDEX ON product_season (season, dept_id);
-CREATE INDEX ON product_season (season, vendor_id);
-
--- Datatail/RMH vendor-level ordered dollars that have no per-product breakdown.
-CREATE TABLE override_vendor (
-  season       TEXT NOT NULL,
-  vendor_key   TEXT NOT NULL,
-  vendor_id    TEXT,
-  vendor_name  TEXT,
-  dept_name    TEXT,
-  ordered      NUMERIC NOT NULL DEFAULT 0,
-  ordered_cost NUMERIC NOT NULL DEFAULT 0,
-  PRIMARY KEY (season, vendor_key)
-);
-
--- Small operational state (replaces scan:job).
-CREATE TABLE scan_job (
-  season   TEXT PRIMARY KEY,
-  phase    TEXT,
-  progress TEXT,
-  error    TEXT,
-  ts       BIGINT
-);
+```mermaid
+flowchart LR
+  kvData["scan:data:{season} (KV)"] --> compute["computeReport()"]
+  kvOverride["scan:override:{season}:* (KV)"] --> compute
+  compute --> rows["canonical rows + rollup"]
+  rows --> sqlInsert["INSERT/UPSERT Postgres"]
 ```
 
-Key decision: the hard overlay logic in `lib/flow-rollup.js` /
-`lib/flow-math.js` (RMH returns/sold overlays, datatail price/cost fallback,
-LS-vs-datatail ordered overlap rules, season SKU gates) is applied ONCE at write
-time when populating `product_season`, so the read path is plain SQL. The "Data
-Flow — Bottom Up" rule in `CLAUDE.md` still holds: rows materialize first, then
-`GROUP BY` rolls them up.
+`scripts/backfill-sql-from-kv.js` reads `scan:data:{season}` and
+`scan:override:{season}:*`, runs `computeReport()`, and writes SQL rows. No
+Lightspeed API calls are needed. If a KV season snapshot has expired, run one
+normal scan for that season first.
 
-## Migration phases
+## Connection Pooling
 
-1. Provision Postgres (Vercel Postgres / Neon / Supabase) and add a thin
-   `lib/db.js` client. Keep KV in place.
-2. Write the schema + a one-time backfill that reads the current KV
-   `scan:data:{season}` + override and inserts `product_season` /
-   `override_vendor` rows (reuse `lib/report-compute.js` to produce the rows,
-   then insert instead of cache). This is the only "data rebuild" needed and it
-   is derived from existing KV, so it is reversible.
-3. Add SQL-backed read endpoints behind a feature flag; keep `data.js` KV path as
-   fallback. Diff SQL output against the KV rollup using the existing
-   `tools/recon-accuracy.js` harness until Δ = 0 on every season/column.
-4. Switch the scan pipeline (`pages/api/scan/step.js` finalizing) and delta
-   (`pages/api/scan/delta.js`) to UPSERT into `product_season` instead of
-   writing KV blobs. Switch the datatail import (`pages/api/import/save.js`) to
-   upsert `override_vendor`.
-5. Flip the read flag to SQL, delete the `scan:report:*` cache code, then retire
-   `lib/kv-sharded.js` and the KV scan keys after a soak period.
+Use the pooled/serverless endpoint only. Direct per-request `pg` connections can
+exhaust small Postgres connection limits in Vercel functions.
 
-## What stays the same
+- Neon: use `@neondatabase/serverless` (HTTP/WebSocket, no per-Lambda TCP pool) or
+  the Neon PgBouncer `-pooler` endpoint.
+- Supabase: use Supavisor transaction-mode pooler (port 6543), not direct 5432.
+- Keep migrations on a direct/admin connection if needed; app reads/writes use
+  the pooled/serverless connection.
 
-- Lightspeed ingestion (the API paging in `step.js` / `delta.js`) is unchanged —
-  only the destination of the parsed data changes.
-- Auth (iron-session), the Next.js UI structure, and the bottom-up domain rules
-  in `CLAUDE.md`.
-- The reconciliation snapshots (`scripts/rmh-snapshot.mjs`) remain the
-  source-of-truth backup for validating the migrated numbers.
+## Current Implementation Shape
+
+- `lib/db.js`: Neon serverless client, feature flags, connection detection.
+- `lib/sql-report-store.js`: schema creation, SQL upserts, SQL reads. Stores
+  canonical product rows in `product_season`, raw override vendors in
+  `override_vendor`, and an exact report snapshot in `report_summary` for
+  migration parity.
+- `scripts/backfill-sql-from-kv.mjs`: initial KV-to-SQL load.
+- `pages/api/scan/data.js`: feature-flagged SQL read path with KV fallback.
+- `pages/api/scan/step.js` and `pages/api/scan/delta.js`: best-effort dual-write
+  to SQL while continuing to write KV.
+- `pages/api/import/save.js` and `pages/api/import/datatail.js`: best-effort SQL
+  override-vendor dual-write while continuing to write KV.
+- `pages/api/scan/verify-sql.js`: compares SQL output to KV-derived
+  `computeReport()` output.
+- `.github/workflows/verify-sql.yml`: post-deploy/manual parity workflow.
+
+## Cutover Plan
+
+1. Provision Neon via Vercel Marketplace and attach `DATABASE_URL` to production.
+2. Run `scripts/backfill-sql-from-kv.mjs` for all active seasons.
+3. Enable `REPORT_SQL_WRITE=1` to start dual-write while KV remains the oracle.
+4. Enable `REPORT_SQL_READ=1` to serve SQL reads with KV fallback.
+5. Run `verify-sql` after deploys and on a schedule through at least one full
+   nightly + delta cycle.
+6. Only after parity stays green: stop KV dual-write, remove `scan:report:*`,
+   retire `lib/kv-sharded.js`/KV scan keys, and reduce KV usage.
+
+## Verification Gate
+
+The SQL cutover is gated by SQL-vs-KV parity. `verify-sql` builds the trusted KV
+report via `computeReport(loadScanData, loadOverride, season)` and compares it to
+the SQL report at summary, vendor, and product levels. Units must match exactly;
+dollars allow a tiny epsilon for numeric rounding. Any mismatch fails the action.
 
 ## Risks
 
-- Largest risk is regressing the hard-won RMH/datatail reconciliation. Mitigate
-  by keeping the KV path as a parallel oracle and gating the switch on
-  `tools/recon-accuracy.js` Δ = 0.
-- Timing vs handoff: this is a project, not a patch. The KV caching layer already
-  delivers sub-second summaries, so SQL can be scheduled deliberately rather than
-  rushed.
-
-## Effort estimate
-
-Roughly 3-5 focused days: ~1 day schema + backfill, ~1-2 days dual-read
-validation, ~1 day pipeline upserts, ~1 day cleanup/soak. Compare to the caching
-layer (hours).
+- Regressing hard-won RMH/datatail reconciliation. Mitigation: KV remains the
+  oracle until `verify-sql` is green across a full nightly + delta cycle.
+- Connection exhaustion if a direct connection is accidentally used. Mitigation:
+  Neon serverless driver/pooler only.
+- SQL provider costs differ slightly in Vercel Marketplace. Confirm the selected
+  plan before enabling production writes.

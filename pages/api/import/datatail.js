@@ -7,6 +7,7 @@ import { getIronSession } from "iron-session";
 import fetch from "node-fetch";
 import { kv } from "@vercel/kv";
 import { bumpReportEpoch } from "../../../lib/scan-data-store";
+import { maybeUpsertSqlOverrideVendors } from "../../../lib/sql-report-store";
 
 const SESSION_OPTIONS = {
   cookieName: "flow_session",
@@ -285,6 +286,9 @@ export default async function handler(req, res) {
           products: data.products,
         };
         await kv.set(`scan:override:${season}:v:${key}`, JSON.stringify(vendorRecord));
+        await maybeUpsertSqlOverrideVendors(season, { vendors: { [key]: vendorRecord } }).catch(
+          (e) => console.warn("sql override dual-write failed", e.message)
+        );
       }
 
       return res.json({

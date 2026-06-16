@@ -48,6 +48,11 @@ jest.mock("../../../lib/ls-auth", () => ({
   getLsHealth: jest.fn(async () => ({ ok: true, ts: 123 })),
 }));
 
+jest.mock("../../../lib/sql-report-store", () => ({
+  readSqlReportView: jest.fn(async () => null),
+  maybeUpsertSqlReport: jest.fn(async () => ({ ok: false, skipped: true })),
+}));
+
 import { kv as mockKv } from "@vercel/kv";
 import {
   loadScanData,
@@ -58,6 +63,7 @@ import {
   saveReportDeptRows,
 } from "../../../lib/scan-data-store";
 import { computeReport } from "../../../lib/report-compute";
+import { readSqlReportView } from "../../../lib/sql-report-store";
 import handler from "../../../pages/api/scan/data";
 
 function makeRes() {
@@ -88,6 +94,7 @@ describe("scan/data handler", () => {
     saveReportSummary.mockClear();
     loadReportDeptRows.mockReset().mockResolvedValue(null);
     saveReportDeptRows.mockClear();
+    readSqlReportView.mockReset().mockResolvedValue(null);
     computeReport.mockClear().mockImplementation(() => ({
       rows: [{ pid: "p1", deptId: "d1" }],
       summaryRows: [{ id: "d1", name: "Dept One" }],
@@ -138,6 +145,27 @@ describe("scan/data handler", () => {
     expect(res.body.hasOverride).toBe(true);
     expect(loadScanData).not.toHaveBeenCalled();
     expect(computeReport).not.toHaveBeenCalled();
+  });
+
+  it("serves SQL data before checking the KV report cache when SQL is enabled", async () => {
+    loadScanDataSummary.mockResolvedValue({ ts: 5000 });
+    readSqlReportView.mockResolvedValue({
+      ts: 5000,
+      season: "fall26",
+      summaryRows: [{ id: "sql" }],
+      deptVendors: {},
+      hasOverride: true,
+    });
+    const res = makeRes();
+    await handler(makeReq({ season: "fall26", view: "summary" }), res);
+
+    expect(res.body).toMatchObject({
+      source: "sql",
+      hasOverride: true,
+      data: { summaryRows: [{ id: "sql" }] },
+    });
+    expect(loadReportSummary).not.toHaveBeenCalled();
+    expect(loadScanData).not.toHaveBeenCalled();
   });
 
   it("serves one department's rows on a drows tag hit", async () => {

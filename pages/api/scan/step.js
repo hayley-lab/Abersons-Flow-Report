@@ -80,6 +80,8 @@ import {
   saveScanData,
   saveScanPids,
 } from "../../../lib/scan-data-store";
+import { loadOverride } from "../../../lib/override-store";
+import { maybeUpsertSqlReport } from "../../../lib/sql-report-store";
 import {
   isResolvedSupplier,
   supplierId,
@@ -1294,6 +1296,11 @@ export default async function handler(req, res) {
       const doneTs = Date.now();
       await Promise.all([
         saveScanData(kv, state.season, result),
+        loadOverride(kv, state.season)
+          .then((override) => maybeUpsertSqlReport(state.season, result, override))
+          .catch((e) => {
+            console.warn("sql full-scan dual-write failed", e.message);
+          }),
         saveScanPids(kv, state.season, {
           seasonPids: state.seasonPids,
           pidToType: state.pidToType,

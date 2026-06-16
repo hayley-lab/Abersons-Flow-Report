@@ -1,0 +1,73 @@
+name: Verify SQL Reports
+
+# Post-deploy/soak guard for the SQL migration. Compares SQL-backed reports to
+# the already-verified KV-derived report for every active season. This is only
+# expected to pass once DATABASE_URL/POSTGRES_URL and SQL dual-write/read flags
+# are configured in production.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+jobs:
+  verify-sql:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Verify SQL reports against KV oracle
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          BASE="https://abersons-flow-report.vercel.app"
+
+          Y=$(date -u +%Y)
+          SEASONS=""
+          for y in $((Y-1)) $Y $((Y+1)); do
+            if [ "$y" -lt 2025 ]; then continue; fi
+            yy=$(printf '%02d' $((y % 100)))
+            if [ "$y" -le 2026 ]; then
+              SEASONS="$SEASONS fall$yy spring$yy"
+            else
+              SEASONS="$SEASONS fall$yy prefall$yy spring$yy prespring$yy"
+            fi
+          done
+
+          echo "# SQL Report Verification" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Season | Result | Rows | Mismatches | Max delta |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+
+          FAILED=0
+          for season in $SEASONS; do
+            echo "--- Verifying $season ---"
+            RESPONSE=$(curl -sS --fail --max-time 120 \
+              "$BASE/api/scan/verify-sql?season=$season" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Accept: application/json") || {
+                echo "::error::verify-sql request failed for $season"
+                echo "| $season | ❌ request failed | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+                FAILED=$((FAILED+1))
+                continue
+              }
+            OK=$(printf '%s' "$RESPONSE" | jq -r '.ok // false')
+            ROWS=$(printf '%s' "$RESPONSE" | jq -r '.results[0].counts.sqlRows // 0')
+            MISMATCHES=$(printf '%s' "$RESPONSE" | jq -r '.results[0].counts.mismatches // 0')
+            MAXDELTA=$(printf '%s' "$RESPONSE" | jq -r '.results[0].maxDelta // 0')
+            if [ "$OK" = "true" ]; then
+              echo "| $season | ✅ ok | $ROWS | $MISMATCHES | $MAXDELTA |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              ERR=$(printf '%s' "$RESPONSE" | jq -r '.results[0].error // empty')
+              echo "::error::SQL parity failed for $season ${ERR:+($ERR)}"
+              echo "| $season | ❌ mismatch | $ROWS | $MISMATCHES | $MAXDELTA |" >> "$GITHUB_STEP_SUMMARY"
+              FAILED=$((FAILED+1))
+            fi
+          done
+
+          if [ "$FAILED" -gt 0 ]; then
+            exit 1
+          fi

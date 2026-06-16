@@ -29,6 +29,8 @@ import { loadSalesState, reconcileSale, saveSalesState } from "../../../lib/sale
 import { liveOnHandFromCache, loadInventoryCache } from "../../../lib/inventory-ledger";
 import { loadSalesAgg, loadSalesStoreMeta, projectSeasonSales } from "../../../lib/sales-store";
 import { loadScanData, saveScanData } from "../../../lib/scan-data-store";
+import { loadOverride } from "../../../lib/override-store";
+import { maybeUpsertSqlReport } from "../../../lib/sql-report-store";
 
 const MAX_DURATION_MS = 55_000; // stay under 60s function limit
 const ENABLE_BULK_INVENTORY = process.env.ENABLE_BULK_INVENTORY !== "0";
@@ -171,8 +173,7 @@ export default async function handler(req, res) {
           for (const sale of saleItems) {
             await reconcileSale(kv, season, salesState, sale, seasonPidSet, pidToPrice);
             for (const li of sale.line_items || []) {
-              if (li?.product_id && seasonPidSet.has(li.product_id))
-                touchedPids.add(li.product_id);
+              if (li?.product_id && seasonPidSet.has(li.product_id)) touchedPids.add(li.product_id);
             }
           }
         },
@@ -307,6 +308,10 @@ export default async function handler(req, res) {
     };
 
     await saveScanData(kv, season, result);
+    const override = await loadOverride(kv, season);
+    await maybeUpsertSqlReport(season, result, override).catch((e) =>
+      console.warn("sql delta dual-write failed", e.message)
+    );
     // Successful delta = LS reachable + token valid → clear any stale error state.
     markLsHealthy();
     return res.json({ ok: true, ts: result.ts, pages });
