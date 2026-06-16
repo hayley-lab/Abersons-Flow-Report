@@ -157,7 +157,7 @@ function queryRmh() {
     const cost = parseFloat(f[4]) || 0;
     const retail = parseFloat(f[5]) || 0;
     const ps = (perSku[season][sku] = perSku[season][sku] || {
-      ordered: { u: 0 },
+      ordered: { u: 0, c: 0, r: 0 },
       received: { u: 0 },
       returns: { u: 0 },
     });
@@ -167,6 +167,8 @@ function queryRmh() {
       bySeason[season].ordered.r += retail;
       bySeason[season].received.u += received;
       ps.ordered.u += ordered;
+      ps.ordered.c += cost;
+      ps.ordered.r += retail;
       ps.received.u += received;
     } else if (poType === 3) {
       bySeason[season].returns.u += ordered;
@@ -203,6 +205,12 @@ function sumReport(rows) {
 }
 
 const money = (n) => `$${Math.round(n).toLocaleString()}`;
+
+function hasLsPoActivityForSku(sku, scanData) {
+  const pid = scanData?.skuToPid?.[sku];
+  const ps = pid != null ? scanData?.productStats?.[pid] : null;
+  return !!(ps && ((Number(ps.qtyOrdered) || 0) > 0 || (Number(ps.qtyReceived) || 0) > 0));
+}
 
 test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
   const { bySeason: rmh, perSku: rmhPerSku } = queryRmh();
@@ -401,6 +409,17 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
     }
     const lsOrderedUnits = rep.orderedU - datatailOrderedU;
     const isRmhOnlySeason = lsOrderedUnits === 0;
+    const lsOrderedRetail = rows.reduce((sum, row) => {
+      if (!row.pid) return sum;
+      return sum + Math.max(0, (Number(row.lsOrderedQty) - Number(row.retQty)) * Number(row.price));
+    }, 0);
+    let rmhOnlyOrderedRetail = 0;
+    for (const [sku, v] of Object.entries(rmhSku)) {
+      if ((v.ordered.u || 0) <= 0) continue;
+      if (hasLsPoActivityForSku(sku, scanData)) continue;
+      rmhOnlyOrderedRetail += v.ordered.r || 0;
+    }
+    const dedupedOrderedTarget = lsOrderedRetail + rmhOnlyOrderedRetail;
     const ordRetailDelta = reportDollars.ordered - r.ordered.r;
     const ordRetailPct = r.ordered.r > 0 ? Math.abs(ordRetailDelta) / r.ordered.r : 0;
     // CODE-CORRECTNESS gate (must pass): for an RMH-only season the report's
@@ -410,7 +429,9 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
     const combineOk = !isRmhOnlySeason || Math.abs(reportDollars.ordered - vendorLevelOrdered) <= 1;
     // It must also never EXCEED RMH for an RMH-only season (would mean double-count).
     const noDoubleCount = !isRmhOnlySeason || ordRetailDelta <= 5000;
-    if (!combineOk || !noDoubleCount) ordersOk = false;
+    const crossoverOrderedOk =
+      season !== "spring26" || Math.abs(reportDollars.ordered - dedupedOrderedTarget) <= 1;
+    if (!combineOk || !noDoubleCount || !crossoverOrderedOk) ordersOk = false;
     // DATA-SOURCE completeness (warning, not a code failure): the datatailor
     // hard-pull may be short of RMH truth. Fixable only by an RMH ordered backfill.
     const sourceComplete = !isRmhOnlySeason || vendorLevelOrdered >= r.ordered.r * 0.95;
@@ -437,7 +458,11 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
         `Δ=${money(ordRetailDelta)} (${(ordRetailPct * 100).toFixed(1)}%)   ` +
         (isRmhOnlySeason
           ? `[RMH-only] combine ${combineOk && noDoubleCount ? "OK" : "<-- CODE CHECK"}; source ${sourceComplete ? "complete" : "INCOMPLETE (backfill)"}`
-          : `[crossover: LS+datatail deduped — RMH comparison informational]`)
+          : `[crossover: LS+datatail deduped` +
+            (season === "spring26"
+              ? ` target=${money(dedupedOrderedTarget)} ${crossoverOrderedOk ? "OK" : "<-- CHECK"}`
+              : " — RMH comparison informational") +
+            `]`)
     );
     lines.push(
       `    datatail ordered $: vendor-level ${money(vendorLevelOrdered)}  per-product ${money(rawProductOrdered)}  ` +

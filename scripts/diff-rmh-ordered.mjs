@@ -21,7 +21,9 @@
  * REQUIREMENTS: FreeTDS `tsql`; .env.rmh (HOST/USER/PASS/DATABASE/PORT);
  *   .env.local (KV_REST_API_URL + KV_REST_API_TOKEN).
  *
- * USAGE: node scripts/diff-rmh-ordered.mjs [--seasons spring25,fall25]
+ * USAGE:
+ *   node scripts/diff-rmh-ordered.mjs [--seasons spring25,fall25]
+ *   node scripts/diff-rmh-ordered.mjs --seasons spring26 --crossover
  */
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -42,10 +44,7 @@ function loadEnv(file) {
     if (!m) continue;
     const key = m[1];
     let val = m[2];
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     if (process.env[key] === undefined) process.env[key] = val;
@@ -56,6 +55,7 @@ loadEnv(".env");
 loadEnv(".env.rmh");
 
 const argv = process.argv.slice(2);
+const CROSSOVER = argv.includes("--crossover");
 const seasonsArg = (() => {
   const i = argv.indexOf("--seasons");
   return i >= 0 && argv[i + 1] ? argv[i + 1].split(",").map((s) => s.trim()) : null;
@@ -63,6 +63,7 @@ const seasonsArg = (() => {
 const SEASONS = seasonsArg || ["spring25", "fall25"];
 
 const TAB = String.fromCharCode(9);
+const SHARDED_OBJECT_VERSION = 1;
 
 function seasonForSku(sku) {
   const seg = sku.includes("/") ? sku.split("/")[1].toLowerCase() : "";
@@ -135,7 +136,9 @@ async function loadOverrideSkus(season) {
     records += 1;
     topLevelOrdered += Number(rec.ordered) || 0;
     for (const p of rec.products || []) {
-      const sku = String(p.style || "").toLowerCase().trim();
+      const sku = String(p.style || "")
+        .toLowerCase()
+        .trim();
       if (!sku) continue;
       skuSet.add(sku);
       const val = (Number(p.qtyOrdered) || 0) * (Number(p.price) || 0);
@@ -143,6 +146,147 @@ async function loadOverrideSkus(season) {
     }
   }
   return { index, records, topLevelOrdered, skuSet, skuOrdered };
+}
+
+async function loadOverrideRecords(kv, season) {
+  const parse = (v) => (v ? (typeof v === "string" ? JSON.parse(v) : v) : null);
+  const index = parse(await kv.get(`scan:override:${season}:vendorIndex`)) || [];
+  const records = {};
+  for (const key of index) {
+    records[key] = parse(await kv.get(`scan:override:${season}:v:${key}`));
+  }
+  return { index, records };
+}
+
+async function loadShardedObject(kv, key) {
+  const marker = await kv.get(key);
+  if (!marker) return null;
+  if (!(marker && marker.sharded === true && marker.version === SHARDED_OBJECT_VERSION)) {
+    return typeof marker === "string" ? JSON.parse(marker) : marker;
+  }
+  const shards = await Promise.all(
+    Array.from({ length: marker.shardCount || 16 }, (_, index) => kv.get(`${key}:shard:${index}`))
+  );
+  const result = { ...(marker.scalar || {}) };
+  for (const field of marker.pidFields || []) result[field] = result[field] || {};
+  for (const field of marker.skuToPidFields || []) result[field] = result[field] || {};
+  for (const shard of shards) {
+    for (const [pid, record] of Object.entries(shard?.records || {})) {
+      for (const [field, value] of Object.entries(record || {})) {
+        if ((marker.skuToPidFields || []).includes(field)) {
+          result[field] = { ...(result[field] || {}), ...(value || {}) };
+        } else {
+          result[field] = result[field] || {};
+          result[field][pid] = value;
+        }
+      }
+    }
+  }
+  return result;
+}
+
+function isBackfillKey(key) {
+  return /^rmh(cost|ret|ord|sold)__/.test(key);
+}
+
+function hasLsPoActivity(sku, scanData) {
+  const pid = scanData?.skuToPid?.[sku];
+  const ps = pid != null ? scanData?.productStats?.[pid] : null;
+  return !!(ps && ((Number(ps.qtyOrdered) || 0) > 0 || (Number(ps.qtyReceived) || 0) > 0));
+}
+
+function lsOrderedRetail(scanData, season) {
+  let total = 0;
+  for (const pid of scanData?.seasonPids || []) {
+    const sku = String(scanData?.pidToSku?.[pid] || "").toLowerCase();
+    if (seasonForSku(sku) !== season) continue;
+    const ps = scanData?.productStats?.[pid] || {};
+    total += (Number(ps.qtyOrdered) || 0) * (Number(scanData?.pidToPrice?.[pid]) || 0);
+  }
+  return total;
+}
+
+async function printCrossoverDiagnostic(season, rmh) {
+  const { kv } = await import("@vercel/kv");
+  const [override, scanData] = await Promise.all([
+    loadOverrideRecords(kv, season),
+    loadShardedObject(kv, `scan:data:${season}`),
+  ]);
+  if (!scanData) throw new Error(`No scan:data found for ${season}`);
+
+  const originalKeys = override.index.filter((key) => !isBackfillKey(key) && override.records[key]);
+  const skuToKey = new Map();
+  for (const key of originalKeys) {
+    for (const product of override.records[key].products || []) {
+      const sku = String(product.style || "")
+        .toLowerCase()
+        .trim();
+      if (sku && seasonForSku(sku) === season && !skuToKey.has(sku)) skuToKey.set(sku, key);
+    }
+  }
+
+  const byKey = new Map();
+  let overlapSkus = 0;
+  let overlapRetail = 0;
+  let rmhOnlySkus = 0;
+  let rmhOnlyRetail = 0;
+  let residualSkus = 0;
+  let residualRetail = 0;
+  for (const r of rmh) {
+    if ((Number(r.qtyPlaced) || 0) <= 0) continue;
+    const retail = r.qtyPlaced * r.price;
+    const key = skuToKey.get(r.sku);
+    const entry = key
+      ? byKey.get(key) || { overlapSkus: 0, overlapRetail: 0, rmhOnlySkus: 0, rmhOnlyRetail: 0 }
+      : null;
+    if (hasLsPoActivity(r.sku, scanData)) {
+      overlapSkus += 1;
+      overlapRetail += retail;
+      if (entry) {
+        entry.overlapSkus += 1;
+        entry.overlapRetail += retail;
+      }
+    } else {
+      rmhOnlySkus += 1;
+      rmhOnlyRetail += retail;
+      if (entry) {
+        entry.rmhOnlySkus += 1;
+        entry.rmhOnlyRetail += retail;
+      } else {
+        residualSkus += 1;
+        residualRetail += retail;
+      }
+    }
+    if (entry) byKey.set(key, entry);
+  }
+
+  let overlapBuckets = 0;
+  let noOverlapBuckets = 0;
+  for (const entry of byKey.values()) {
+    if (entry.overlapSkus > 0) overlapBuckets += 1;
+    else noOverlapBuckets += 1;
+  }
+  const lsOrdered = lsOrderedRetail(scanData, season);
+  const target = lsOrdered + rmhOnlyRetail;
+  const currentTopLevel = originalKeys.reduce(
+    (sum, key) => sum + (Number(override.records[key].ordered) || 0),
+    0
+  );
+
+  console.warn(`CROSSOVER diagnostic (${season})`);
+  console.warn(`  Original override records:       ${originalKeys.length}`);
+  console.warn(`  Buckets with LS PO overlap:      ${overlapBuckets}`);
+  console.warn(`  Buckets with no LS PO overlap:   ${noOverlapBuckets}`);
+  console.warn(`  RMH placed overlap SKUs/$:       ${overlapSkus} / ${money(overlapRetail)}`);
+  console.warn(`  RMH-only SKUs/$:                 ${rmhOnlySkus} / ${money(rmhOnlyRetail)}`);
+  console.warn(`  Residual RMH-only SKUs/$:        ${residualSkus} / ${money(residualRetail)}`);
+  console.warn(`  LS ordered retail already kept:  ${money(lsOrdered)}`);
+  console.warn(`  Current override top-level $:    ${money(currentTopLevel)}`);
+  console.warn(`  Deduped union target $:          ${money(target)}`);
+  console.warn(
+    `  RMH placed truth $:              ${money(rmh.reduce((s, r) => s + r.qtyPlaced * r.price, 0))}`
+  );
+  console.warn("");
 }
 
 function money(n) {
@@ -186,15 +330,24 @@ async function main() {
     console.warn(`RMH ordered units  (placed):  ${rmhUnitsPlaced.toLocaleString()}`);
     console.warn(`--`);
     console.warn(`Override vendor records:      ${ov.records}`);
-    console.warn(`Override top-level ordered $: ${money(ov.topLevelOrdered)}  <- what the report shows (no-LS season)`);
-    console.warn(`Override per-product ordered: ${money([...ov.skuOrdered.values()].reduce((s, v) => s + v, 0))}`);
+    console.warn(
+      `Override top-level ordered $: ${money(ov.topLevelOrdered)}  <- what the report shows (no-LS season)`
+    );
+    console.warn(
+      `Override per-product ordered: ${money([...ov.skuOrdered.values()].reduce((s, v) => s + v, 0))}`
+    );
     console.warn(`Override distinct SKUs:        ${ov.skuSet.size}`);
     console.warn(`--`);
-    console.warn(`RMH SKUs ALREADY in override: ${presentSkus}  (${money(presentRetail)} placed retail)`);
-    console.warn(`RMH SKUs MISSING from override: ${missingSkus}  (${money(missingRetail)} placed retail)`);
+    console.warn(
+      `RMH SKUs ALREADY in override: ${presentSkus}  (${money(presentRetail)} placed retail)`
+    );
+    console.warn(
+      `RMH SKUs MISSING from override: ${missingSkus}  (${money(missingRetail)} placed retail)`
+    );
     console.warn(
       `Gap (RMH placed - override top-level): ${money(rmhRetailPlaced - ov.topLevelOrdered)}\n`
     );
+    if (CROSSOVER) await printCrossoverDiagnostic(season, rmh);
   }
 
   console.warn("READ-ONLY diagnostic complete. No KV writes were made.");

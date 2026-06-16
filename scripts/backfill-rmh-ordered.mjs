@@ -34,6 +34,8 @@
  *   node scripts/backfill-rmh-ordered.mjs                       # dry run (spring25)
  *   node scripts/backfill-rmh-ordered.mjs --write
  *   node scripts/backfill-rmh-ordered.mjs --seasons spring25 --write
+ *   node scripts/backfill-rmh-ordered.mjs --seasons spring26 --crossover
+ *   node scripts/backfill-rmh-ordered.mjs --seasons spring26 --crossover --write
  *   node scripts/backfill-rmh-ordered.mjs --revert scripts/out/override-backup-spring25-<ts>.json
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -56,10 +58,7 @@ function loadEnv(file) {
     if (!m) continue;
     const key = m[1];
     let val = m[2];
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     if (process.env[key] === undefined) process.env[key] = val;
@@ -71,6 +70,7 @@ loadEnv(".env.rmh");
 
 const argv = process.argv.slice(2);
 const WRITE = argv.includes("--write");
+const CROSSOVER = argv.includes("--crossover");
 const revertIdx = argv.indexOf("--revert");
 const REVERT_FILE = revertIdx >= 0 ? argv[revertIdx + 1] : null;
 const seasonsArg = (() => {
@@ -148,7 +148,7 @@ function money(n) {
 }
 
 const parse = (v) => (v ? (typeof v === "string" ? JSON.parse(v) : v) : null);
-const isBackfillKey = (k) => /^rmh(cost|ret|ord)__/.test(k);
+const isBackfillKey = (k) => /^rmh(cost|ret|ord|sold)__/.test(k);
 
 async function loadOverride(kv, season) {
   const index = parse(await kv.get(`scan:override:${season}:vendorIndex`)) || [];
@@ -176,7 +176,7 @@ async function revert(file) {
 // record's top-level `ordered` from RMH per-SKU placed dollars (each SKU counted
 // once, assigned to the first original record that lists it). RMH SKUs not in
 // any original record become new rmhord__ records.
-function plan(season, rmhAll, override) {
+function plan(season, rmhAll, override, { crossover = false } = {}) {
   const rmh = rmhAll.filter((r) => seasonForSku(r.sku) === season);
   const rmhBySku = new Map();
   for (const r of rmh) rmhBySku.set(r.sku, r); // one row per (sku,supplier); pick last
@@ -187,22 +187,31 @@ function plan(season, rmhAll, override) {
   const skuToKey = new Map();
   for (const key of originalKeys) {
     for (const p of override.records[key].products || []) {
-      const sku = String(p.style || "").toLowerCase().trim();
+      const sku = String(p.style || "")
+        .toLowerCase()
+        .trim();
       if (sku && !skuToKey.has(sku)) skuToKey.set(sku, key);
     }
   }
 
   const newOrderedByKey = new Map(); // key -> recomputed top-level ordered $
   for (const key of originalKeys) newOrderedByKey.set(key, 0);
+  const productUpdatesByKey = new Map(); // key -> sku -> RMH row (crossover mode)
   const residualBySupplier = new Map(); // rmhord key -> {meta, retail, products}
   let assignedRetail = 0;
   let residualRetail = 0;
+  let productUpdates = 0;
 
   for (const r of rmh) {
     const retail = r.qtyPlaced * r.price;
     const key = skuToKey.get(r.sku);
     if (key) {
       newOrderedByKey.set(key, newOrderedByKey.get(key) + retail);
+      if (crossover) {
+        if (!productUpdatesByKey.has(key)) productUpdatesByKey.set(key, new Map());
+        productUpdatesByKey.get(key).set(r.sku, r);
+        productUpdates += 1;
+      }
       assignedRetail += retail;
     } else {
       const rk = `rmhord__${r.deptId}__${r.supplierId}`;
@@ -215,7 +224,7 @@ function plan(season, rmhAll, override) {
           ordered: 0,
           received: 0,
           sold: 0,
-          source: "rmh-ordered-backfill",
+          source: crossover ? "rmh-ordered-crossover-backfill" : "rmh-ordered-backfill",
           products: [],
         });
       }
@@ -226,6 +235,7 @@ function plan(season, rmhAll, override) {
         description: "",
         cost: r.cost,
         price: r.price,
+        orderedRetail: Math.round(retail * 100) / 100,
         qtyOrdered: r.qtyPlaced,
         qtyStock: 0,
         qtySold: 0,
@@ -246,6 +256,9 @@ function plan(season, rmhAll, override) {
     season,
     originalKeys,
     newOrderedByKey,
+    productUpdatesByKey,
+    productUpdates,
+    crossover,
     residualBySupplier,
     assignedRetail,
     residualRetail,
@@ -257,11 +270,17 @@ function plan(season, rmhAll, override) {
 
 function summarize(p, override) {
   console.warn(`================ ${p.season} ================`);
+  if (p.crossover) console.warn(`Mode: crossover (top-level ordered + per-product RMH ordered)`);
   console.warn(`Original datatailor records:        ${p.originalKeys.length}`);
   console.warn(`Before — override ordered total:    ${money(p.beforeTotal)}`);
   console.warn(`After  — RMH-authoritative total:   ${money(p.afterTotal)}`);
   console.warn(`  ...assigned to existing vendors:  ${money(p.assignedRetail)}`);
-  console.warn(`  ...residual (new rmhord records): ${money(p.residualRetail)} (${p.residualBySupplier.size} records)`);
+  console.warn(
+    `  ...residual (new rmhord records): ${money(p.residualRetail)} (${p.residualBySupplier.size} records)`
+  );
+  if (p.crossover) {
+    console.warn(`  ...per-product RMH refreshes:     ${p.productUpdates}`);
+  }
   console.warn(`RMH placed truth (sanity check):    ${money(p.rmhTotal)}`);
   // Top 12 biggest per-vendor changes.
   const deltas = p.originalKeys
@@ -289,7 +308,11 @@ async function applyPlan(kv, p, override) {
   const backupPath = path.join(OUT_DIR, `override-backup-${p.season}-${stamp}.json`);
   writeFileSync(
     backupPath,
-    JSON.stringify({ season: p.season, vendorIndex: override.index, records: override.records }, null, 2)
+    JSON.stringify(
+      { season: p.season, vendorIndex: override.index, records: override.records },
+      null,
+      2
+    )
   );
   console.warn(`[${p.season}] backup written: ${backupPath}`);
 
@@ -298,6 +321,35 @@ async function applyPlan(kv, p, override) {
     const rec = override.records[key];
     if (rec.orderedScraped === undefined) rec.orderedScraped = Number(rec.ordered) || 0;
     rec.ordered = Math.round((p.newOrderedByKey.get(key) || 0) * 100) / 100;
+    if (p.crossover) {
+      const updates = p.productUpdatesByKey.get(key);
+      if (updates) {
+        for (const product of rec.products || []) {
+          const sku = String(product.style || "")
+            .toLowerCase()
+            .trim();
+          const rmh = updates.get(sku);
+          if (!rmh) continue;
+          const retail = rmh.qtyPlaced * rmh.price;
+          if (product.qtyOrderedScraped === undefined) {
+            product.qtyOrderedScraped = Number(product.qtyOrdered) || 0;
+          }
+          if (product.orderedRetailScraped === undefined) {
+            product.orderedRetailScraped =
+              Number(
+                product.orderedRetail ??
+                  product.orderedValue ??
+                  product.orderedAmount ??
+                  product.ordered ??
+                  product.orderValue
+              ) || 0;
+          }
+          product.qtyOrdered = rmh.qtyPlaced;
+          product.price = rmh.price;
+          product.orderedRetail = Math.round(retail * 100) / 100;
+        }
+      }
+    }
     await kv.set(`scan:override:${p.season}:v:${key}`, JSON.stringify(rec));
   }
 
@@ -328,7 +380,7 @@ async function main() {
   const { kv } = await import("@vercel/kv");
   for (const season of SEASONS) {
     const override = await loadOverride(kv, season);
-    const p = plan(season, rmhAll, override);
+    const p = plan(season, rmhAll, override, { crossover: CROSSOVER });
     summarize(p, override);
     if (WRITE) {
       if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
@@ -341,7 +393,9 @@ async function main() {
   if (!WRITE) {
     console.warn("DRY RUN — no KV writes. Re-run with --write to apply (a backup is taken first).");
   } else {
-    console.warn("\nDone. Spring25 Ordered now reflects RMH placed-PO truth. Re-run a scan or wait for the nightly to refresh derived caches; the request-time rollup reads the override immediately.");
+    console.warn(
+      "\nDone. Ordered now reflects RMH placed-PO truth for the requested season(s). Re-run a scan or wait for the nightly to refresh derived caches; the request-time rollup reads the override immediately."
+    );
   }
 }
 
