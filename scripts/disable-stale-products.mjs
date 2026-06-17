@@ -16,6 +16,15 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSyn
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
+import {
+  candidateReasonFromProduct as candidateReason,
+  isActiveProduct,
+  isConsignmentSku,
+  isDeleted,
+  isInventoryTracked,
+  isSaleWithinWindow,
+  recencyCutoffMs,
+} from "../lib/stale-products.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT_DIR = path.join(ROOT, "scripts", "out");
@@ -74,6 +83,7 @@ function parseArgs(argv) {
     freshSales: false,
     noSeasonGuard: false,
     revertFile: null,
+    revertKvDate: null,
     checkpointFile: path.join(DEFAULT_OUT_DIR, "disable-stale-products.processed.txt"),
   };
 
@@ -111,6 +121,9 @@ function parseArgs(argv) {
     else if (arg === "--revert") {
       args.revertFile = path.resolve(ROOT, requiredValue(argv, ++i, "--revert"));
       args.dryRun = false;
+    } else if (arg === "--revert-kv") {
+      args.revertKvDate = requiredValue(argv, ++i, "--revert-kv");
+      args.dryRun = false;
     } else if (arg === "--help" || arg === "-h") {
       printUsage();
       process.exit(0);
@@ -146,6 +159,7 @@ function printUsage() {
   node scripts/disable-stale-products.mjs --write [--write-delay-ms 250]
   node scripts/disable-stale-products.mjs --measure
   node scripts/disable-stale-products.mjs --revert scripts/out/<changes>.csv
+  node scripts/disable-stale-products.mjs --revert-kv YYYY-MM-DD
 
 Notes:
   --consignment-only restricts candidates to consignment SKUs (item code starting with
@@ -213,24 +227,6 @@ function skuMatchesSeason(sku, seasonId) {
 
 function skuMatchesAnySeason(sku, seasons) {
   return seasons.some((season) => skuMatchesSeason(sku, season));
-}
-
-// Consignment goods are tagged by an item code beginning with "C" (e.g. "cfoo/s2601").
-// Used to apply a shorter sales-recency window than owned/regular product.
-function isConsignmentSku(sku) {
-  return String(sku || "")
-    .trim()
-    .toLowerCase()
-    .startsWith("c");
-}
-
-// In split mode, consignment SKUs use the consignment cutoff; everything else the regular cutoff.
-function recencyCutoffMs(sku, { regularCutoffMs, consignmentCutoffMs }) {
-  return isConsignmentSku(sku) ? consignmentCutoffMs : regularCutoffMs;
-}
-
-function isSaleWithinWindow(lastSaleMs, cutoffMs) {
-  return lastSaleMs != null && Number.isFinite(lastSaleMs) && lastSaleMs >= cutoffMs;
 }
 
 function requireLsEnv() {
@@ -328,18 +324,6 @@ function amountOf(row) {
 function numberValue(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? n : 0;
-}
-
-function isActiveProduct(product) {
-  return product?.active !== false && product?.is_active !== false;
-}
-
-function isInventoryTracked(product) {
-  return product?.has_inventory === true;
-}
-
-function isDeleted(product) {
-  return !!product?.deleted_at;
 }
 
 function productName(product) {
@@ -814,27 +798,6 @@ function skipStats() {
   };
 }
 
-function isRecentlySoldGuarded(product, context) {
-  if (context.lastSaleByPid) {
-    const last = context.lastSaleByPid.get(String(product.id));
-    return isSaleWithinWindow(last, recencyCutoffMs(product.sku, context));
-  }
-  return context.recentSalePids.has(product.id);
-}
-
-function candidateReason(product, context) {
-  if (context.consignmentOnly && !isConsignmentSku(product.sku)) return "nonConsignment";
-  if (!isActiveProduct(product)) return "inactive";
-  if (isDeleted(product)) return "deleted";
-  if (!isInventoryTracked(product)) return "nonInventory";
-  const onHand = context.onHand.get(product.id) || 0;
-  if (onHand > 0) return "inStock";
-  if (isRecentlySoldGuarded(product, context)) return "recentSale";
-  if (context.openConsignmentPids.has(product.id)) return "openConsignment";
-  if (context.activeSeasonPids.has(product.id)) return "activeSeasonGuard";
-  return "candidate";
-}
-
 function tallyCandidateClass(stats, product) {
   if (isConsignmentSku(product.sku)) stats.candidateConsignment++;
   else stats.candidateRegular++;
@@ -1303,10 +1266,84 @@ async function revertFromCsv(filePath, args) {
   console.warn(`revert CSV: ${writer.filePath}`);
 }
 
+function cleanupLogKey(date) {
+  return `scan:cleanup:log:${date}`;
+}
+
+function validateCleanupDate(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
+    throw new Error("--revert-kv requires a YYYY-MM-DD date");
+  }
+}
+
+async function revertFromKvDate(date, args) {
+  validateCleanupDate(date);
+  ensureOutDir(args.outDir);
+  const kv = await loadKvClient();
+  if (!kv) throw new Error("KV env missing; cannot read nightly cleanup audit log.");
+
+  const rows = (await kv.get(cleanupLogKey(date))) || [];
+  const ids = rows
+    .filter((row) => !row.status || row.status === "ok")
+    .map((row) => row.id)
+    .filter(Boolean);
+  const uniqueIds = [...new Set(ids.map(String))];
+  if (!uniqueIds.length) throw new Error(`No cleanup audit rows found for ${date}`);
+
+  const columns = ["ts", "id", "sku", "action", "status", "error"];
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  const writer = createCsvWriter(
+    path.join(args.outDir, `stale-product-revert-kv-${date}-${timestamp()}.csv`),
+    columns
+  );
+  let reverted = 0;
+  let failed = 0;
+
+  try {
+    for (const id of uniqueIds) {
+      const source = byId.get(id) || {};
+      const row = {
+        ts: new Date().toISOString(),
+        id,
+        sku: source.sku || "",
+        action: "reactivate",
+        status: "pending",
+        error: "",
+      };
+      try {
+        await setProductActive(id, true);
+        row.status = "ok";
+        reverted++;
+      } catch (error) {
+        row.status = "error";
+        row.error = error.message || String(error);
+        failed++;
+      }
+      writer.write(row);
+      if ((reverted + failed) % 100 === 0) {
+        console.error(`kv revert progress: reverted=${reverted} failed=${failed}`);
+      }
+      await sleep(args.writeDelayMs);
+    }
+  } finally {
+    await writer.close();
+  }
+
+  console.warn("\n=== KV Revert complete ===");
+  console.warn(`date: ${date}`);
+  console.warn(`reverted: ${reverted}`);
+  console.warn(`failed: ${failed}`);
+  console.warn(`revert CSV: ${writer.filePath}`);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.revertFile) {
     await revertFromCsv(args.revertFile, args);
+    return;
+  }
+  if (args.revertKvDate) {
+    await revertFromKvDate(args.revertKvDate, args);
     return;
   }
   if (args.smokeTest) {

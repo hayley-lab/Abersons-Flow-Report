@@ -1,0 +1,68 @@
+name: Nightly Stale Product Cleanup
+
+on:
+  schedule:
+    # 7:00am UTC = ~2:00am Central, after the nightly incremental scan refreshes caches.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      max_writes:
+        description: "Override CLEANUP_MAX_WRITES for this manual run (use 50 for first production smoke)"
+        required: false
+        default: ""
+      anomaly_max:
+        description: "Override CLEANUP_ANOMALY_MAX for this manual run"
+        required: false
+        default: ""
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Drive stale product cleanup
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set +e
+          echo "Starting nightly stale product cleanup loop..."
+          DEADLINE=$(( $(date +%s) + 80 * 60 ))
+          i=0
+          QUERY=""
+          if [ -n "${{ inputs.max_writes }}" ]; then
+            QUERY="${QUERY}&max_writes=${{ inputs.max_writes }}"
+          fi
+          if [ -n "${{ inputs.anomaly_max }}" ]; then
+            QUERY="${QUERY}&anomaly_max=${{ inputs.anomaly_max }}"
+          fi
+          if [ -n "$QUERY" ]; then
+            QUERY="?${QUERY#&}"
+          fi
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            i=$(( i + 1 ))
+            echo "--- Cleanup call $i ($(date -u +%H:%M:%S) UTC) ---"
+            RESPONSE=$(curl -sS --max-time 75 -X POST "https://abersons-flow-report.vercel.app/api/scan/cleanup$QUERY" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Content-Type: application/json")
+            CURL_RC=$?
+            if [ "$CURL_RC" -ne 0 ]; then
+              echo "curl failed (rc=$CURL_RC) — likely a transient timeout; continuing."
+              sleep 5
+              continue
+            fi
+            if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+              printf '%s' "$RESPONSE" | jq -c '{ok, complete, capped, anomalyAborted, candidates, written, chunkWritten, cursor}' 2>/dev/null \
+                || printf '%s\n' "$RESPONSE"
+              COMPLETE=$(printf '%s' "$RESPONSE" | jq -r '.complete // false' 2>/dev/null)
+            else
+              echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
+              COMPLETE=false
+            fi
+            if [ "$COMPLETE" = "true" ]; then
+              echo "Cleanup complete. Done."
+              exit 0
+            fi
+            echo "Cleanup still in progress, continuing..."
+            sleep 3
+          done
+          echo "Reached time budget — cleanup may continue on the next run."

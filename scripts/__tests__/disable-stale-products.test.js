@@ -99,6 +99,13 @@ describe("parseArgs", () => {
     expect(args.write).toBe(true);
     expect(args.freshSales).toBe(false);
   });
+
+  it("parses --revert-kv as a write operation", () => {
+    const args = parseArgs(["--revert-kv", "2026-06-17"]);
+
+    expect(args.revertKvDate).toBe("2026-06-17");
+    expect(args.dryRun).toBe(false);
+  });
 });
 
 describe("candidateReason — split consignment windows", () => {

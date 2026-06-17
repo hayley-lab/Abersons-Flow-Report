@@ -30,6 +30,9 @@
     "pages/api/scan/consign-cache.js": {
       "maxDuration": 60
     },
+    "pages/api/scan/cleanup.js": {
+      "maxDuration": 60
+    },
     "pages/api/scan/validate.js": {
       "maxDuration": 60
     },
