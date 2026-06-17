@@ -26,15 +26,13 @@ import { sessionOptions } from "../../../lib/session";
 import { getLsToken, lsBase } from "../../../lib/ls-auth";
 import { isLsDeadlineError, makeLsFetch } from "../../../lib/ls-fetch";
 import { buildAllRows, rollup, rowsForVendor } from "../../../lib/flow-rollup";
-import { seasonScanDateRange } from "../../../lib/flow-math";
-import { loadConsignEntries, seasonConsignmentBuckets } from "../../../lib/consignment-store";
+import { loadSeasonConsignOverlay } from "../../../lib/consignment-store";
 import { loadSalesAgg, projectSeasonSales } from "../../../lib/sales-store";
 import { loadScanData } from "../../../lib/scan-data-store";
 import {
   buildValidationReport,
   DEFAULT_THRESHOLDS,
   evaluateDrift,
-  pidToSkuFromRows,
   samplePids,
 } from "../../../lib/report-validate";
 import { loadValidationHistory, persistValidation } from "../../../lib/validation-history";
@@ -85,23 +83,6 @@ async function fetchLiveOnHand(lsFetch, pid, deadline) {
   return null;
 }
 
-function buildFreshConsign(bucket) {
-  const fresh = {};
-  const pids = new Set([
-    ...Object.keys(bucket?.pidToQtyOrdered || {}),
-    ...Object.keys(bucket?.pidToQtyReceived || {}),
-    ...Object.keys(bucket?.pidToQtyReturned || {}),
-  ]);
-  for (const pid of pids) {
-    fresh[pid] = {
-      qtyOrdered: bucket?.pidToQtyOrdered?.[pid] || 0,
-      qtyReceived: bucket?.pidToQtyReceived?.[pid] || 0,
-      qtyReturned: bucket?.pidToQtyReturned?.[pid] || 0,
-    };
-  }
-  return fresh;
-}
-
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
 
@@ -135,47 +116,44 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: "No scan data for season" });
   }
 
+  // 2. Live consignment overlay — re-project this season's ordered/received/return
+  //    qty from the LS consignment store (zero LS paging). This is BOTH the
+  //    expected value for the consignment checks AND the overlay the report
+  //    serves (data.js path), so the validator checks exactly what staff see —
+  //    the report's Ordered/Received/Returned reflect the live store, not the
+  //    baked scan:data (which can lag newly-entered, future-dated POs).
+  const seasonPids = (rawData?.seasonPids || []).map(String);
+  let freshConsign = {};
+  let consignError = null;
+  try {
+    freshConsign = await loadSeasonConsignOverlay(kv, season, {
+      seasonPids,
+      pidToSku: rawData?.pidToSku || {},
+    });
+  } catch (e) {
+    consignError = e.message;
+  }
+  // Mirror data.js: an empty overlay (store unavailable) falls back to baked
+  // scan:data rather than zeroing every LS pid.
+  const consignByPid = freshConsign && Object.keys(freshConsign).length ? freshConsign : null;
+
   let rows;
   let allRows;
   let rollupResult;
   try {
-    allRows = buildAllRows(rawData, override, { season });
-    rollupResult = rollup(allRows, rawData, override, { season });
+    allRows = buildAllRows(rawData, override, { season, consignByPid });
+    rollupResult = rollup(allRows, rawData, override, { season, consignByPid });
     rows = allRows;
   } catch (e) {
     return res.status(500).json({ error: "rows build failed: " + e.message });
   }
-  const pidToSku = pidToSkuFromRows(allRows);
   if (vendor) rows = rowsForVendor(rows, { id: vendor, name: vendor }, null);
 
-  // 2. Verifiable LS pids -> deterministic sample (full season unless capped).
+  // 3. Verifiable LS pids -> deterministic sample (full season unless capped).
   const verifiablePids = rows
     .filter((r) => r.pid != null && !r.inventoryMismatch)
     .map((r) => String(r.pid));
   const sampled = sampleCap ? samplePids(verifiablePids, sampleCap) : verifiablePids;
-
-  // 3. Fresh consignment + sales re-derivation from the LS-sourced store caches
-  //    (zero LS paging — mirrors the store-cache "build once, project per
-  //    season" pattern). Re-projecting independently of scan:data catches
-  //    scan-time / delta bugs (e.g. wrong-season projection, stale aggregates).
-  const seasonPids = (rawData?.seasonPids || []).map(String);
-  const scanRanges = { [season]: seasonScanDateRange(season) };
-  const seasonPidSets = { [season]: new Set(seasonPids) };
-
-  let freshConsign = {};
-  let consignError = null;
-  try {
-    const entries = await loadConsignEntries(kv);
-    const buckets = seasonConsignmentBuckets(entries, {
-      seasons: [season],
-      seasonPidSets,
-      scanRanges,
-      pidToSku,
-    });
-    freshConsign = buildFreshConsign(buckets[season]);
-  } catch (e) {
-    consignError = e.message;
-  }
 
   let freshSales = {};
   let salesError = null;

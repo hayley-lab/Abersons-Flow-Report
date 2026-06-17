@@ -30,6 +30,7 @@ import {
 } from "../../../lib/scan-data-store";
 import { getLsHealth } from "../../../lib/ls-auth";
 import { maybeUpsertSqlReport, readSqlReportView } from "../../../lib/sql-report-store";
+import { loadConsignMeta, loadSeasonConsignOverlay } from "../../../lib/consignment-store";
 
 function jobView(job) {
   return job ? { phase: job.phase, progress: job.progress, error: job.error } : null;
@@ -46,7 +47,27 @@ async function rebuildReportCache(season, tag) {
   ]);
   if (!rawData && !override) return { empty: true, hasOverride: false };
 
-  const { rows, summaryRows, deptVendors, health } = computeReport(rawData, override, season);
+  // Live consignment overlay: re-project this season's ordered/received/returned
+  // from the LS consignment store so the report reflects newly-entered POs the
+  // baked scan:data may not yet carry. Best-effort — fall back to scan:data on
+  // any read/projection error.
+  let consignByPid = null;
+  try {
+    const overlay = await loadSeasonConsignOverlay(kv, season, {
+      seasonPids: rawData?.seasonPids || [],
+      pidToSku: rawData?.pidToSku || {},
+    });
+    // An empty overlay means the store was unavailable/empty; fall back to the
+    // baked scan:data rather than zeroing every LS pid's ordered/received.
+    consignByPid = overlay && Object.keys(overlay).length ? overlay : null;
+  } catch (e) {
+    console.warn("consignment overlay skipped", e.message);
+    consignByPid = null;
+  }
+
+  const { rows, summaryRows, deptVendors, health } = computeReport(rawData, override, season, {
+    consignByPid,
+  });
   const summaryData = {
     ts: rawData?.ts ?? null,
     season,
@@ -70,7 +91,7 @@ async function rebuildReportCache(season, tag) {
         rows: groups[deptId],
       })
     ),
-    maybeUpsertSqlReport(season, rawData, override).catch((e) => {
+    maybeUpsertSqlReport(season, rawData, override, { consignByPid }).catch((e) => {
       console.warn("sql report write skipped/failed", e.message);
       return null;
     }),
@@ -89,15 +110,18 @@ export default async function handler(req, res) {
   const view = req.query.view || "summary";
   const deptId = req.query.dept != null ? String(req.query.dept) : null;
 
-  // Cheap reads only: scan ts (marker), job, import epoch, LS health. None of
-  // these touch the heavy shard/override reads.
-  const [summaryMeta, job, epoch, lsHealth] = await Promise.all([
+  // Cheap reads only: scan ts (marker), job, import epoch, LS health, and the
+  // consignment store version (so a store refresh invalidates the read-cache and
+  // the live consignment overlay is recomputed). None touch the heavy shard reads.
+  const [summaryMeta, job, epoch, lsHealth, consignMeta] = await Promise.all([
     loadScanDataSummary(kv, season),
     kv.get(`scan:job:${season}`),
     loadReportEpoch(kv, season),
     getLsHealth(),
+    loadConsignMeta(kv).catch(() => null),
   ]);
   const ts = summaryMeta?.ts ?? null;
+  const consignVersion = consignMeta?.ts ?? null;
 
   // Poll short-circuit: nothing newer than the client already has.
   const since = req.query.since ? Number(req.query.since) : null;
@@ -111,7 +135,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const tag = reportCacheTag(ts, epoch);
+  const tag = reportCacheTag(ts, epoch, consignVersion);
 
   try {
     // ── SQL read path (feature flagged) ──────────────────────────────────────
