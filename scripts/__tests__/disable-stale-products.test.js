@@ -7,6 +7,7 @@ import {
   isSaleWithinWindow,
   candidateReason,
   earlierIsoDate,
+  parseArgs,
 } from "../disable-stale-products.mjs";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -89,6 +90,17 @@ describe("earlierIsoDate", () => {
   });
 });
 
+describe("parseArgs", () => {
+  it("parses --no-season-guard without forcing live sales", () => {
+    const args = parseArgs(["--since", "2025-06-16", "--no-season-guard", "--write"]);
+
+    expect(args.noSeasonGuard).toBe(true);
+    expect(args.since).toBe("2025-06-16");
+    expect(args.write).toBe(true);
+    expect(args.freshSales).toBe(false);
+  });
+});
+
 describe("candidateReason — split consignment windows", () => {
   it("guards a consignment SKU sold within 6 months", () => {
     const ctx = splitContext({ lastSale: [["p1", daysAgoMs(120)]] });
@@ -109,6 +121,11 @@ describe("candidateReason — split consignment windows", () => {
 
   it("retires a regular SKU with no sale in the lookback window", () => {
     const ctx = splitContext({ lastSale: [] });
+    expect(candidateReason(product({ sku: "sfoo/s26" }), ctx)).toBe("candidate");
+  });
+
+  it("allows an otherwise stale report-season product when the season guard is empty", () => {
+    const ctx = splitContext({ lastSale: [], season: [] });
     expect(candidateReason(product({ sku: "sfoo/s26" }), ctx)).toBe("candidate");
   });
 

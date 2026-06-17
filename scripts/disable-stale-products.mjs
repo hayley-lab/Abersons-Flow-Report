@@ -31,6 +31,7 @@ const INVENTORY_CACHE_KEY = "scan:inv:store";
 const INVENTORY_META_KEY = "scan:inv:store:meta";
 const SALES_META_KEY = "scan:sales:store:meta";
 const DEFAULT_SHARD_COUNT = 16;
+const STALE_SALES_CACHE_MS = 36 * 60 * 60 * 1000;
 
 function loadEnv(file) {
   let text;
@@ -71,6 +72,7 @@ function parseArgs(argv) {
     limit: Infinity,
     freshInventory: false,
     freshSales: false,
+    noSeasonGuard: false,
     revertFile: null,
     checkpointFile: path.join(DEFAULT_OUT_DIR, "disable-stale-products.processed.txt"),
   };
@@ -80,6 +82,7 @@ function parseArgs(argv) {
     if (arg === "--smoke-test") args.smokeTest = true;
     else if (arg === "--fresh-inventory") args.freshInventory = true;
     else if (arg === "--fresh-sales") args.freshSales = true;
+    else if (arg === "--no-season-guard") args.noSeasonGuard = true;
     else if (arg === "--write") {
       args.write = true;
       args.dryRun = false;
@@ -136,8 +139,9 @@ function printUsage() {
   console.warn(`Usage:
   node scripts/disable-stale-products.mjs --smoke-test
   node scripts/disable-stale-products.mjs [--since YYYY-MM-DD] [--seasons a,b,c]
-  node scripts/disable-stale-products.mjs --consignment-only --since YYYY-MM-DD --fresh-sales
+  node scripts/disable-stale-products.mjs --consignment-only --since YYYY-MM-DD
   node scripts/disable-stale-products.mjs --split-consignment [--consignment-since YYYY-MM-DD]
+  node scripts/disable-stale-products.mjs --no-season-guard --since YYYY-MM-DD
   node scripts/disable-stale-products.mjs --fresh-inventory --fresh-sales
   node scripts/disable-stale-products.mjs --write [--write-delay-ms 250]
   node scripts/disable-stale-products.mjs --measure
@@ -145,13 +149,16 @@ function printUsage() {
 
 Notes:
   --consignment-only restricts candidates to consignment SKUs (item code starting with
-  "c"/"C"); all other products are left untouched. Pair it with --since (the recency
-  window, e.g. 6 months) and --fresh-sales so the recency guard reflects that window
-  rather than the KV "ever sold" cache.
+  "c"/"C"); all other products are left untouched. Pair it with --since for the
+  recency window (e.g. 6 months). By default recency reads cached lastSoldAt from KV;
+  --fresh-sales pages LS live sales instead.
 
   --split-consignment applies --consignment-since (default 6 months) to SKUs starting
-  with "C" and --since (default 12 months) to all other products. It always pages live
-  LS sales (the KV sales cache only records "ever sold", not the date).`);
+  with "C" and --since (default 12 months) to all other products. By default it reads
+  cached lastSoldAt from KV; --fresh-sales pages LS live sales instead.
+
+  --no-season-guard disables the report-season pid protection. Use only after
+  confirming stale in-report products should be deactivated too.`);
 }
 
 function daysAgoIso(days) {
@@ -488,6 +495,22 @@ async function fetchSaleDatesByPid(since) {
 }
 
 async function loadCachedSaleProductIds() {
+  const { meta, shards } = await loadCachedSalesShards();
+  const sold = new Set();
+  for (const shard of shards) {
+    for (const [pid, totals] of Object.entries(shard || {})) {
+      if (hasSaleActivity(totals)) sold.add(String(pid));
+    }
+  }
+  console.error(
+    `Loaded cached sales guard: ${sold.size} products (meta ts=${meta.ts || "unknown"}, version=${
+      meta.version || "unknown"
+    })`
+  );
+  return sold;
+}
+
+async function loadCachedSalesShards() {
   const kv = await loadKvClient();
   if (!kv) {
     throw new Error("KV env missing; cannot read cached sales. Use --fresh-sales to page LS.");
@@ -502,18 +525,44 @@ async function loadCachedSaleProductIds() {
       kv.get(`scan:sales:store:agg:${index}`).catch(() => null)
     )
   );
-  const sold = new Set();
+  return { meta, shards };
+}
+
+function warnIfSalesCacheStale(meta) {
+  const ts = Number(meta?.ts || 0);
+  if (!ts) return;
+  const ageMs = Date.now() - ts;
+  if (ageMs > STALE_SALES_CACHE_MS) {
+    console.warn(
+      `Cached sales aggregate is ${Math.round(ageMs / 3600000)}h old; consider running sales-cache before cleanup.`
+    );
+  }
+}
+
+async function loadCachedLastSoldByPid() {
+  const { meta, shards } = await loadCachedSalesShards();
+  warnIfSalesCacheStale(meta);
+
+  const lastSoldByPid = new Map();
+  let rowsWithSales = 0;
   for (const shard of shards) {
     for (const [pid, totals] of Object.entries(shard || {})) {
-      if (hasSaleActivity(totals)) sold.add(String(pid));
+      if (hasSaleActivity(totals)) rowsWithSales++;
+      const lastSoldAt = Number(totals?.lastSoldAt || 0);
+      if (lastSoldAt > 0) lastSoldByPid.set(String(pid), lastSoldAt);
     }
   }
+  if (rowsWithSales > 0 && lastSoldByPid.size === 0) {
+    throw new Error(
+      "Cached sales aggregate has no lastSoldAt values. Rebuild /api/scan/sales-cache?sales=1 or use --fresh-sales."
+    );
+  }
   console.error(
-    `Loaded cached sales guard: ${sold.size} products (meta ts=${meta.ts || "unknown"}, version=${
-      meta.version || "unknown"
-    })`
+    `Loaded cached last-sold guard: ${lastSoldByPid.size} products (meta ts=${
+      meta.ts || "unknown"
+    }, version=${meta.version || "unknown"})`
   );
-  return sold;
+  return lastSoldByPid;
 }
 
 function hasSaleActivity(totals) {
@@ -815,18 +864,24 @@ async function gatherContext(args) {
   const base = { onHand, consignmentOnly: args.consignmentOnly };
 
   if (args.splitConsignment) {
-    // Split mode needs per-product last-sale dates, so it always pages LS (the KV
-    // sales cache only knows "ever sold", not when). Fetch the longer lookback once.
     const lookback = earlierIsoDate(args.since, args.consignmentSince);
-    base.lastSaleByPid = await fetchSaleDatesByPid(lookback);
+    base.lastSaleByPid = args.freshSales
+      ? await fetchSaleDatesByPid(lookback)
+      : await loadCachedLastSoldByPid();
     base.regularCutoffMs = Date.parse(args.since);
     base.consignmentCutoffMs = Date.parse(args.consignmentSince);
-  } else {
+  } else if (args.freshSales) {
     base.recentSalePids = await loadSaleProductIds(args);
+  } else {
+    base.lastSaleByPid = await loadCachedLastSoldByPid();
+    base.regularCutoffMs = Date.parse(args.since);
+    base.consignmentCutoffMs = Date.parse(args.since);
   }
 
   base.openConsignmentPids = await fetchOpenConsignmentProductIds();
-  base.activeSeasonPids = await fetchActiveSeasonProductIds(args.seasons);
+  base.activeSeasonPids = args.noSeasonGuard
+    ? new Set()
+    : await fetchActiveSeasonProductIds(args.seasons);
   return base;
 }
 
@@ -1290,4 +1345,5 @@ export {
   candidateReason,
   skuMatchesSeason,
   earlierIsoDate,
+  parseArgs,
 };
