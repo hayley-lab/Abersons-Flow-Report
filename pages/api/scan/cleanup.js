@@ -10,9 +10,10 @@ import {
   loadCatalogProducts,
   DEFAULT_SHARD_COUNT,
 } from "../../../lib/catalog-store";
+import { loadConsignEntries, loadConsignMeta } from "../../../lib/consignment-store";
 import { loadInventoryCache, loadInventoryMeta } from "../../../lib/inventory-ledger";
 import { markLsAuthError, markLsHealthy, setLsHealth, getLsToken, lsBase } from "../../../lib/ls-auth";
-import { makeLsFetch, parseRetryAfterMs } from "../../../lib/ls-fetch";
+import { parseRetryAfterMs } from "../../../lib/ls-fetch";
 import { loadSalesAgg, loadSalesStoreMeta } from "../../../lib/sales-store";
 import { sessionOptions } from "../../../lib/session";
 import { candidateReasonFromMeta, isConsignmentSku } from "../../../lib/stale-products";
@@ -25,8 +26,6 @@ const DEFAULT_WRITE_DELAY_MS = 250;
 const DEFAULT_MAX_WRITES = 2000;
 const DEFAULT_ANOMALY_MAX = 2000;
 const DEFAULT_SINCE_DAYS = 365;
-const CONSIGNMENT_PAGE_SIZE = 200;
-const CONSIGNMENT_LINE_PAGE_SIZE = 200;
 const WRITE_RETRIES = 4;
 
 function utcDateKey(now = new Date()) {
@@ -63,100 +62,25 @@ function queryInt(req, name, fallback) {
   return positiveInt(raw) ?? fallback;
 }
 
-function cursorFrom(data, items) {
-  const responseVersion =
-    data?.version && typeof data.version === "object" ? data.version.max : null;
-  const itemVersion = (items || []).reduce(
-    (max, item) => Math.max(max, Number(item?.version || 0)),
-    0
-  );
-  return responseVersion ?? (itemVersion || null);
-}
-
-function normalizedStatus(status) {
-  return String(status || "")
-    .toUpperCase()
-    .replace(/[\s,_-]/g, "");
-}
-
-function headerLooksOpen(header) {
-  if (!header || header.deleted_at) return false;
-  const status = normalizedStatus(header.status);
-  if (["VOIDED", "CANCELLED", "CANCELED"].includes(status)) return false;
-  if (["RECEIVED", "COMPLETE", "COMPLETED", "CLOSED"].includes(status)) return false;
-  return true;
-}
-
-function openConsignmentProductIds(type, header, items) {
-  const ids = new Set();
-  const normalizedType = normalizedStatus(type || header?.type);
-  for (const item of items || []) {
-    const pid = item?.product_id;
-    if (!pid) continue;
-    const count = Math.abs(Number(item.count || 0));
-    if (!count) continue;
-    if (normalizedType === "SUPPLIER") {
-      const received = Math.max(0, Number(item.received || 0));
-      if (Math.max(0, Number(item.count || 0)) > received) ids.add(String(pid));
-    } else {
-      ids.add(String(pid));
-    }
-  }
-  return ids;
-}
-
-async function fetchConsignmentLineItems(lsFetch, id, deadline) {
-  if (!id) return [];
-  const results = [];
-  let after = null;
-  for (;;) {
-    const afterParam = after ? `&after=${encodeURIComponent(after)}` : "";
-    const data = await lsFetch(
-      `2.0/consignments/${id}/products?page_size=${CONSIGNMENT_LINE_PAGE_SIZE}${afterParam}`,
-      { deadline }
-    );
-    const items = data?.data || [];
-    results.push(...items);
-    const nextCursor = cursorFrom(data, items);
-    if (!items.length || !nextCursor || nextCursor === after) break;
-    after = nextCursor;
-  }
-  return results;
-}
-
-async function fetchOpenConsignmentPids(lsFetch, deadline) {
+function openConsignmentPidsFromEntries(entries) {
   const blocked = new Set();
-  const types = ["SUPPLIER", "RETURN", "SUPPLIER_RETURN"];
-
-  for (const type of types) {
-    let after = null;
-    for (;;) {
-      const afterParam = after ? `&after=${encodeURIComponent(after)}` : "";
-      const data = await lsFetch(
-        `2.0/consignments?type=${encodeURIComponent(type)}&page_size=${CONSIGNMENT_PAGE_SIZE}${afterParam}`,
-        { deadline }
-      );
-      const headers = data?.data || [];
-      for (const header of headers) {
-        if (!headerLooksOpen(header)) continue;
-        const items = await fetchConsignmentLineItems(lsFetch, header.id, deadline);
-        for (const pid of openConsignmentProductIds(type, header, items)) blocked.add(pid);
-      }
-
-      const nextCursor = cursorFrom(data, headers);
-      if (!headers.length || !nextCursor || nextCursor === after) break;
-      after = nextCursor;
+  for (const entry of Object.values(entries || {})) {
+    if (!entry || entry.type !== "SUPPLIER") continue;
+    for (const [pid, totals] of Object.entries(entry.perPid || {})) {
+      const ordered = Math.max(0, Number(totals?.qtyOrdered || 0));
+      const received = Math.max(0, Number(totals?.qtyReceived || 0));
+      if (ordered > received) blocked.add(String(pid));
     }
   }
   return blocked;
 }
 
-async function loadOpenConsignmentPids(dateKey, lsFetch, deadline) {
+async function loadOpenConsignmentPids(dateKey, entries) {
   const key = cleanupOpenPidsKey(dateKey);
   const cached = await kv.get(key);
   if (cached?.pids) return new Set(cached.pids.map(String));
 
-  const pids = await fetchOpenConsignmentPids(lsFetch, deadline);
+  const pids = openConsignmentPidsFromEntries(entries);
   await kv.set(key, { pids: [...pids], ts: Date.now() }, { ex: OPEN_PIDS_TTL_SECONDS });
   return pids;
 }
@@ -270,16 +194,20 @@ async function loadRequiredCaches(shardCount = DEFAULT_SHARD_COUNT) {
   if (!inventoryMeta?.complete) throw new Error("Inventory cache is not complete");
   if (!salesMeta?.complete) throw new Error("Sales cache is not complete");
 
+  const consignMeta = await loadConsignMeta(kv);
+  if (!consignMeta?.complete) throw new Error("Consignment cache is not complete");
+
   const effectiveCatalogShards = catalogMeta.shardCount || shardCount;
-  const [products, inventory, salesAgg] = await Promise.all([
+  const [products, inventory, salesAgg, consignEntries] = await Promise.all([
     loadCatalogProducts(kv, effectiveCatalogShards),
     loadInventoryCache(kv, "__store__"),
     loadSalesAgg(kv, salesMeta.shardCount || shardCount),
+    loadConsignEntries(kv, consignMeta.shardCount || shardCount),
   ]);
   if (!hasCatalogCleanupFields(products)) {
     throw new Error("Catalog cache is missing cleanup fields; run a catalog reset first");
   }
-  return { products, inventory, salesAgg };
+  return { products, inventory, salesAgg, consignEntries };
 }
 
 async function saveAudit(dateKey, rows) {
@@ -330,12 +258,10 @@ export default async function handler(req, res) {
     envInt("CLEANUP_WRITE_DELAY_MS", DEFAULT_WRITE_DELAY_MS)
   );
   const base = lsBase();
-  const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
-  const lsFetch = makeLsFetch({ base, headers, onAuthError: markLsAuthError });
 
   try {
-    const { products, inventory, salesAgg } = await loadRequiredCaches();
-    const openConsignmentPids = await loadOpenConsignmentPids(dateKey, lsFetch, deadline);
+    const { products, inventory, salesAgg, consignEntries } = await loadRequiredCaches();
+    const openConsignmentPids = await loadOpenConsignmentPids(dateKey, consignEntries);
     const context = {
       onHand: onHandMapFromCache(inventory),
       lastSaleByPid: lastSoldMapFromAgg(salesAgg),
@@ -431,7 +357,6 @@ export default async function handler(req, res) {
       cursor: state.cursor,
       auditKey: cleanupLogKey(dateKey),
       stats,
-      calls: lsFetch.callStats,
     });
   } catch (e) {
     console.error("[cleanup] failed:", e.message);

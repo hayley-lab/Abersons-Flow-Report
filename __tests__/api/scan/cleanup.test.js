@@ -2,9 +2,11 @@ let sessionAuthed = false;
 let catalogMeta = { complete: true, shardCount: 16 };
 let inventoryMeta = { complete: true };
 let salesMeta = { complete: true, shardCount: 16 };
+let consignMeta = { complete: true, shardCount: 16 };
 let catalogProducts = {};
 let inventoryCache = { onHand: {} };
 let salesAgg = {};
+let consignEntries = {};
 
 jest.mock("iron-session", () => ({
   getIronSession: jest.fn(async () => ({ authed: sessionAuthed })),
@@ -36,6 +38,10 @@ jest.mock("../../../lib/inventory-ledger", () => ({
   loadInventoryMeta: jest.fn(async () => inventoryMeta),
   loadInventoryCache: jest.fn(async () => inventoryCache),
 }));
+jest.mock("../../../lib/consignment-store", () => ({
+  loadConsignMeta: jest.fn(async () => consignMeta),
+  loadConsignEntries: jest.fn(async () => consignEntries),
+}));
 jest.mock("../../../lib/sales-store", () => ({
   loadSalesStoreMeta: jest.fn(async () => salesMeta),
   loadSalesAgg: jest.fn(async () => salesAgg),
@@ -49,11 +55,6 @@ jest.mock("../../../lib/ls-auth", () => ({
 }));
 jest.mock("../../../lib/ls-fetch", () => ({
   parseRetryAfterMs: jest.fn(() => null),
-  makeLsFetch: jest.fn(() => {
-    const fn = jest.fn(async () => ({ data: [] }));
-    fn.callStats = { total: 0, byFamily: {} };
-    return fn;
-  }),
 }));
 
 import { kv as mockKv } from "@vercel/kv";
@@ -102,9 +103,11 @@ describe("scan/cleanup handler", () => {
     catalogMeta = { complete: true, shardCount: 16 };
     inventoryMeta = { complete: true };
     salesMeta = { complete: true, shardCount: 16 };
+    consignMeta = { complete: true, shardCount: 16 };
     catalogProducts = {};
     inventoryCache = { onHand: {} };
     salesAgg = {};
+    consignEntries = {};
     mockKv._store.clear();
     mockKv.set.mockClear();
     setLsHealth.mockClear();
@@ -175,5 +178,27 @@ describe("scan/cleanup handler", () => {
     expect(mockKv._store.get(logKey)).toEqual([
       expect.objectContaining({ id: "p1", sku: "stale/s2601", action: "deactivate" }),
     ]);
+  });
+
+  it("guards products with cached incoming supplier consignments", async () => {
+    catalogProducts = {
+      p1: activeProduct({ sku: "incoming/s2601" }),
+      p2: activeProduct({ sku: "stale/s2601" }),
+    };
+    consignEntries = {
+      c1: {
+        type: "SUPPLIER",
+        perPid: {
+          p1: { qtyOrdered: 3, qtyReceived: 1 },
+        },
+      },
+    };
+
+    const res = makeRes();
+    await handler(makeReq({ auth: true }), res);
+
+    expect(res.body).toMatchObject({ candidates: 1, written: 1 });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch.mock.calls[0][0]).toContain("/2026-04/products/p2");
   });
 });
