@@ -28,7 +28,7 @@
       "maxDuration": 60
     },
     "pages/api/scan/consign-cache.js": {
-      "maxDuration": 60
+      "maxDuration": 120
     },
     "pages/api/scan/cleanup.js": {
       "maxDuration": 60

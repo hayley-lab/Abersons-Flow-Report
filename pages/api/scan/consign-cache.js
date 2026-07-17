@@ -22,10 +22,10 @@ import {
 } from "../../../lib/consignment-store";
 import { loadScanData } from "../../../lib/scan-data-store";
 
-// Leave enough of the 60s function window to checkpoint touched shards and,
-// on the draining call, project all season buckets before cron/scan's 55s child
-// timeout. A 45s paging window repeatedly finished its work after the caller
-// had already aborted, so the refresh could never observe `complete: true`.
+// Leave most of the function window to checkpoint touched shards and, on the
+// draining call, project all season buckets. A 45s paging window plus projection
+// repeatedly exceeded the old 55s parent timeout, so the refresh never observed
+// `complete: true`.
 const CHUNK_MS = 25000;
 
 function currentSeasons() {

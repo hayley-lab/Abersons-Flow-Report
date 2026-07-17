@@ -54,6 +54,10 @@ const REFRESH_STATE_TTL_SECONDS = 12 * 3600;
 // hasBudgetFor guard still prevents a step from starting without enough room.
 const CRON_LOOP_DEADLINE_MS = 150 * 1000;
 const CACHE_REQUEST_TIMEOUT_MS = 55 * 1000;
+// Consignment completion also re-projects every season bucket after paging.
+// Give that child enough time to checkpoint and return instead of aborting at
+// 55s while cron/scan still has a 150s overall response budget.
+const CONSIGN_REQUEST_TIMEOUT_MS = 110 * 1000;
 const STEP_REQUEST_TIMEOUT_MS = 70 * 1000;
 const RESPONSE_OVERHEAD_MS = 5 * 1000;
 // How many times the driver path retries a season whose step failed
@@ -73,7 +77,6 @@ const SALES_DRIVE_MS = 75 * 1000;
 // back to per-season sales paging (step.js also auto-falls-back per run).
 const ENABLE_SALES_STORE = process.env.ENABLE_SALES_STORE !== "0";
 // Store-wide consignment cache (POs + returns) drive budget + gate.
-const CONSIGN_DRIVE_MS = 75 * 1000;
 const ENABLE_CONSIGN_STORE = process.env.ENABLE_CONSIGN_STORE !== "0";
 // Store-wide live-inventory cache drive budget + gate. Driving it to completion
 // here (sequentially) before stepping seasons stops every season from re-paging
@@ -356,12 +359,11 @@ export default async function handler(req, res) {
     ) {
       return { cacheComplete: true, complete: true, added: 0, skipped: true };
     }
-    const consignDeadline = cacheDriveDeadline({ driveMs: CONSIGN_DRIVE_MS, overallDeadline });
     const resetFirst = resetRequested;
     let last = null;
     let first = true;
     do {
-      if (!hasBudgetFor(consignDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
+      if (!hasBudgetFor(overallDeadline, CONSIGN_REQUEST_TIMEOUT_MS)) break;
       if (first && resetFirst) await markResetStarted("consign");
       const q = first && resetFirst ? "?reset=1" : "";
       first = false;
@@ -369,7 +371,7 @@ export default async function handler(req, res) {
         const r = await fetchWithTimeout(
           `${base}/api/scan/consign-cache${q}`,
           { method: "POST", headers },
-          CACHE_REQUEST_TIMEOUT_MS
+          CONSIGN_REQUEST_TIMEOUT_MS
         );
         const body = await r.json().catch(() => null);
         if (body) last = body;
@@ -382,7 +384,7 @@ export default async function handler(req, res) {
         console.error("[cron/scan] consign drive failed:", e.message);
         break;
       }
-    } while (loopInternally && hasBudgetFor(consignDeadline, CACHE_REQUEST_TIMEOUT_MS));
+    } while (loopInternally && hasBudgetFor(overallDeadline, CONSIGN_REQUEST_TIMEOUT_MS));
     return last;
   }
 
