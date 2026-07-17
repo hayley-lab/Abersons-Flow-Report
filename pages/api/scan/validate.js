@@ -111,7 +111,11 @@ export default async function handler(req, res) {
   const sampleCap = full ? 0 : Math.max(1, parseInt(req.query.sample, 10) || DEFAULT_SAMPLE);
 
   // 1. Canonical rows — same source the report serves (data.js path).
-  const [rawData, override] = await Promise.all([loadScanData(kv, season), loadOverride(season)]);
+  const [rawData, override, scanJob] = await Promise.all([
+    loadScanData(kv, season),
+    loadOverride(season),
+    kv.get(`scan:job:${season}`),
+  ]);
   if (!rawData && !override) {
     return res.status(404).json({ error: "No scan data for season" });
   }
@@ -233,6 +237,8 @@ export default async function handler(req, res) {
     ...report,
     vendor: vendor || null,
     sampleSize: sampled.length,
+    sourceProducts: seasonPids.length,
+    scanCompletedAt: Number(scanJob?.ts || rawData?.ts || 0) || null,
     onHandFetched,
     onHandBudgetExhausted,
     persisted,

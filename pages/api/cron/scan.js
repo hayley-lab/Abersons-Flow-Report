@@ -37,6 +37,12 @@ const FULL_REBUILD_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 // still know a rebuild is owed. 12h covers the weekly workflow's 340-min budget.
 const REBUILD_TS_KEY = "scan:rebuild:ts";
 const REBUILD_TS_TTL_SECONDS = 12 * 3600;
+// A refresh cycle is started by ?refresh=1 and survives across driver calls.
+// Each shared cache is marked complete independently so a slow/failed cache is
+// retried without re-driving caches that already drained. Once all four finish,
+// later calls spend their budget exclusively on season steps.
+const REFRESH_STATE_KEY = "scan:refresh:state";
+const REFRESH_STATE_TTL_SECONDS = 12 * 3600;
 // Overall response budget per invocation, SHARED by the cache drives and the
 // season loop. Vercel kills this route at 300s, so stop starting child requests
 // early enough that a slow child response can finish and we can still serialize
@@ -112,6 +118,7 @@ export default async function handler(req, res) {
   const force = req.query.force === "1";
   const restartAll = req.query.restart === "1";
   const driverMode = req.query.driver === "1";
+  const startRefresh = req.query.refresh === "1";
   // Loop internally only when called by the Vercel cron scheduler (not GitHub/UI).
   // GitHub uses ?driver=1 for quick progress JSON without bypassing cache gates.
   const usesCronGates = cronAuth && !force;
@@ -140,6 +147,68 @@ export default async function handler(req, res) {
     }
   } catch (e) {
     console.error("[cron/scan] rebuild flag read/write failed:", e.message);
+  }
+
+  let refreshState = null;
+  try {
+    if (startRefresh) {
+      refreshState = {
+        ts: Date.now(),
+        catalog: false,
+        sales: !ENABLE_SALES_STORE,
+        consign: !ENABLE_CONSIGN_STORE,
+        inventory: !ENABLE_BULK_INVENTORY,
+        catalogResetPending: req.query.catalog === "1",
+        salesResetPending: req.query.sales === "1",
+        consignResetPending: req.query.consign === "1",
+        inventoryResetPending: req.query.inventory === "1",
+      };
+      await kv.set(REFRESH_STATE_KEY, refreshState, { ex: REFRESH_STATE_TTL_SECONDS });
+    } else {
+      refreshState = (await kv.get(REFRESH_STATE_KEY)) || null;
+    }
+  } catch (e) {
+    console.error("[cron/scan] refresh state read/write failed:", e.message);
+  }
+
+  function cacheRefreshPending(cache) {
+    return !!refreshState && !refreshState[cache];
+  }
+
+  function cacheResetPending(cache) {
+    return req.query[cache] === "1" || !!(refreshState && refreshState[`${cache}ResetPending`]);
+  }
+
+  async function markResetStarted(cache) {
+    const field = `${cache}ResetPending`;
+    if (!refreshState?.[field]) return;
+    refreshState = { ...refreshState, [field]: false };
+    try {
+      await kv.set(REFRESH_STATE_KEY, refreshState, { ex: REFRESH_STATE_TTL_SECONDS });
+    } catch (e) {
+      console.error(`[cron/scan] ${cache} reset checkpoint failed:`, e.message);
+    }
+  }
+
+  async function markCacheRefreshed(cache, result) {
+    // `cacheComplete` means the durable cache has a usable baseline; `complete`
+    // means this incremental pass actually drained its change stream. A refresh
+    // is finished only on the latter, otherwise the next driver call must resume.
+    if (!refreshState || result?.complete !== true) return;
+    refreshState = { ...refreshState, [cache]: true };
+    const complete = ["catalog", "sales", "consign", "inventory"].every(
+      (name) => refreshState[name]
+    );
+    try {
+      if (complete) {
+        await kv.del(REFRESH_STATE_KEY);
+        refreshState = null;
+      } else {
+        await kv.set(REFRESH_STATE_KEY, refreshState, { ex: REFRESH_STATE_TTL_SECONDS });
+      }
+    } catch (e) {
+      console.error(`[cron/scan] ${cache} refresh checkpoint failed:`, e.message);
+    }
   }
 
   // Single shared deadline for this invocation. The catalog drive and the season
@@ -171,14 +240,14 @@ export default async function handler(req, res) {
   // seed from scan:catalog:season:{season} with zero catalog API calls. Failures
   // are non-fatal — step.js falls back to scan:pids + lazy registration.
   async function driveCatalog() {
-    // On the driver/UI path, skip the HTTP drive entirely when the catalog is
-    // already complete in KV — re-paging it every call starves season stepping.
-    // The internally-looping cron still tops it up incrementally.
+    // A complete cache is driven only while this cycle's refresh is pending.
+    // Once marked refreshed, subsequent calls reserve their budget for seasons.
+    const resetRequested = cacheResetPending("catalog");
     if (
       shouldSkipCompletedDrive({
         kvComplete: await cacheCompleteInKv(loadCatalogMeta),
-        resetRequested: req.query.catalog === "1",
-        loopInternally,
+        resetRequested,
+        refreshRequested: cacheRefreshPending("catalog"),
       })
     ) {
       return { cacheComplete: true, complete: true, version: null, added: 0, skipped: true };
@@ -193,10 +262,11 @@ export default async function handler(req, res) {
     // incremental top-up keeps the catalog current in ~1 call, so re-paging the
     // whole 200k+ catalog every week would be wasteful. The catalog still
     // cold-builds automatically whenever its cache is missing or incomplete.
-    let resetFirst = req.query.catalog === "1";
+    let resetFirst = resetRequested;
     let last = null;
     do {
       if (!hasBudgetFor(catalogDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
+      if (resetFirst) await markResetStarted("catalog");
       const q = resetFirst ? "?reset=1" : "";
       resetFirst = false;
       try {
@@ -226,21 +296,23 @@ export default async function handler(req, res) {
   // season projects sales from the shared aggregate instead of paging 2.0/sales.
   // Mirrors driveCatalog; resumable across invocations via its version cursor.
   async function driveSales() {
+    const resetRequested = cacheResetPending("sales");
     if (
       shouldSkipCompletedDrive({
         kvComplete: await cacheCompleteInKv(loadSalesStoreMeta),
-        resetRequested: req.query.sales === "1",
-        loopInternally,
+        resetRequested,
+        refreshRequested: cacheRefreshPending("sales"),
       })
     ) {
       return { cacheComplete: true, complete: true, version: null, skipped: true };
     }
     const salesDeadline = cacheDriveDeadline({ driveMs: SALES_DRIVE_MS, overallDeadline });
-    const resetFirst = req.query.sales === "1";
+    const resetFirst = resetRequested;
     let last = null;
     let first = true;
     do {
       if (!hasBudgetFor(salesDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
+      if (first && resetFirst) await markResetStarted("sales");
       const q = first && resetFirst ? "?reset=1" : "";
       first = false;
       try {
@@ -267,21 +339,23 @@ export default async function handler(req, res) {
   // Drive the store-wide consignment cache (POs + vendor returns). Mirrors
   // driveCatalog/driveSales; resumable across invocations via its version cursor.
   async function driveConsign() {
+    const resetRequested = cacheResetPending("consign");
     if (
       shouldSkipCompletedDrive({
         kvComplete: await cacheCompleteInKv(loadConsignMeta),
-        resetRequested: req.query.consign === "1",
-        loopInternally,
+        resetRequested,
+        refreshRequested: cacheRefreshPending("consign"),
       })
     ) {
       return { cacheComplete: true, complete: true, added: 0, skipped: true };
     }
     const consignDeadline = cacheDriveDeadline({ driveMs: CONSIGN_DRIVE_MS, overallDeadline });
-    const resetFirst = req.query.consign === "1";
+    const resetFirst = resetRequested;
     let last = null;
     let first = true;
     do {
       if (!hasBudgetFor(consignDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
+      if (first && resetFirst) await markResetStarted("consign");
       const q = first && resetFirst ? "?reset=1" : "";
       first = false;
       try {
@@ -310,21 +384,23 @@ export default async function handler(req, res) {
   // Pre-building it here means each season's inventory phase just READS on-hand
   // from the cache instead of every season re-paging the full stream in parallel.
   async function driveInventory() {
+    const resetRequested = cacheResetPending("inventory");
     if (
       shouldSkipCompletedDrive({
         kvComplete: await cacheCompleteInKv(loadInventoryMeta),
-        resetRequested: req.query.inventory === "1",
-        loopInternally,
+        resetRequested,
+        refreshRequested: cacheRefreshPending("inventory"),
       })
     ) {
       return { cacheComplete: true, complete: true, version: null, skipped: true };
     }
     const inventoryDeadline = cacheDriveDeadline({ driveMs: INVENTORY_DRIVE_MS, overallDeadline });
-    const resetFirst = req.query.inventory === "1";
+    const resetFirst = resetRequested;
     let last = null;
     let first = true;
     do {
       if (!hasBudgetFor(inventoryDeadline, CACHE_REQUEST_TIMEOUT_MS)) break;
+      if (first && resetFirst) await markResetStarted("inventory");
       const q = first && resetFirst ? "?reset=1" : "";
       first = false;
       try {
@@ -351,6 +427,7 @@ export default async function handler(req, res) {
   let catalogResult = null;
   try {
     catalogResult = await driveCatalog();
+    await markCacheRefreshed("catalog", catalogResult);
     if (catalogResult) {
       console.warn(
         `[cron/scan] catalog: complete=${catalogResult.complete} version=${catalogResult.version} added=${catalogResult.added}`
@@ -376,6 +453,7 @@ export default async function handler(req, res) {
     return res.json({
       ok: true,
       allDone: false,
+      cacheRefreshPending: !!refreshState,
       catalogBuilding: true,
       catalog: {
         complete: false,
@@ -393,6 +471,7 @@ export default async function handler(req, res) {
   if (ENABLE_SALES_STORE) {
     try {
       salesResult = await driveSales();
+      await markCacheRefreshed("sales", salesResult);
       if (salesResult) {
         console.warn(
           `[cron/scan] sales: complete=${salesResult.complete} version=${salesResult.metaVersion ?? salesResult.version}`
@@ -411,6 +490,7 @@ export default async function handler(req, res) {
       return res.json({
         ok: true,
         allDone: false,
+        cacheRefreshPending: !!refreshState,
         salesBuilding: true,
         sales: {
           complete: false,
@@ -429,6 +509,7 @@ export default async function handler(req, res) {
   if (ENABLE_CONSIGN_STORE) {
     try {
       consignResult = await driveConsign();
+      await markCacheRefreshed("consign", consignResult);
       if (consignResult) {
         console.warn(
           `[cron/scan] consign: complete=${consignResult.complete} added=${consignResult.added}`
@@ -447,6 +528,7 @@ export default async function handler(req, res) {
       return res.json({
         ok: true,
         allDone: false,
+        cacheRefreshPending: !!refreshState,
         consignBuilding: true,
         consign: { complete: false, cacheComplete: false },
         results: [],
@@ -461,6 +543,7 @@ export default async function handler(req, res) {
   if (ENABLE_BULK_INVENTORY) {
     try {
       inventoryResult = await driveInventory();
+      await markCacheRefreshed("inventory", inventoryResult);
       if (inventoryResult) {
         console.warn(
           `[cron/scan] inventory: complete=${inventoryResult.complete} version=${inventoryResult.version}`
@@ -479,6 +562,7 @@ export default async function handler(req, res) {
       return res.json({
         ok: true,
         allDone: false,
+        cacheRefreshPending: !!refreshState,
         inventoryBuilding: true,
         inventory: {
           complete: false,
@@ -655,9 +739,10 @@ export default async function handler(req, res) {
     return res.json({
       ok: true,
       allDone,
+      cacheRefreshPending: !!refreshState,
       results: seasonState.map((s) => ({
         season: s.season,
-        action: s.action || "skipped",
+        action: s.action || "pending",
         phase: s.phase,
         mode: s.mode,
       })),
@@ -703,6 +788,6 @@ export default async function handler(req, res) {
         console.error("[cron/scan] rebuild flag clear failed:", e.message);
       }
     }
-    return res.json({ ok: true, allDone, results });
+    return res.json({ ok: true, allDone, cacheRefreshPending: !!refreshState, results });
   }
 }

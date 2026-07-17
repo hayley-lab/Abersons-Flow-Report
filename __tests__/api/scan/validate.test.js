@@ -164,6 +164,8 @@ describe("scan/validate handler", () => {
       drift: { tripped: true },
       persisted: true,
       vendor: null,
+      sourceProducts: 1,
+      scanCompletedAt: 1000,
     });
   });
 });

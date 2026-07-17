@@ -54,9 +54,9 @@ jobs:
             # progress instead of waiting near Vercel's function timeout.
             if [ "$i" = "1" ]; then
               if [ "${{ inputs.resume_existing }}" = "true" ]; then
-                QUERY="?driver=1"
+                QUERY="?driver=1&refresh=1"
               else
-                QUERY="?driver=1&restart=1"
+                QUERY="?driver=1&refresh=1&restart=1"
                 # A manual dispatch with catalog_reset=true cold-rebuilds the
                 # store-wide catalog cache (?catalog=1 → driveCatalog resets, then
                 # re-buckets every season), re-deriving every product's
@@ -94,14 +94,14 @@ jobs:
             # Parse only when the body is valid JSON; otherwise log a snippet and
             # treat as "not done" so a single bad response never crashes the job.
             if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, catalogBuilding, salesBuilding, consignBuilding, inventoryBuilding, results}' 2>/dev/null \
+              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, cacheRefreshPending, catalogBuilding, salesBuilding, consignBuilding, inventoryBuilding, results}' 2>/dev/null \
                 || printf '%s\n' "$RESPONSE"
               ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null)
               HAS_ERROR=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; (.action == "error") or (.phase == "error"))' 2>/dev/null)
               # Progress = a shared cache is still building OR at least one season
               # advanced this call (any non-skipped result). Used by the stall guard.
-              BUILDING=$(printf '%s' "$RESPONSE" | jq -r '((.catalogBuilding // false) or (.salesBuilding // false) or (.consignBuilding // false) or (.inventoryBuilding // false))' 2>/dev/null)
-              ADVANCED=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; .action != "skipped")' 2>/dev/null)
+              BUILDING=$(printf '%s' "$RESPONSE" | jq -r '((.cacheRefreshPending // false) or (.catalogBuilding // false) or (.salesBuilding // false) or (.consignBuilding // false) or (.inventoryBuilding // false))' 2>/dev/null)
+              ADVANCED=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; .action == "advanced")' 2>/dev/null)
             else
               echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
               ALL_DONE=false

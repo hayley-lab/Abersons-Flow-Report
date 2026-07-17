@@ -82,6 +82,14 @@ describe("cron/scan handler", () => {
     mockKv.get.mockImplementation(async (key) =>
       mockKv._store.has(key) ? mockKv._store.get(key) : null
     );
+    mockKv.set.mockClear();
+    mockKv.set.mockImplementation(async (key, value) => {
+      mockKv._store.set(key, value);
+    });
+    mockKv.del.mockClear();
+    mockKv.del.mockImplementation(async (key) => {
+      mockKv._store.delete(key);
+    });
     // The handler logs progress/errors on purpose; keep test output clean.
     warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -136,5 +144,71 @@ describe("cron/scan handler", () => {
     const errored = res.body.results.filter((r) => r.action === "error");
     expect(errored.length).toBeGreaterThan(0);
     expect(errored.every((r) => r.error === "boom")).toBe(true);
+  });
+
+  it("refreshes complete shared caches once before advancing seasons", async () => {
+    global.fetch = jest.fn(async (url) => {
+      if (url.includes("/api/scan/step")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ phase: "done", mode: "full" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ cacheComplete: true, complete: true }),
+      };
+    });
+
+    const res = makeRes();
+    await handler(makeReq({ query: { driver: "1", refresh: "1", restart: "1" }, auth: true }), res);
+
+    const urls = global.fetch.mock.calls.map(([url]) => url);
+    expect(urls.some((url) => url.includes("/api/scan/catalog"))).toBe(true);
+    expect(urls.some((url) => url.includes("/api/scan/sales-cache"))).toBe(true);
+    expect(urls.some((url) => url.includes("/api/scan/consign-cache"))).toBe(true);
+    expect(urls.some((url) => url.includes("/api/scan/inventory-cache"))).toBe(true);
+    expect(urls.some((url) => url.includes("/api/scan/step"))).toBe(true);
+    expect(res.body.cacheRefreshPending).toBe(false);
+  });
+
+  it("keeps an undrained cache pending for the next driver call", async () => {
+    let catalogCalls = 0;
+    global.fetch = jest.fn(async (url) => {
+      if (url.includes("/api/scan/catalog")) {
+        catalogCalls++;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            cacheComplete: true,
+            complete: catalogCalls > 1,
+          }),
+        };
+      }
+      if (url.includes("/api/scan/step")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ phase: "done", mode: "full" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ cacheComplete: true, complete: true }),
+      };
+    });
+
+    const first = makeRes();
+    await handler(makeReq({ query: { driver: "1", refresh: "1" }, auth: true }), first);
+    expect(first.body.cacheRefreshPending).toBe(true);
+
+    const second = makeRes();
+    await handler(makeReq({ query: { driver: "1" }, auth: true }), second);
+    expect(catalogCalls).toBe(2);
+    expect(second.body.cacheRefreshPending).toBe(false);
   });
 });

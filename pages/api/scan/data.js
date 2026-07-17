@@ -40,7 +40,7 @@ function jobView(job) {
 // authoritative rollup, then write the result back into the read-cache (a small
 // summary blob plus one row group per department). Returns the freshly computed
 // pieces so the caller can serve the requested view without a second read.
-async function rebuildReportCache(season, tag) {
+async function rebuildReportCache(season, tag, reportTs) {
   const [rawData, override] = await Promise.all([
     loadScanData(kv, season),
     loadOverride(kv, season),
@@ -69,7 +69,7 @@ async function rebuildReportCache(season, tag) {
     consignByPid,
   });
   const summaryData = {
-    ts: rawData?.ts ?? null,
+    ts: reportTs ?? rawData?.ts ?? null,
     season,
     summaryRows,
     deptVendors,
@@ -91,7 +91,7 @@ async function rebuildReportCache(season, tag) {
         rows: groups[deptId],
       })
     ),
-    maybeUpsertSqlReport(season, rawData, override, { consignByPid }).catch((e) => {
+    maybeUpsertSqlReport(season, rawData, override, { consignByPid, reportTs }).catch((e) => {
       console.warn("sql report write skipped/failed", e.message);
       return null;
     }),
@@ -120,12 +120,13 @@ export default async function handler(req, res) {
     getLsHealth(),
     loadConsignMeta(kv).catch(() => null),
   ]);
-  const ts = summaryMeta?.ts ?? null;
+  const scanTs = summaryMeta?.ts ?? null;
   const consignVersion = consignMeta?.ts ?? null;
+  const reportTs = Math.max(Number(scanTs) || 0, Number(consignVersion) || 0) || null;
 
   // Poll short-circuit: nothing newer than the client already has.
   const since = req.query.since ? Number(req.query.since) : null;
-  if (since && ts && ts <= since && (!job || job.phase === "done")) {
+  if (since && reportTs && reportTs <= since && (!job || job.phase === "done")) {
     return res.json({
       data: null,
       job: jobView(job),
@@ -135,7 +136,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const tag = reportCacheTag(ts, epoch, consignVersion);
+  const tag = reportCacheTag(scanTs, epoch, consignVersion);
 
   try {
     // ── SQL read path (feature flagged) ──────────────────────────────────────
@@ -145,10 +146,10 @@ export default async function handler(req, res) {
       console.warn("sql report read failed; falling back to KV", e.message);
       return null;
     });
-    if (sqlData) {
+    if (sqlData && Number(sqlData.ts) === Number(reportTs)) {
       const { hasOverride: sqlHasOverride, ...sqlDataView } = sqlData;
       return res.json({
-        data: view === "drows" ? { ...sqlDataView, ts } : sqlDataView,
+        data: view === "drows" ? { ...sqlDataView, ts: reportTs } : sqlDataView,
         job: jobView(job),
         hasOverride: !!sqlHasOverride,
         lsHealth: lsHealth || null,
@@ -166,7 +167,7 @@ export default async function handler(req, res) {
           const deptBlob = await loadReportDeptRows(kv, season, deptId);
           if (deptBlob && deptBlob.tag === tag) {
             return res.json({
-              data: { ts, season, deptId, rows: deptBlob.rows || [] },
+              data: { ts: reportTs, season, deptId, rows: deptBlob.rows || [] },
               job: jobView(job),
               hasOverride: !!summary.hasOverride,
               lsHealth: lsHealth || null,
@@ -189,7 +190,7 @@ export default async function handler(req, res) {
     }
 
     // ── Cache miss (or view=full): recompute + write-through ───────────────────
-    const built = await rebuildReportCache(season, tag);
+    const built = await rebuildReportCache(season, tag, reportTs);
     if (built.empty) {
       return res.json({
         data: null,
@@ -201,7 +202,7 @@ export default async function handler(req, res) {
 
     if (view === "drows" && deptId) {
       return res.json({
-        data: { ts, season, deptId, rows: built.groups[deptId] || [] },
+        data: { ts: reportTs, season, deptId, rows: built.groups[deptId] || [] },
         job: jobView(job),
         hasOverride: built.hasOverride,
         lsHealth: lsHealth || null,
@@ -234,7 +235,7 @@ export default async function handler(req, res) {
     return res.json({
       data: {
         season,
-        ts,
+        ts: reportTs,
         summaryRows: [],
         deptVendors: {},
         rows: [],

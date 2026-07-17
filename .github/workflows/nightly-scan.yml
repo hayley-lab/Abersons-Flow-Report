@@ -24,10 +24,20 @@ jobs:
           # that stays within timeout-minutes: 360 (340 min budget).
           DEADLINE=$(( $(date +%s) + 340 * 60 ))
           i=0
+          STALL=0
+          STALL_LIMIT=15
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             i=$(( i + 1 ))
             echo "--- Call $i ($(date -u +%H:%M:%S) UTC) ---"
-            RESPONSE=$(curl -sS --max-time 295 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan" \
+            # Refresh shared caches once, then let later driver calls spend their
+            # whole budget advancing seasons. Incomplete caches remain pending in
+            # KV and continue on subsequent calls until they drain.
+            if [ "$i" = "1" ]; then
+              QUERY="?driver=1&refresh=1"
+            else
+              QUERY="?driver=1"
+            fi
+            RESPONSE=$(curl -sS --max-time 180 -X POST "https://abersons-flow-report.vercel.app/api/cron/scan$QUERY" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Content-Type: application/json")
             CURL_RC=$?
@@ -37,18 +47,39 @@ jobs:
               continue
             fi
             if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, catalogBuilding, catalog, results}' 2>/dev/null \
+              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, cacheRefreshPending, catalogBuilding, salesBuilding, consignBuilding, inventoryBuilding, results}' 2>/dev/null \
                 || printf '%s\n' "$RESPONSE"
               ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null)
+              HAS_ERROR=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; (.action == "error") or (.phase == "error"))' 2>/dev/null)
+              BUILDING=$(printf '%s' "$RESPONSE" | jq -r '((.cacheRefreshPending // false) or (.catalogBuilding // false) or (.salesBuilding // false) or (.consignBuilding // false) or (.inventoryBuilding // false))' 2>/dev/null)
+              ADVANCED=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; .action == "advanced")' 2>/dev/null)
             else
               echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
               ALL_DONE=false
+              HAS_ERROR=false
+              BUILDING=false
+              ADVANCED=false
             fi
             if [ "$ALL_DONE" = "true" ]; then
+              if [ "$HAS_ERROR" = "true" ]; then
+                echo "Scan reported completion with errored season(s); failing."
+                exit 1
+              fi
               echo "All seasons complete. Done."
               exit 0
             fi
-            echo "Still in progress (catalog building or seasons stepping), continuing..."
+            if [ "$BUILDING" = "true" ] || [ "$ADVANCED" = "true" ]; then
+              STALL=0
+            else
+              STALL=$(( STALL + 1 ))
+              if [ "$STALL" -ge "$STALL_LIMIT" ]; then
+                echo "No progress for $STALL consecutive calls."
+                echo "Last response: ${RESPONSE:0:500}"
+                exit 1
+              fi
+            fi
+            echo "Still in progress (cache refresh or seasons stepping), continuing... (stall=$STALL)"
             sleep 3
           done
-          echo "Reached time budget — scan may still be in progress."
+          echo "Reached time budget before all seasons completed."
+          exit 1

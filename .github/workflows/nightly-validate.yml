@@ -49,6 +49,7 @@ jobs:
 
           TRIPPED=0
           ERRORED=0
+          MAX_SCAN_AGE_MS=$(( 36 * 60 * 60 * 1000 ))
           {
             echo "# Nightly Validate"
             echo ""
@@ -58,37 +59,55 @@ jobs:
 
           for season in $SEASONS; do
             echo "--- Validating $season ($(date -u +%H:%M:%S) UTC) ---"
-            RESPONSE=$(curl -sS --max-time 120 \
+            BODY_FILE=$(mktemp)
+            HTTP_STATUS=$(curl -sS --max-time 120 -o "$BODY_FILE" -w "%{http_code}" \
               "$BASE/api/scan/validate?season=$season&sample=150" \
               -H "Authorization: Bearer $CRON_SECRET" \
               -H "Accept: application/json")
             CURL_RC=$?
+            RESPONSE=$(<"$BODY_FILE")
+            rm -f "$BODY_FILE"
             if [ "$CURL_RC" -ne 0 ]; then
-              echo "::warning::curl failed for $season (rc=$CURL_RC) — skipping (not counted as drift)."
-              echo "| $season | ⚠️ unreachable | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::curl failed for $season (rc=$CURL_RC)."
+              echo "| $season | ❌ unreachable | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
               ERRORED=$((ERRORED+1))
               continue
             fi
             if ! printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-              echo "::warning::Non-JSON response for $season: ${RESPONSE:0:200}"
-              echo "| $season | ⚠️ bad response | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Non-JSON response for $season (HTTP $HTTP_STATUS): ${RESPONSE:0:200}"
+              echo "| $season | ❌ bad response | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
               ERRORED=$((ERRORED+1))
               continue
             fi
-
-            # 404 = no scan data for this season yet (e.g. future season) — not drift.
-            ERRMSG=$(printf '%s' "$RESPONSE" | jq -r '.error // empty')
-            if [ -n "$ERRMSG" ]; then
-              echo "::notice::$season: $ERRMSG (skipped)"
-              echo "| $season | – (no data) | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+              ERRMSG=$(printf '%s' "$RESPONSE" | jq -r '.error // .message // "request failed"')
+              echo "::error::$season validation HTTP $HTTP_STATUS: $ERRMSG"
+              echo "| $season | ❌ HTTP $HTTP_STATUS | - | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+              ERRORED=$((ERRORED+1))
               continue
             fi
 
             DRIFT=$(printf '%s' "$RESPONSE" | jq -r '.drift.tripped // false')
             CHECKED=$(printf '%s' "$RESPONSE" | jq -r '.counts.checkedProducts // 0')
+            SOURCE_PRODUCTS=$(printf '%s' "$RESPONSE" | jq -r '.sourceProducts // 0')
+            SCAN_COMPLETED_AT=$(printf '%s' "$RESPONSE" | jq -r '.scanCompletedAt // 0')
             DRIFTED=$(printf '%s' "$RESPONSE" | jq -r '.counts.driftedProducts // 0')
             HARD=$(printf '%s' "$RESPONSE" | jq -r '.counts.hardQtyMismatches // 0')
             RETAIL=$(printf '%s' "$RESPONSE" | jq -r '(.counts.seasonRetailDriftRatio // 0) * 100 | (. * 100 | round) / 100')
+            NOW_MS=$(( $(date +%s) * 1000 ))
+
+            if [ "$SCAN_COMPLETED_AT" -le 0 ] || [ $(( NOW_MS - SCAN_COMPLETED_AT )) -gt "$MAX_SCAN_AGE_MS" ]; then
+              echo "::error::$season scan is missing or older than 36 hours."
+              echo "| $season | ❌ stale scan | $CHECKED | $DRIFTED | $HARD | ${RETAIL}% |" >> "$GITHUB_STEP_SUMMARY"
+              ERRORED=$((ERRORED+1))
+              continue
+            fi
+            if [ "$SOURCE_PRODUCTS" -gt 0 ] && [ "$CHECKED" -eq 0 ]; then
+              echo "::error::$season validated zero products despite $SOURCE_PRODUCTS source products."
+              echo "| $season | ❌ zero coverage | 0 | $DRIFTED | $HARD | ${RETAIL}% |" >> "$GITHUB_STEP_SUMMARY"
+              ERRORED=$((ERRORED+1))
+              continue
+            fi
 
             if [ "$DRIFT" = "true" ]; then
               REASONS=$(printf '%s' "$RESPONSE" | jq -r '[.drift.reasons[]?.detail] | join("; ")')
@@ -104,8 +123,8 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Seasons with drift: $TRIPPED; unreachable/errored: $ERRORED" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$TRIPPED" -gt 0 ]; then
-            echo "Drift detected in $TRIPPED season(s) — failing the run."
+          if [ "$TRIPPED" -gt 0 ] || [ "$ERRORED" -gt 0 ]; then
+            echo "Validation failed: drift=$TRIPPED request/staleness errors=$ERRORED."
             exit 1
           fi
           echo "No drift detected."

@@ -765,7 +765,9 @@ export default function FlowReport() {
         // any that were left in a partial/expired state from a previous scan).
         // Subsequent iterations just advance without restarting.
         const url =
-          iterations === 0 ? "/api/cron/scan?force=1&restart=1" : "/api/cron/scan?force=1";
+          iterations === 0
+            ? "/api/cron/scan?force=1&refresh=1&restart=1"
+            : "/api/cron/scan?force=1";
         const r = await fetch(url, { method: "POST" });
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
@@ -791,13 +793,13 @@ export default function FlowReport() {
           throw new Error(d.error || "HTTP " + r.status);
         }
         consecutiveTransient = 0;
-        const { results } = await r.json();
+        const response = await r.json();
+        const results = response.results || [];
         iterations++;
 
         // Build a progress summary from all seasons
-        const active = (results || []).filter((r) => r.action !== "skipped");
-        const done = (results || []).filter((r) => r.phase === "done" || r.action === "skipped");
-        const errors = (results || []).filter((r) => r.phase === "error" || r.action === "error");
+        const active = results.filter((r) => r.action !== "skipped");
+        const errors = results.filter((r) => r.phase === "error" || r.action === "error");
         if (errors.length) {
           // Surface the actual error message (job.error), not just the phase.
           setScanError(
@@ -808,7 +810,7 @@ export default function FlowReport() {
           const progressParts = active.map((r) => `${r.season}: ${r.progress || r.phase || "…"}`);
           setScanProgress(progressParts.join(" · "));
         }
-        allDone = active.length === 0 || done.length === results.length;
+        allDone = response.allDone === true;
         if (allDone) {
           await reloadAfterScan();
           break;

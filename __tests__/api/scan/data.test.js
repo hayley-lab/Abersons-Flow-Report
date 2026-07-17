@@ -31,7 +31,13 @@ jest.mock("../../../lib/scan-data-store", () => ({
   loadReportDeptRows: jest.fn(async () => null),
   saveReportDeptRows: jest.fn(async () => undefined),
   loadReportEpoch: jest.fn(async () => 0),
-  reportCacheTag: (ts, epoch) => `${ts == null ? "none" : ts}:${epoch == null ? 0 : epoch}`,
+  reportCacheTag: (ts, epoch, consign) =>
+    `${ts == null ? "none" : ts}:${epoch == null ? 0 : epoch}:${consign == null ? 0 : consign}`,
+}));
+
+jest.mock("../../../lib/consignment-store", () => ({
+  loadConsignMeta: jest.fn(async () => null),
+  loadSeasonConsignOverlay: jest.fn(async () => ({})),
 }));
 
 jest.mock("../../../lib/report-compute", () => ({
@@ -64,6 +70,7 @@ import {
 } from "../../../lib/scan-data-store";
 import { computeReport } from "../../../lib/report-compute";
 import { readSqlReportView } from "../../../lib/sql-report-store";
+import { loadConsignMeta } from "../../../lib/consignment-store";
 import handler from "../../../pages/api/scan/data";
 
 function makeRes() {
@@ -95,6 +102,7 @@ describe("scan/data handler", () => {
     loadReportDeptRows.mockReset().mockResolvedValue(null);
     saveReportDeptRows.mockClear();
     readSqlReportView.mockReset().mockResolvedValue(null);
+    loadConsignMeta.mockReset().mockResolvedValue(null);
     computeReport.mockClear().mockImplementation(() => ({
       rows: [{ pid: "p1", deptId: "d1" }],
       summaryRows: [{ id: "d1", name: "Dept One" }],
@@ -130,10 +138,23 @@ describe("scan/data handler", () => {
     expect(computeReport).not.toHaveBeenCalled();
   });
 
+  it("rebuilds when the consignment store is newer than the client's scan timestamp", async () => {
+    loadScanDataSummary.mockResolvedValue({ ts: 1000 });
+    loadConsignMeta.mockResolvedValue({ ts: 3000, complete: true });
+    loadScanData.mockResolvedValue({ ts: 1000, seasonPids: ["p1"] });
+    mockKv._store.set("scan:job:fall26", { phase: "done", ts: 1000 });
+    const res = makeRes();
+    await handler(makeReq({ season: "fall26", since: "2000" }), res);
+
+    expect(res.body.notModified).not.toBe(true);
+    expect(res.body.data.ts).toBe(3000);
+    expect(computeReport).toHaveBeenCalled();
+  });
+
   it("serves the cached summary blob on a tag hit without recomputing", async () => {
     loadScanDataSummary.mockResolvedValue({ ts: 5000 });
     loadReportSummary.mockResolvedValue({
-      tag: "5000:0",
+      tag: "5000:0:0",
       hasOverride: true,
       deptIds: ["d1"],
       data: { ts: 5000, season: "fall26", summaryRows: [{ id: "d1" }], deptVendors: {} },
@@ -168,11 +189,30 @@ describe("scan/data handler", () => {
     expect(loadScanData).not.toHaveBeenCalled();
   });
 
+  it("rejects SQL data older than the current consignment-backed report version", async () => {
+    loadScanDataSummary.mockResolvedValue({ ts: 5000 });
+    loadConsignMeta.mockResolvedValue({ ts: 6000, complete: true });
+    readSqlReportView.mockResolvedValue({
+      ts: 5000,
+      season: "fall26",
+      summaryRows: [{ id: "stale-sql" }],
+      deptVendors: {},
+      hasOverride: false,
+    });
+    loadScanData.mockResolvedValue({ ts: 5000, seasonPids: ["p1"] });
+    const res = makeRes();
+    await handler(makeReq({ season: "fall26", view: "summary" }), res);
+
+    expect(res.body.source).not.toBe("sql");
+    expect(res.body.data.ts).toBe(6000);
+    expect(computeReport).toHaveBeenCalled();
+  });
+
   it("serves one department's rows on a drows tag hit", async () => {
     loadScanDataSummary.mockResolvedValue({ ts: 5000 });
-    loadReportSummary.mockResolvedValue({ tag: "5000:0", hasOverride: false, data: {} });
+    loadReportSummary.mockResolvedValue({ tag: "5000:0:0", hasOverride: false, data: {} });
     loadReportDeptRows.mockResolvedValue({
-      tag: "5000:0",
+      tag: "5000:0:0",
       ts: 5000,
       deptId: "d1",
       rows: [{ pid: "p1" }],
@@ -197,7 +237,7 @@ describe("scan/data handler", () => {
       mockKv,
       "fall26",
       "d1",
-      expect.objectContaining({ tag: "5000:0", deptId: "d1" })
+      expect.objectContaining({ tag: "5000:0:0", deptId: "d1" })
     );
     expect(res.body.data).toMatchObject({ summaryRows: [{ id: "d1", name: "Dept One" }] });
     expect(res.body).toMatchObject({ rollupDegraded: false });
