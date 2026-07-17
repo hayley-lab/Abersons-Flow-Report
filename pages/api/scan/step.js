@@ -70,7 +70,11 @@ import { searchEnabled, searchPages, SEARCH_PAGE_SIZE } from "../../../lib/ls-se
 import { shouldFullCatalogScan } from "../../../lib/catalog-gate";
 import { loadSeasonBucket } from "../../../lib/catalog-store";
 import { loadSalesAgg, loadSalesStoreMeta, projectSeasonSales } from "../../../lib/sales-store";
-import { consignSeasonKey } from "../../../lib/consignment-store";
+import {
+  consignSeasonKey,
+  loadConsignMeta,
+  loadSeasonConsignOverlay,
+} from "../../../lib/consignment-store";
 import {
   deleteScanBig,
   loadScanBig,
@@ -1294,13 +1298,26 @@ export default async function handler(req, res) {
       };
 
       const doneTs = Date.now();
+      const sqlWrite = Promise.all([
+        loadOverride(kv, state.season),
+        loadSeasonConsignOverlay(kv, state.season, {
+          seasonPids: result.seasonPids,
+          pidToSku: result.pidToSku,
+        }),
+        loadConsignMeta(kv),
+      ])
+        .then(([override, overlay, consignMeta]) =>
+          maybeUpsertSqlReport(state.season, result, override, {
+            consignByPid: overlay && Object.keys(overlay).length ? overlay : null,
+            reportTs: Math.max(result.ts, Number(consignMeta?.version || 0)),
+          })
+        )
+        .catch((e) => {
+          console.warn("sql full-scan dual-write failed", e.message);
+        });
       await Promise.all([
         saveScanData(kv, state.season, result),
-        loadOverride(kv, state.season)
-          .then((override) => maybeUpsertSqlReport(state.season, result, override))
-          .catch((e) => {
-            console.warn("sql full-scan dual-write failed", e.message);
-          }),
+        sqlWrite,
         saveScanPids(kv, state.season, {
           seasonPids: state.seasonPids,
           pidToType: state.pidToType,
