@@ -175,6 +175,13 @@ export default async function handler(req, res) {
     return !!refreshState && !refreshState[cache];
   }
 
+  function pendingCacheRefreshes() {
+    if (!refreshState) return [];
+    return ["catalog", "sales", "consign", "inventory"].filter((cache) =>
+      cacheRefreshPending(cache)
+    );
+  }
+
   function cacheResetPending(cache) {
     return req.query[cache] === "1" || !!(refreshState && refreshState[`${cache}ResetPending`]);
   }
@@ -454,6 +461,7 @@ export default async function handler(req, res) {
       ok: true,
       allDone: false,
       cacheRefreshPending: !!refreshState,
+      pendingCacheRefreshes: pendingCacheRefreshes(),
       catalogBuilding: true,
       catalog: {
         complete: false,
@@ -491,6 +499,7 @@ export default async function handler(req, res) {
         ok: true,
         allDone: false,
         cacheRefreshPending: !!refreshState,
+        pendingCacheRefreshes: pendingCacheRefreshes(),
         salesBuilding: true,
         sales: {
           complete: false,
@@ -529,6 +538,7 @@ export default async function handler(req, res) {
         ok: true,
         allDone: false,
         cacheRefreshPending: !!refreshState,
+        pendingCacheRefreshes: pendingCacheRefreshes(),
         consignBuilding: true,
         consign: { complete: false, cacheComplete: false },
         results: [],
@@ -563,6 +573,7 @@ export default async function handler(req, res) {
         ok: true,
         allDone: false,
         cacheRefreshPending: !!refreshState,
+        pendingCacheRefreshes: pendingCacheRefreshes(),
         inventoryBuilding: true,
         inventory: {
           complete: false,
@@ -740,6 +751,7 @@ export default async function handler(req, res) {
       ok: true,
       allDone,
       cacheRefreshPending: !!refreshState,
+      pendingCacheRefreshes: pendingCacheRefreshes(),
       results: seasonState.map((s) => ({
         season: s.season,
         action: s.action || "pending",
@@ -788,6 +800,12 @@ export default async function handler(req, res) {
         console.error("[cron/scan] rebuild flag clear failed:", e.message);
       }
     }
-    return res.json({ ok: true, allDone, cacheRefreshPending: !!refreshState, results });
+    return res.json({
+      ok: true,
+      allDone,
+      cacheRefreshPending: !!refreshState,
+      pendingCacheRefreshes: pendingCacheRefreshes(),
+      results,
+    });
   }
 }

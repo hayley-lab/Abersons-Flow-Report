@@ -205,12 +205,14 @@ describe("cron/scan handler", () => {
     const first = makeRes();
     await handler(makeReq({ query: { driver: "1", refresh: "1" }, auth: true }), first);
     expect(first.body.cacheRefreshPending).toBe(true);
+    expect(first.body.pendingCacheRefreshes).toEqual(["catalog"]);
     expect(first.body.allDone).toBe(false);
 
     const second = makeRes();
     await handler(makeReq({ query: { driver: "1" }, auth: true }), second);
     expect(catalogCalls).toBe(2);
     expect(second.body.cacheRefreshPending).toBe(false);
+    expect(second.body.pendingCacheRefreshes).toEqual([]);
     expect(second.body.allDone).toBe(true);
   });
 });
