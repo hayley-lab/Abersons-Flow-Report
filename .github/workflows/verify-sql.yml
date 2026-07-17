@@ -45,15 +45,20 @@ jobs:
           FAILED=0
           for season in $SEASONS; do
             echo "--- Verifying $season ---"
-            RESPONSE=$(curl -sS --fail --max-time 120 \
+            RESPONSE_FILE=$(mktemp)
+            HTTP_STATUS=$(curl -sS --max-time 120 -o "$RESPONSE_FILE" -w "%{http_code}" \
               "$BASE/api/scan/verify-sql?season=$season" \
               -H "Authorization: Bearer $CRON_SECRET" \
-              -H "Accept: application/json") || {
-                echo "::error::verify-sql request failed for $season"
-                echo "| $season | ❌ request failed | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
-                FAILED=$((FAILED+1))
-                continue
-              }
+              -H "Accept: application/json")
+            CURL_RC=$?
+            RESPONSE=$(<"$RESPONSE_FILE")
+            rm -f "$RESPONSE_FILE"
+            if [ "$CURL_RC" -ne 0 ] || ! printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+              echo "::error::verify-sql request failed for $season (curl=$CURL_RC http=$HTTP_STATUS)"
+              echo "| $season | ❌ request failed | - | - | - |" >> "$GITHUB_STEP_SUMMARY"
+              FAILED=$((FAILED+1))
+              continue
+            fi
             OK=$(printf '%s' "$RESPONSE" | jq -r '.ok // false')
             ROWS=$(printf '%s' "$RESPONSE" | jq -r '.results[0].counts.sqlRows // 0')
             MISMATCHES=$(printf '%s' "$RESPONSE" | jq -r '.results[0].counts.mismatches // 0')

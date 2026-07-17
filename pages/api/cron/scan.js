@@ -723,7 +723,7 @@ export default async function handler(req, res) {
       );
     }
 
-    const allDone = computeAllDone(seasonState);
+    const allDone = computeAllDone(seasonState) && !refreshState;
     // The rebuild cycle is complete once every season has finished, so clear the
     // intent flag; otherwise a later nightly call would force a needless rebuild.
     if (allDone && rebuildTs) {
@@ -778,7 +778,7 @@ export default async function handler(req, res) {
     }
 
     const results = buildDriverResults(seasonState, stepResults);
-    const allDone = computeAllDone(seasonState);
+    const allDone = computeAllDone(seasonState) && !refreshState;
     // Mirror the cron path: clear the rebuild intent once the cycle is complete
     // so a later nightly call doesn't force a needless rebuild.
     if (allDone && rebuildTs) {
