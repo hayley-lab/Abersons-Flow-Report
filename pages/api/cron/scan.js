@@ -621,6 +621,25 @@ export default async function handler(req, res) {
     };
   }
 
+  // An explicit refresh cycle must fully drain before any season advances.
+  // Otherwise a fast season can finalize KV/SQL from an older consignment
+  // cursor while the shared cache continues changing underneath it.
+  if (usesCronGates && refreshState) {
+    return res.json({
+      ok: true,
+      allDone: false,
+      cacheRefreshPending: true,
+      pendingCacheRefreshes: pendingCacheRefreshes(),
+      cacheRefreshProgress: cacheRefreshProgress(),
+      results: seasons.map((season) => ({
+        season,
+        action: "pending",
+        phase: null,
+        mode: null,
+      })),
+    });
+  }
+
   let kvResults;
   try {
     kvResults = await Promise.all(

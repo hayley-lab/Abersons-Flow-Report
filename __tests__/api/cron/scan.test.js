@@ -207,6 +207,7 @@ describe("cron/scan handler", () => {
     expect(first.body.cacheRefreshPending).toBe(true);
     expect(first.body.pendingCacheRefreshes).toEqual(["catalog"]);
     expect(first.body.allDone).toBe(false);
+    expect(global.fetch.mock.calls.some(([url]) => url.includes("/api/scan/step"))).toBe(false);
 
     const second = makeRes();
     await handler(makeReq({ query: { driver: "1" }, auth: true }), second);
@@ -214,5 +215,6 @@ describe("cron/scan handler", () => {
     expect(second.body.cacheRefreshPending).toBe(false);
     expect(second.body.pendingCacheRefreshes).toEqual([]);
     expect(second.body.allDone).toBe(true);
+    expect(global.fetch.mock.calls.some(([url]) => url.includes("/api/scan/step"))).toBe(true);
   });
 });
