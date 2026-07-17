@@ -585,6 +585,40 @@ export default async function handler(req, res) {
     }
   }
 
+  function cacheRefreshProgress() {
+    return {
+      catalog: catalogResult
+        ? {
+            complete: catalogResult.complete,
+            version: catalogResult.version ?? null,
+            added: catalogResult.added ?? 0,
+            pages: catalogResult.pages ?? 0,
+          }
+        : null,
+      sales: salesResult
+        ? {
+            complete: salesResult.complete,
+            version: salesResult.metaVersion ?? salesResult.version ?? null,
+            pages: salesResult.pages ?? 0,
+          }
+        : null,
+      consign: consignResult
+        ? {
+            complete: consignResult.complete,
+            added: consignResult.added ?? 0,
+            versionByType: consignResult.versionByType ?? null,
+          }
+        : null,
+      inventory: inventoryResult
+        ? {
+            complete: inventoryResult.complete,
+            version: inventoryResult.version ?? null,
+            pages: inventoryResult.pages ?? 0,
+          }
+        : null,
+    };
+  }
+
   let kvResults;
   try {
     kvResults = await Promise.all(
@@ -752,6 +786,7 @@ export default async function handler(req, res) {
       allDone,
       cacheRefreshPending: !!refreshState,
       pendingCacheRefreshes: pendingCacheRefreshes(),
+      cacheRefreshProgress: cacheRefreshProgress(),
       results: seasonState.map((s) => ({
         season: s.season,
         action: s.action || "pending",
@@ -805,6 +840,7 @@ export default async function handler(req, res) {
       allDone,
       cacheRefreshPending: !!refreshState,
       pendingCacheRefreshes: pendingCacheRefreshes(),
+      cacheRefreshProgress: cacheRefreshProgress(),
       results,
     });
   }

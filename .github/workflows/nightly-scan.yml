@@ -47,7 +47,7 @@ jobs:
               continue
             fi
             if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, cacheRefreshPending, pendingCacheRefreshes, catalogBuilding, salesBuilding, consignBuilding, inventoryBuilding, results}' 2>/dev/null \
+              printf '%s' "$RESPONSE" | jq -c '{ok, allDone, cacheRefreshPending, pendingCacheRefreshes, cacheRefreshProgress, catalogBuilding, salesBuilding, consignBuilding, inventoryBuilding, results}' 2>/dev/null \
                 || printf '%s\n' "$RESPONSE"
               ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '.allDone // false' 2>/dev/null)
               HAS_ERROR=$(printf '%s' "$RESPONSE" | jq -r 'any(.results[]?; (.action == "error") or (.phase == "error"))' 2>/dev/null)
