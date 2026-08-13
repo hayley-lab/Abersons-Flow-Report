@@ -472,6 +472,20 @@ export default async function handler(req, res) {
         if (!state.deadHandles) state.deadHandles = {};
         const priorPidSet = new Set(state.seasonPids);
 
+        // 1a. The shared catalog bucket is read FIRST because it is the
+        //     authoritative season membership for the restore below — see
+        //     filterRestoredSeasonPids. A present bucket means the shared catalog
+        //     finished and bucketed this season; it is authoritative even when
+        //     empty (a future season with no products).
+        let bucket = null;
+        try {
+          bucket = await loadSeasonBucket(kv, season);
+        } catch (e) {}
+        const catalogPidSet =
+          bucket && Array.isArray(bucket.seasonPids)
+            ? new Set(bucket.seasonPids.map(String))
+            : null;
+
         // 1. Restore pid maps from lightweight scan:pids key (avoids loading full scan:data blob)
         try {
           const [priorPidMaps, priorData] = await Promise.all([
@@ -485,7 +499,8 @@ export default async function handler(req, res) {
             const restoredSeasonPids = filterRestoredSeasonPids(
               priorPids.seasonPids,
               season,
-              restoredPidToSku
+              restoredPidToSku,
+              { catalogPidSet }
             );
             const allowedPids = new Set(restoredSeasonPids.map(String));
             for (const pid of restoredSeasonPids) {
@@ -501,33 +516,31 @@ export default async function handler(req, res) {
         // 1b. Restore this season's products from the shared catalog bucket
         //     (zero API calls). The store-wide catalog cache holds every product;
         //     the bucket is the season's slice in the same shape as scan:pids.
-        try {
-          const bucket = await loadSeasonBucket(kv, season);
-          // A present bucket means the shared catalog finished and bucketed this
-          // season — authoritative even when empty (a future season with no
-          // products). Record that so the per-season /search fallback is skipped.
-          if (bucket && Array.isArray(bucket.seasonPids)) {
-            state._catalogSeeded = true;
-            for (const pid of bucket.seasonPids) {
-              if (!priorPidSet.has(pid)) {
-                state.seasonPids.push(pid);
-                priorPidSet.add(pid);
-              }
+        if (catalogPidSet) {
+          // Record that the catalog seeded this season so the per-season /search
+          // fallback is skipped.
+          state._catalogSeeded = true;
+          for (const pid of bucket.seasonPids) {
+            if (!priorPidSet.has(pid)) {
+              state.seasonPids.push(pid);
+              priorPidSet.add(pid);
             }
-            Object.assign(state.pidToType, bucket.pidToType || {});
-            Object.assign(state.pidToSupplier, bucket.pidToSupplier || {});
-            Object.assign(state.skuToPid, bucket.skuToPid || {});
-            Object.assign(state.pidToPrice, bucket.pidToPrice || {});
-            Object.assign(state.pidToCost, bucket.pidToCost || {});
-            Object.assign(state.pidToName, bucket.pidToName || {});
-            Object.assign(state.pidToSku, bucket.pidToSku || {});
-            Object.assign(state.pidToVariant, bucket.pidToVariant || {});
-            // The bucket's cost comes from /search (the catalog source of truth),
-            // so mark these pids cost-resolved to skip the per-scan cost backfill
-            // — that's the bulk of the legacy per-season product API calls.
-            for (const pid of bucket.seasonPids) state.costDone[pid] = 1;
           }
-        } catch (e) {}
+          Object.assign(state.pidToType, bucket.pidToType || {});
+          Object.assign(state.pidToSupplier, bucket.pidToSupplier || {});
+          Object.assign(state.skuToPid, bucket.skuToPid || {});
+          Object.assign(state.pidToPrice, bucket.pidToPrice || {});
+          Object.assign(state.pidToCost, bucket.pidToCost || {});
+          Object.assign(state.pidToName, bucket.pidToName || {});
+          // The catalog snapshot is fresher than the prior scan's SKU map, so it
+          // wins here: a corrected SKU must not keep its stale season code.
+          Object.assign(state.pidToSku, bucket.pidToSku || {});
+          Object.assign(state.pidToVariant, bucket.pidToVariant || {});
+          // The bucket's cost comes from /search (the catalog source of truth),
+          // so mark these pids cost-resolved to skip the per-scan cost backfill
+          // — that's the bulk of the legacy per-season product API calls.
+          for (const pid of bucket.seasonPids) state.costDone[pid] = 1;
+        }
 
         // 2. Collect handles for override products not already in the pid set
         //    (new products added to datatail since last scan)

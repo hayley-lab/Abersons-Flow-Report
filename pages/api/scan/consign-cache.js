@@ -17,6 +17,7 @@ import { seasonScanDateRange } from "../../../lib/flow-math";
 import { loadSeasonBucket } from "../../../lib/catalog-store";
 import {
   loadConsignMeta,
+  seasonProjectionInputs,
   syncConsignmentStore,
   writeSeasonConsignBuckets,
 } from "../../../lib/consignment-store";
@@ -97,19 +98,9 @@ export default async function handler(req, res) {
         Promise.all(seasons.map((s) => loadSeasonBucket(kv, s))),
         Promise.all(seasons.map((s) => loadScanData(kv, s))),
       ]);
-      const seasonPidSets = {};
-      const scanRanges = {};
-      const pidToSku = {};
-      seasons.forEach((s, i) => {
-        const catalogBucket = parseKv(catalogBuckets[i]);
-        const priorData = parseKv(priorScanData[i]);
-        seasonPidSets[s] = new Set([
-          ...((catalogBucket && catalogBucket.seasonPids) || []),
-          ...((priorData && priorData.seasonPids) || []),
-        ]);
-        Object.assign(pidToSku, (catalogBucket && catalogBucket.pidToSku) || {});
-        Object.assign(pidToSku, (priorData && priorData.pidToSku) || {});
-        scanRanges[s] = seasonScanDateRange(s);
+      const { seasonPidSets, scanRanges, pidToSku } = seasonProjectionInputs(seasons, {
+        catalogBuckets: catalogBuckets.map(parseKv),
+        priorData: priorScanData.map(parseKv),
       });
       await writeSeasonConsignBuckets(kv, seasons, { seasonPidSets, scanRanges, pidToSku });
       bucketed = seasons.length;
