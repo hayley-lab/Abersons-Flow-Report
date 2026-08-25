@@ -379,18 +379,20 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
         overlapRmhOrderU += rmhU;
       }
     }
-    // Ordered $ reconciliation. spring25/fall25 are pure RMH-era seasons — LS has
+    // Ordered $ reconciliation. The live report Ordered $ is net of vendor
+    // returns like old flow.sql: SUM((Ordered − Returned) × Price). RMH POType=0
+    // below is GROSS placed-order completeness of the override source — the UI
+    // total will sit below that gross target by roughly POType=3 return dollars.
+    // spring25/fall25 are pure RMH-era seasons — LS has
     // NO purchase orders (the orders were never migrated; only the products were),
-    // so the report's Ordered $ comes entirely from the datatail combine and must
-    // reconcile to RMH POType=0 ordered retail $. spring26/fall26 are the crossover
+    // so the report's Ordered $ comes entirely from the datatail combine.
+    // spring26/fall26 are the crossover
     // (LS orders + RMH-only datatail, deduped) so a raw RMH comparison is expected
     // to differ — informational only.
     // The datatailor import carries ordered $ at TWO levels: a coarse vendor-level
-    // total (v.ordered) AND per-product qtyOrdered. The rollup's combine uses the
-    // vendor-level total. Measure both (season-gated like the rollup: a vendor is
-    // included only if it has ≥1 product whose SKU folds into this season). If the
-    // vendor-level total ≈ report but < RMH, the historical hard-pull is INCOMPLETE
-    // (a data-source gap RMH can fill), not a code bug.
+    // total (v.ordered) AND per-product qtyOrdered. The rollup's combine uses
+    // per-product net when qty exists; otherwise vendor-level (already-net scrape,
+    // or gross-minus-returns when orderedScraped marks an RMH backfill).
     let rawProductOrdered = 0;
     let vendorLevelOrdered = 0;
     for (const v of Object.values((override && override.vendors) || {})) {
@@ -523,7 +525,9 @@ test("RMH-season accuracy: report rollup reconciles with RMH", async () => {
       "\n\nORDERED is reconciled per-SKU (crossover-aware): datatail-only ordered must" +
       "\ntrack RMH POType=0 for the same SKUs (override integrity), RMH-only SKUs in" +
       "\nno report row are missed orders, and LS-matched SKUs RMH also ordered are the" +
-      "\ntransition overlap (report uses LS by design). RECEIVED post-crossover is" +
+      "\ntransition overlap (report uses LS by design). Live Ordered $ is net of" +
+      "\nvendor returns (old flow.sql); RMH POType=0 $ is gross source completeness." +
+      "\nRECEIVED post-crossover is" +
       "\nsourced from LS POs (source of truth); RMH POType0 received shown for context." +
       (snapSales
         ? `\n\nSOLD/ON-SALE compared to the frozen RMH snapshot (${snapSales.dir}). Sales were` +
