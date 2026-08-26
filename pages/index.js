@@ -18,7 +18,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/router";
 import { rowsForVendor, vendorRollupTotals } from "../lib/flow-rollup";
-import { returnedRetailValue } from "../lib/flow-math";
+import { buildProductBuckets, displayFlowQty } from "../lib/product-display";
 import { normVendorName } from "../lib/vendor-match";
 import {
   HEALTH_LEVEL,
@@ -1072,44 +1072,7 @@ export default function FlowReport() {
     sale: "on sale",
     returned: "returned",
   };
-  const productBuckets = (function () {
-    const b = {
-      ordered: { n: 0, v: 0 },
-      stock: { n: 0, v: 0 },
-      sold: { n: 0, v: 0 },
-      sale: { n: 0, v: 0 },
-      returned: { n: 0, v: 0 },
-    };
-    productRows.forEach(function (p) {
-      const price = p.price || 0;
-      // sold and onSale are now mutually exclusive buckets (onSale items not in sold)
-      const notReceived = p.onOrderQty || 0;
-      if (p.sold > 0) {
-        b.sold.n++;
-        b.sold.v += price * p.sold;
-      }
-      if (p.onSale > 0) {
-        b.sale.n++;
-        b.sale.v += p.saleAmt || price * p.onSale;
-      }
-      if (p.onHand > 0) {
-        b.stock.n++;
-        b.stock.v += price * p.onHand;
-      }
-      if (p.retQty > 0) {
-        b.returned.n++;
-        // Use the same returned-retail rule as the Returned (retail) header
-        // (prefers scan-time retVal, else retQty × price) so the color key and
-        // header never disagree for zero-price / datatail vendor returns.
-        b.returned.v += returnedRetailValue(p, price);
-      }
-      if (notReceived > 0) {
-        b.ordered.n++;
-        b.ordered.v += price * notReceived;
-      }
-    });
-    return b;
-  })();
+  const productBuckets = buildProductBuckets(productRows);
 
   // Vendor header totals come straight from the authoritative rollup
   // (scanData.deptVendors) so the header always equals the vendor list row.
@@ -2587,6 +2550,12 @@ export default function FlowReport() {
                         </span>
                       );
                     })}
+                    <span
+                      title="Lightspeed live on-hand differs from the flow math. This is a warning, not a quantity."
+                      style={{ color: "#92600a", fontWeight: 600 }}
+                    >
+                      ≠ count difference (not a quantity)
+                    </span>
                   </div>
                 }
               >
@@ -2715,9 +2684,9 @@ export default function FlowReport() {
                                   </TD>
                                   <TD right>{p.cost > 0 ? fmt(p.cost) : ""}</TD>
                                   <TD right>{p.price > 0 ? fmt(p.price) : ""}</TD>
-                                  <TD right>{p.onOrderQty > 0 ? p.onOrderQty : ""}</TD>
+                                  <TD right>{displayFlowQty(p.onOrderQty)}</TD>
                                   <TD right>
-                                    {p.onHand > 0 ? p.onHand : ""}
+                                    {displayFlowQty(p.onHand)}
                                     {p.inventoryMismatch &&
                                       (function () {
                                         const b = inventoryMismatchBreakdown(p);
@@ -2726,7 +2695,7 @@ export default function FlowReport() {
                                         return (
                                           <span
                                             title={
-                                              "Manual LS inventory adjustment\n" +
+                                              "On-hand reconciliation difference (≠ is not a quantity)\n" +
                                               "LS live on-hand: " +
                                               (b.live ?? "unknown") +
                                               "\nDerived flow stock: " +
@@ -2754,12 +2723,12 @@ export default function FlowReport() {
                                         );
                                       })()}
                                   </TD>
-                                  <TD right>{p.sold > 0 ? p.sold : ""}</TD>
+                                  <TD right>{displayFlowQty(p.sold)}</TD>
                                   <TD right style={{ color: "#6c3483" }}>
-                                    {p.onSale > 0 ? p.onSale : ""}
+                                    {displayFlowQty(p.onSale)}
                                   </TD>
                                   <TD right style={{ color: "#000000" }}>
-                                    {p.retQty > 0 ? p.retQty : ""}
+                                    {displayFlowQty(p.retQty)}
                                   </TD>
                                 </tr>
                               );
