@@ -44,8 +44,7 @@ jest.mock("../../../lib/flow-rollup", () => ({
 }));
 
 jest.mock("../../../lib/consignment-store", () => ({
-  loadConsignEntries: jest.fn(async () => []),
-  seasonConsignmentBuckets: jest.fn(() => ({})),
+  loadSeasonConsignOverlay: jest.fn(async () => ({})),
 }));
 
 jest.mock("../../../lib/sales-store", () => ({
@@ -71,8 +70,10 @@ jest.mock("../../../lib/validation-history", () => ({
 }));
 
 import { loadScanData } from "../../../lib/scan-data-store";
+import { loadSeasonConsignOverlay } from "../../../lib/consignment-store";
 import { evaluateDrift, buildValidationReport } from "../../../lib/report-validate";
 import { loadValidationHistory } from "../../../lib/validation-history";
+import { makeLsFetch } from "../../../lib/ls-fetch";
 import handler from "../../../pages/api/scan/validate";
 
 function makeRes() {
@@ -167,5 +168,36 @@ describe("scan/validate handler", () => {
       sourceProducts: 1,
       scanCompletedAt: 1000,
     });
+  });
+
+  // Regression: the on-hand budget used to be anchored where the fetch loop
+  // starts, so slow prep work (sharded KV reads + rollup on a big override
+  // season) added onto the full budget and the function was hard-killed at
+  // maxDuration -- spring25 returned HTTP 504 to the nightly Action every night.
+  it("charges slow pre-loop work against the on-hand budget", async () => {
+    loadScanData.mockResolvedValue({ seasonPids: ["p1"], ts: 1000 });
+
+    const realNow = Date.now;
+    let clock = realNow.call(Date);
+    jest.spyOn(Date, "now").mockImplementation(() => clock);
+
+    // Prep (loading the overlay) burns more than the whole budget.
+    loadSeasonConsignOverlay.mockImplementationOnce(async () => {
+      clock += 95000;
+      return {};
+    });
+
+    const lsFetch = jest.fn(async () => ({ data: [] }));
+    lsFetch.callStats = { total: 0, byFamily: {} };
+    makeLsFetch.mockReturnValueOnce(lsFetch);
+
+    const res = makeRes();
+    await handler(makeReq({ query: { season: "spring25" }, auth: true }), res);
+
+    Date.now.mockRestore();
+
+    expect(lsFetch).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ onHandFetched: 0, onHandBudgetExhausted: true });
   });
 });

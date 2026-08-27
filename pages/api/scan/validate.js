@@ -37,8 +37,14 @@ import {
 } from "../../../lib/report-validate";
 import { loadValidationHistory, persistValidation } from "../../../lib/validation-history";
 
-// Under the 60s maxDuration; leaves headroom for KV reads + JSON serialization.
-const BUDGET_MS = 50000;
+// Whole-request budget, measured from the moment the handler starts — NOT from
+// the point the on-hand loop begins. Steps 1-3 (sharded KV reads, buildAllRows,
+// rollup, sales projection) cost ~20s on the largest override seasons, so a
+// loop-anchored deadline let total runtime reach prep + budget and hard-kill the
+// function at maxDuration (spring25 504'd nightly). Stays under the 120s
+// maxDuration and the workflow's `curl --max-time 120`, leaving headroom for the
+// report build, KV persist, and JSON serialization.
+const BUDGET_MS = 90000;
 const DEFAULT_SAMPLE = 150;
 
 function parseKv(val) {
@@ -85,6 +91,8 @@ async function fetchLiveOnHand(lsFetch, pid, deadline) {
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).end();
+
+  const deadline = Date.now() + BUDGET_MS;
 
   const cronAuth =
     process.env.CRON_SECRET && req.headers.authorization === `Bearer ${process.env.CRON_SECRET}`;
@@ -180,7 +188,6 @@ export default async function handler(req, res) {
       base: lsBase(),
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     });
-    const deadline = Date.now() + BUDGET_MS;
     for (const pid of sampled) {
       if (Date.now() >= deadline) {
         onHandBudgetExhausted = true;

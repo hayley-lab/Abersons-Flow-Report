@@ -34,7 +34,7 @@
       "maxDuration": 60
     },
     "pages/api/scan/validate.js": {
-      "maxDuration": 60
+      "maxDuration": 120
     },
     "pages/api/cron/delta.js": {
       "maxDuration": 300
