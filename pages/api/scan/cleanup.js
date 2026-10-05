@@ -12,11 +12,21 @@ import {
 } from "../../../lib/catalog-store";
 import { loadConsignEntries, loadConsignMeta } from "../../../lib/consignment-store";
 import { loadInventoryCache, loadInventoryMeta } from "../../../lib/inventory-ledger";
-import { markLsAuthError, markLsHealthy, setLsHealth, getLsToken, lsBase } from "../../../lib/ls-auth";
+import {
+  markLsAuthError,
+  markLsHealthy,
+  setLsHealth,
+  getLsToken,
+  lsBase,
+} from "../../../lib/ls-auth";
 import { parseRetryAfterMs } from "../../../lib/ls-fetch";
 import { loadSalesAgg, loadSalesStoreMeta } from "../../../lib/sales-store";
 import { sessionOptions } from "../../../lib/session";
-import { candidateReasonFromMeta, isConsignmentSku } from "../../../lib/stale-products";
+import {
+  candidateReasonFromMeta,
+  deactivateOutcome,
+  isConsignmentSku,
+} from "../../../lib/stale-products";
 
 const CHUNK_MS = 45_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -96,7 +106,9 @@ function hasCatalogCleanupFields(products) {
 }
 
 function onHandMapFromCache(cache) {
-  return new Map(Object.entries(cache?.onHand || {}).map(([pid, amount]) => [pid, Number(amount) || 0]));
+  return new Map(
+    Object.entries(cache?.onHand || {}).map(([pid, amount]) => [pid, Number(amount) || 0])
+  );
 }
 
 function lastSoldMapFromAgg(agg) {
@@ -165,7 +177,8 @@ async function setProductActive({ base, token, id, active, deadline }) {
       headers,
       body: JSON.stringify({ details: { is_active: active } }),
     });
-    if ((response.status === 429 || response.status === 503) && attempt < WRITE_RETRIES) {
+    const outcome = deactivateOutcome(response.status, { canRetry: attempt < WRITE_RETRIES });
+    if (outcome === "retry") {
       const waitMs = retryWaitMs(response, attempt);
       if (Date.now() + waitMs >= deadline) throw new Error("Cleanup write deadline reached");
       await sleep(waitMs);
@@ -173,7 +186,8 @@ async function setProductActive({ base, token, id, active, deadline }) {
     }
 
     const text = await response.text();
-    if (!response.ok) {
+    if (outcome === "not-found") return { notFound: true };
+    if (outcome === "error") {
       if (response.status === 401 || response.status === 403) {
         markLsAuthError({ status: response.status, body: text.slice(0, 120) });
       }
@@ -323,14 +337,20 @@ export default async function handler(req, res) {
         continue;
       }
 
-      await setProductActive({ base, token, id: candidate.id, active: false, deadline });
+      const result = await setProductActive({
+        base,
+        token,
+        id: candidate.id,
+        active: false,
+        deadline,
+      });
       const row = {
         ts: new Date().toISOString(),
         id: candidate.id,
         sku: candidate.meta?.sku || "",
         previousActive: candidate.meta?.active,
         action: "deactivate",
-        status: "ok",
+        status: result?.notFound ? "not-found" : "ok",
       };
       audit.push(row);
       loggedIds.add(candidate.id);

@@ -28,6 +28,11 @@ jobs:
           echo "Starting nightly stale product cleanup loop..."
           DEADLINE=$(( $(date +%s) + 80 * 60 ))
           i=0
+          ERRORS=0
+          # Every call loads the store-wide KV caches, so a call that keeps
+          # erroring must stop the job, not loop for the whole budget (a stuck
+          # LS 404 did that nightly for 6 weeks while reporting success).
+          MAX_CONSECUTIVE_ERRORS=5
           QUERY=""
           if [ -n "${{ inputs.max_writes }}" ]; then
             QUERY="${QUERY}&max_writes=${{ inputs.max_writes }}"
@@ -51,12 +56,23 @@ jobs:
               continue
             fi
             if printf '%s' "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-              printf '%s' "$RESPONSE" | jq -c '{ok, complete, capped, anomalyAborted, candidates, written, chunkWritten, cursor}' 2>/dev/null \
+              printf '%s' "$RESPONSE" | jq -c '{ok, complete, capped, anomalyAborted, candidates, written, chunkWritten, cursor, error}' 2>/dev/null \
                 || printf '%s\n' "$RESPONSE"
               COMPLETE=$(printf '%s' "$RESPONSE" | jq -r '.complete // false' 2>/dev/null)
+              ERRMSG=$(printf '%s' "$RESPONSE" | jq -r '.error // empty' 2>/dev/null)
             else
               echo "(non-JSON/timeout response: ${RESPONSE:0:200})"
               COMPLETE=false
+              ERRMSG="non-JSON response"
+            fi
+            if [ -n "$ERRMSG" ]; then
+              ERRORS=$(( ERRORS + 1 ))
+              if [ "$ERRORS" -ge "$MAX_CONSECUTIVE_ERRORS" ]; then
+                echo "::error::Cleanup failed $ERRORS times in a row: $ERRMSG"
+                exit 1
+              fi
+            else
+              ERRORS=0
             fi
             if [ "$COMPLETE" = "true" ]; then
               echo "Cleanup complete. Done."
